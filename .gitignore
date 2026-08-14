@@ -1,0 +1,18 @@
+# Environments and caches
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Outputs of a run
+runs/
+*.log
+*.npy
+*.npz
+
+# Repositories that this project uses but does not contain.
+# MLGeometry comes from PyPI as MLGeometry-JAX. See scripts/setup.sh.
+MLGeometry/
+SLagSearch/
+draft/
+notes/symmetry_param_counts.py

@@ -1,0 +1,9 @@
+# scripts/setup.sh installs jax first, so that the GPU build wins.
+MLGeometry-JAX>=2.2.2
+flax
+optax
+optimistix
+sympy
+mpmath
+numpy
+matplotlib
