@@ -352,9 +352,32 @@ from `draft/atlas_bounds.tex`. The values at k = 16 and k = 20 come from
   removes it for 3 to 4 extra flops per MAC. **Do not write it now.** Keep the
   three sums inside one small function, so that the swap stays a one-function
   change. That is rule 2 of "Output".
-* The excess risk from over-fit is approximately `n_θ / N_pts`. At k = 38 with
-  `N_pts = 1e6` it is 3.2e-3, which changes σ by 0.2 percent. **1e6 points are
-  enough for stage 1.** Always report σ on a hold-out set.
+* **Use two independent point sets, because the fit and the report have
+  different limits.** Always report on the hold-out set.
+  * **The hold-out set.** The standard error of `mean abs(f)` is
+    `mean abs(f)/sqrt(N)`. We measured this at k = 6 on 6e5 points, in disjoint
+    subsets: the spread was 1.18, 0.45 and 0.20 percent at N = 8e3, 4e4 and 2e5,
+    against `1/sqrt(N)` of 1.12, 0.50 and 0.22 percent. The mean did not move.
+    **The error is relative and not absolute, so a small N does not stop
+    `mean abs(f)` from reaching 1e-15. It only limits the digits you can report.**
+    Use `N = 8e6`, which gives 0.035 percent. The cost is one forward pass in
+    chunks.
+  * **`max abs(f)` needs the points.** At k = 6 it read 2.25e-3 on 8e3 points and
+    3.00e-3 on 2e6 points. It is a lower bound on `sup abs(f)`, and it grows with
+    N. Never report it from a small sample.
+  * **The fit set is bounded by memory.** LM materializes `[J; sqrt(λ)I]`, which
+    is `N_fit · n_θ · 8` bytes in FP64, and lineax QR needs approximately 3
+    copies.
+
+| `N_fit` | k = 12 | k = 16 | k = 20 | k = 32 | k = 38 |
+|---|---|---|---|---|---|
+| 1e5 | 0.04 GB | 0.11 GB | 0.23 GB | 1.2 GB | 2.4 GB |
+| 5e5 | 0.2 GB | 0.5 GB | 1.1 GB | 6.2 GB | 12 GB |
+| 1e7 | 4.5 GB | 11 GB | 23 GB | **125 GB** | **239 GB** |
+
+* A large fit set buys little. The excess risk is `n_θ / N_fit`, which is 2.9e-3
+  at k = 20 with `N_fit = 1e5`, so σ moves by 0.15 percent. The fit time grows in
+  proportion to `N_fit`. **Use `N_fit = 1e5` to k = 20, and 5e5 at k ≥ 32.**
 * The points must satisfy `P(z) = 0` to full working precision.
   `hypersurface.refine_points` already does the Newton refinement, and we
   measured `max abs(P)/scale = 3.3e-16` with a median of 7.0e-17. This is done.

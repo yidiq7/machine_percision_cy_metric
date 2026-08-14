@@ -41,6 +41,33 @@ def volumes(lay, theta, batch):
     return jnp.real(jax.vmap(jnp.linalg.det)(metrics)) / batch['Omega_Omegabar']
 
 
+def _chunks(n, size):
+    return [slice(i, min(i + size, n)) for i in range(0, n, size)]
+
+
+def volumes_chunked(lay, theta, batch, chunk=100_000):
+    """v at every point, a chunk at a time, so a large hold-out set fits.
+
+    A chunk holds the per-point Hessian intermediates, and those dominate the
+    memory. The result is one array of N doubles, which is 80 MB at N = 1e7.
+    """
+    n = int(batch['points'].shape[0])
+    if n <= chunk:
+        return volumes(lay, theta, batch)
+
+    mats = sections.prepare(lay, theta)
+
+    @jax.jit
+    def piece(points, restriction, omega):
+        metrics = jax.vmap(lambda z, r: restricted_metric(lay, mats, z, r))(
+            points, restriction)
+        return jnp.real(jax.vmap(jnp.linalg.det)(metrics)) / omega
+
+    return jnp.concatenate([
+        piece(batch['points'][s], batch['restriction'][s],
+              batch['Omega_Omegabar'][s]) for s in _chunks(n, chunk)])
+
+
 def residual(lay, theta, batch):
     """f = v/<v> - 1, with <v> the mass-weighted mean over the batch."""
     v = volumes(lay, theta, batch)
@@ -59,23 +86,38 @@ def weighted_residual(lay, theta, batch):
     return jnp.sqrt(weights) * residual(lay, theta, batch)
 
 
-def report(lay, theta, batch):
-    """The numbers that "Output" asks for, on one point set."""
-    v = volumes(lay, theta, batch)
+def report(lay, theta, batch, chunk=100_000):
+    """The numbers that "Output" asks for, on one point set.
+
+    The standard error of `mape` is approximately `mape / sqrt(N)`, because the
+    spread of abs(f) is close to its mean. So N sets how many digits of the
+    reported residual are real, and it does not set the residual itself.
+    """
+    v = volumes_chunked(lay, theta, batch, chunk)
     weights = batch['mass'] / jnp.sum(batch['mass'])
     f = v / jnp.sum(weights * v) - 1.0
 
-    metrics = metrics_on(lay, theta, batch)
-    eig = jnp.linalg.eigvalsh(0.5 * (metrics + jnp.conj(jnp.swapaxes(metrics, -1, -2))))
     mats = sections.prepare(lay, theta)
-    potentials = jax.vmap(lambda z: sections.potential_at(lay, mats, z))(batch['points'])
 
+    @jax.jit
+    def margins(points, restriction):
+        metrics = jax.vmap(lambda z, r: restricted_metric(lay, mats, z, r))(
+            points, restriction)
+        herm = 0.5 * (metrics + jnp.conj(jnp.swapaxes(metrics, -1, -2)))
+        return (jnp.min(jnp.linalg.eigvalsh(herm)),
+                jnp.min(jax.vmap(lambda z: sections.potential_at(lay, mats, z))(points)))
+
+    pairs = [margins(batch['points'][s], batch['restriction'][s])
+             for s in _chunks(int(f.shape[0]), chunk)]
+
+    mape = float(jnp.sum(weights * jnp.abs(f)))
     return {
-        'mape': float(jnp.sum(weights * jnp.abs(f))),
+        'mape': mape,
+        'mape_stderr': mape / float(jnp.sqrt(f.shape[0])),
         'rms': float(jnp.sqrt(jnp.sum(weights * f ** 2))),
         'max_abs': float(jnp.max(jnp.abs(f))),
         'mspe': float(jnp.sum(weights * f ** 2)),
-        'min_eig': float(jnp.min(eig)),
-        'min_p': float(jnp.min(potentials)),
+        'min_eig': float(min(float(a) for a, _ in pairs)),
+        'min_p': float(min(float(b) for _, b in pairs)),
         'n_points': int(f.shape[0]),
     }

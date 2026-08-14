@@ -38,25 +38,37 @@ uv run python -m tests.test_sections   # the potential p, ~30 s
 
 ```bash
 ./scripts/run_cluster.sh                                  # k = 12, 16, 20
-uv run python -u scripts/run_fit.py --k 12 --n-pairs 50000 \
-    --n-train 100000 --seed 20260813 --cond
+uv run python -u scripts/run_fit.py --k 12 --n-train 100000 \
+    --n-eval 8000000 --chunk 200000 --seed 20260813 --cond
 ```
 
 Each fit writes `runs/theta_k<k>_seed<seed>.npy` and a JSON record with every
-reported number. `run_cluster.sh` takes `SEED`, `PAIRS` and `TRAIN`.
+reported number. `run_cluster.sh` takes `SEED`, `TRAIN`, `EVAL` and `CHUNK`.
+
+The fit set and the hold-out set are two independent samples, because they have
+different limits:
+
+* **fit set: memory.** LM materializes `[J; sqrt(λ)I]`, which is
+  `N_fit · n_θ · 8` bytes, and lineax QR needs about 3 copies. A large fit set
+  also buys little, because the excess risk is only `n_θ / N_fit`. Use 1e5 to
+  k = 20, and 5e5 at k ≥ 32.
+* **hold-out set: one forward pass in chunks.** The standard error of
+  `mean abs(f)` is `1/sqrt(N)`, so 8e6 points give 0.035 percent. `max abs(f)`
+  also grows with N.
 
 ## Results so far
 
-`mean abs(f)` on a hold-out set of 8,000 points, against σ from the earlier fits
-of this group, which used a different code and a first-order method:
+`mean abs(f)` on a hold-out set, against σ from the earlier fits of this group,
+which used a different code and a first-order method. The last column is the
+standard error of the reported number.
 
-| k | n_θ | steps | `mean abs(f)` | earlier σ | ratio | `cond(J)` |
-|---|-----|-------|---------------|-----------|-------|-----------|
-| 2 | 2 | 36 | 1.9070e-2 | 1.90e-2 | 1.00 | 1.0 |
-| 4 | 5 | 60 | 1.6713e-3 | 1.68e-3 | 0.99 | 3.1e1 |
-| 6 | 10 | 58 | 1.6250e-4 | 1.60e-4 | 1.02 | 3.7e2 |
-| 8 | 19 | 73 | 1.6278e-5 | 1.69e-5 | 0.96 | 2.3e4 |
-| 10 | 33 | 80 | 1.8202e-6 | 1.85e-6 | 0.98 | 1.9e5 |
+| k | n_θ | steps | `mean abs(f)` | earlier σ | ratio | `cond(J)` | N | ± |
+|---|-----|-------|---------------|-----------|-------|-----------|---|---|
+| 2 | 2 | 36 | 1.9070e-2 | 1.90e-2 | 1.00 | 1.0 | 8e3 | 1.1% |
+| 4 | 5 | 59 | 1.6655e-3 | 1.68e-3 | 0.99 | 3.1e1 | 2e6 | 0.07% |
+| 6 | 10 | 65 | 1.6268e-4 | 1.60e-4 | 1.02 | 3.7e2 | 2e6 | 0.07% |
+| 8 | 19 | 73 | 1.6278e-5 | 1.69e-5 | 0.96 | 2.3e4 | 8e3 | 1.1% |
+| 10 | 33 | 80 | 1.8202e-6 | 1.85e-6 | 0.98 | 1.9e5 | 8e3 | 1.1% |
 
 `h → λh` leaves the metric unchanged, so `J` has one exact null direction.
 `fit.condition_number` drops it before it reports `cond(J)`.
