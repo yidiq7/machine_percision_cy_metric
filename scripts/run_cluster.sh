@@ -16,7 +16,7 @@ SEED=${SEED:-20260813}
 PAIRS=${PAIRS:-50000}      # 4 points per pair, so 2e5 points
 TRAIN=${TRAIN:-100000}
 
-.venv/bin/python -u scripts/run_fit.py \
+uv run python -u scripts/run_fit.py \
     --k 12 16 20 \
     --n-pairs "$PAIRS" \
     --n-train "$TRAIN" \

@@ -16,3 +16,7 @@ MLGeometry/
 SLagSearch/
 draft/
 notes/symmetry_param_counts.py
+
+# pyproject.toml and uv.lock define the environment, so no requirements file
+# must exist. Two sources of versions give two different environments.
+requirements.txt

@@ -1,0 +1,42 @@
+[project]
+name = "machine-percision-cy-metric"
+version = "0.1.0"
+description = "Machine-precision Ricci-flat metric on the Fermat quartic (stage 1, FP64)."
+requires-python = ">=3.12"
+dependencies = [
+    # JAX 0.11 series. Every measurement in CLAUDE.md used 0.11.0, and FP64 needs
+    # jax_enable_x64, so keep the minor line fixed.
+    "jax>=0.11,<0.12",
+    "numpy>=2.0,<3",
+    # Levenberg-Marquardt on the MSPE. optax and jax.scipy.optimize have no LM.
+    # Version 0.1.0 changed `verbose` from a frozenset to a bool, so a major bump
+    # breaks quartic/fit.py.
+    "optimistix>=0.1,<0.2",
+    # L-BFGS, for the final pass on the MAPE.
+    "optax>=0.2.8",
+    # The point sampler, the restriction matrix, OmegaOmegabar and complex_hessian.
+    # Version 2.2.2 holds the FP64 support and the Newton refinement of the points.
+    "MLGeometry-JAX>=2.2.2",
+    # MLGeometry needs flax and matplotlib. quartic/data.py needs sympy.
+    "flax>=0.12",
+    "sympy>=1.13",
+    "matplotlib>=3.10,<4",
+    # Any reference above FP64. longdouble is float64 on arm64, so use mpmath.
+    "mpmath>=1.3",
+]
+
+[project.optional-dependencies]
+# The GPU build of JAX, for the cluster. The cuda12 wheels are Linux only, so the
+# laptop must not install them.
+#   cluster:  uv sync --extra gpu
+#   laptop:   uv sync
+gpu = [
+    "jax[cuda12]>=0.11,<0.12",
+]
+
+[tool.uv]
+# Keep the transitive resolution the same on every machine. uv.lock is committed.
+managed = true
+# The scripts and the tests put the repository root on sys.path, so uv installs
+# the dependencies only and does not build this project.
+package = false

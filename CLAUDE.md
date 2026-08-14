@@ -453,17 +453,27 @@ Two facts that are expensive to rediscover:
 
 * The laptop has **no GPU**. Do small tests only on the laptop.
 * The cluster has **4 A100 GPUs**, and each GPU has 80 GB of memory.
-* Use `uv` for all installations in this project.
-* The virtual environment needs these packages: `jax`, `flax`, `optax`,
-  `optimistix`, `sympy`, `mpmath`, `numpy`, and `matplotlib`. `optimistix` pulls
-  in `equinox`, `lineax`, and `jaxtyping`. Drop `jaxopt`, because `optimistix`
-  supersedes it.
+* **Use `uv` for the environment. `pyproject.toml` and `uv.lock` define it, and
+  the lock is committed.** Do not use `uv pip install` or `uv venv` by hand,
+  because that leaves the lock behind.
+  * cluster: `./scripts/setup.sh`, which runs `uv sync --locked --extra gpu`.
+  * laptop: `NO_GPU=1 ./scripts/setup.sh`, which runs `uv sync --locked`.
+  * Run every command with `uv run python ...`.
+  * To add a package, put it in `pyproject.toml` and then run `uv lock`.
+* The `gpu` extra holds `jax[cuda12]`. Those wheels are Linux only, so the laptop
+  must leave the extra out.
+* The lock pins JAX **0.11.0**, `optimistix` **0.1.0**, `optax` **0.2.8**, `flax`
+  **0.12.8**, and `MLGeometry-JAX` **2.2.2**. Every measurement used these.
+  `optimistix` pulls in `equinox`, `lineax`, and `jaxtyping`. Drop `jaxopt`,
+  because `optimistix` supersedes it.
 * Python 3.12 is necessary. The `pyproject.toml` of MLGeometry requires it, and
   the system Python of the laptop is 3.9.6.
-* `MLGeometry/`: you can copy this code directly. You can also install the
-  package with `uv pip install MLGeometry-JAX`, and then import it.
-* `SLagSearch/`: you can copy this code, or use it directly.
-* The installed version of JAX is **0.11.0**.
+* **MLGeometry comes from PyPI as `MLGeometry-JAX`, and version 2.2.2 is the same
+  as the git HEAD `501c357`.** The repository of this project holds no copy. Do
+  not put the vendored `MLGeometry/` directory on `sys.path`, because then the
+  laptop and the cluster run different code.
+* `SLagSearch/`: you can copy this code, or use it directly. It is not a
+  dependency of stage 1.
 
 ## Conventions
 

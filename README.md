@@ -11,20 +11,24 @@ measurement. Read it first.
 
 ## Install
 
-The point sampler, the restriction matrix and `ΩΩ̄` come from
-[MLGeometry](https://github.com/yidiq7/MLGeometry), which `setup.sh` installs
-from PyPI as `MLGeometry-JAX`. This repository does not contain a copy.
+`uv` manages the environment, and `uv.lock` is committed, so every machine gets
+the same versions. The point sampler, the restriction matrix and `ΩΩ̄` come from
+[MLGeometry](https://github.com/yidiq7/MLGeometry), which the lock pins as
+`MLGeometry-JAX 2.2.2`. This repository does not contain a copy.
 
 ```bash
-./scripts/setup.sh              # GPU build of JAX
-NO_GPU=1 ./scripts/setup.sh     # a machine with no GPU
+./scripts/setup.sh              # cluster: uv sync --locked --extra gpu
+NO_GPU=1 ./scripts/setup.sh     # laptop:  uv sync --locked
 ```
+
+The `gpu` extra holds `jax[cuda12]`. Those wheels are Linux only, so the laptop
+must leave the extra out. `uv sync` makes `.venv`, and `uv run` uses it.
 
 ## Test
 
 ```bash
-.venv/bin/python -m tests.test_blocks     # the symmetry structure, ~10 s
-.venv/bin/python -m tests.test_sections   # the potential p, ~30 s
+uv run python -m tests.test_blocks     # the symmetry structure, ~10 s
+uv run python -m tests.test_sections   # the potential p, ~30 s
 ```
 
 `test_blocks` checks `n_θ` against an independent character-theory count, and
@@ -34,7 +38,7 @@ NO_GPU=1 ./scripts/setup.sh     # a machine with no GPU
 
 ```bash
 ./scripts/run_cluster.sh                                  # k = 12, 16, 20
-.venv/bin/python -u scripts/run_fit.py --k 12 --n-pairs 50000 \
+uv run python -u scripts/run_fit.py --k 12 --n-pairs 50000 \
     --n-train 100000 --seed 20260813 --cond
 ```
 
@@ -69,6 +73,7 @@ of this group, which used a different code and a first-order method:
 | `notes/symmetry_param_counts_s4.py` | the exact count of `n_θ` from character theory |
 | `scripts/` | setup, one fit, and the cluster job |
 | `tests/` | the tests above |
+| `pyproject.toml`, `uv.lock` | the environment; `uv sync --locked` reproduces it |
 
 ## Language
 
