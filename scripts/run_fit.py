@@ -60,10 +60,12 @@ def main():
         rep = metric.report(lay, theta, hold)
         known = KNOWN_SIGMA.get(k)
         ratio = f"{rep['mape'] / known:.2f}" if known else ''
+        flag = '' if stats['converged'] else (
+            ' HIT MAX STEPS' if stats['hit_max_steps'] else f" {stats['message']}")
         print(f"{k:>3} {lay.n_theta:>8} {stats['steps']:>6} {stats['seconds']:>8.1f}s "
               f"{rep['mape']:>13.4e} {known if known else '':>10} {ratio:>7} "
               f"{rep['rms']:>11.3e} {rep['max_abs']:>11.3e} "
-              f"{rep['min_eig']:>11.3e} {rep['min_p']:>10.3e}")
+              f"{rep['min_eig']:>11.3e} {rep['min_p']:>10.3e}{flag}")
 
         record = {'k': k, 'n_theta': lay.n_theta, 'seed': args.seed,
                   'n_pairs': args.n_pairs, 'n_train': n_train,

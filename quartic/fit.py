@@ -32,9 +32,13 @@ def fit(lay, batch, theta0=None, max_steps=200, rtol=1e-15, atol=1e-32,
     start = time.perf_counter()
     sol = optx.least_squares(resid, solver, theta0, max_steps=max_steps,
                              throw=False)
+    steps = int(sol.stats['num_steps'])
+    # RESULTS has no readable name, so compare it and report the step limit too.
     return sol.value, {
-        'steps': int(sol.stats['num_steps']),
-        'result': str(sol.result),
+        'steps': steps,
+        'converged': bool(sol.result == optx.RESULTS.successful),
+        'hit_max_steps': steps >= max_steps,
+        'message': str(optx.RESULTS[sol.result]) or 'successful',
         'seconds': time.perf_counter() - start,
     }
 
