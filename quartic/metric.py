@@ -35,10 +35,29 @@ def metrics_on(lay, theta, batch):
         batch['points'], batch['restriction'])
 
 
-def volumes(lay, theta, batch):
-    """v = det(g|_X) / OmegaOmegabar at every point of the batch."""
-    metrics = metrics_on(lay, theta, batch)
-    return jnp.real(jax.vmap(jnp.linalg.det)(metrics)) / batch['Omega_Omegabar']
+def volumes(lay, theta, batch, chunk=None):
+    """v = det(g|_X) / OmegaOmegabar at every point of the batch.
+
+    With `chunk` set, `lax.map` walks the points in blocks of that size. The
+    intermediates of one block are then free before the next block starts, so
+    the peak memory follows `chunk` and not the number of points. That matters
+    under forward-mode autodiff: the Jacobian nests the points, the 8 real
+    directions of the Hessian, and the n_theta tangents, so one fused pass takes
+    approximately 2.6 MB for each point at k = 12.
+    """
+    if chunk is None:
+        metrics = metrics_on(lay, theta, batch)
+        return jnp.real(jax.vmap(jnp.linalg.det)(metrics)) / batch['Omega_Omegabar']
+
+    mats = sections.prepare(lay, theta)
+
+    def one(args):
+        z, restriction, omega = args
+        metric_at = restricted_metric(lay, mats, z, restriction)
+        return jnp.real(jnp.linalg.det(metric_at)) / omega
+
+    return jax.lax.map(one, (batch['points'], batch['restriction'],
+                             batch['Omega_Omegabar']), batch_size=chunk)
 
 
 def _chunks(n, size):
@@ -48,8 +67,9 @@ def _chunks(n, size):
 def volumes_chunked(lay, theta, batch, chunk=100_000):
     """v at every point, a chunk at a time, so a large hold-out set fits.
 
-    A chunk holds the per-point Hessian intermediates, and those dominate the
-    memory. The result is one array of N doubles, which is 80 MB at N = 1e7.
+    This path takes no derivative, so a Python loop over jitted pieces is enough
+    and it avoids one scan. The result is one array of N doubles, which is 80 MB
+    at N = 1e7.
     """
     n = int(batch['points'].shape[0])
     if n <= chunk:
@@ -68,14 +88,14 @@ def volumes_chunked(lay, theta, batch, chunk=100_000):
               batch['Omega_Omegabar'][s]) for s in _chunks(n, chunk)])
 
 
-def residual(lay, theta, batch):
+def residual(lay, theta, batch, chunk=None):
     """f = v/<v> - 1, with <v> the mass-weighted mean over the batch."""
-    v = volumes(lay, theta, batch)
+    v = volumes(lay, theta, batch, chunk)
     weights = batch['mass'] / jnp.sum(batch['mass'])
     return v / jnp.sum(weights * v) - 1.0
 
 
-def weighted_residual(lay, theta, batch):
+def weighted_residual(lay, theta, batch, chunk=None):
     """sqrt(w) f, so that the sum of squares is exactly the MSPE.
 
     LM differentiates this vector, so the mean stays inside the derivative. The
@@ -83,7 +103,7 @@ def weighted_residual(lay, theta, batch):
     sample mean is not a free parameter of the model.
     """
     weights = batch['mass'] / jnp.sum(batch['mass'])
-    return jnp.sqrt(weights) * residual(lay, theta, batch)
+    return jnp.sqrt(weights) * residual(lay, theta, batch, chunk)
 
 
 def report(lay, theta, batch, chunk=100_000):

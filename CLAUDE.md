@@ -226,11 +226,35 @@ Put the blocks into groups by `m`. The measured pattern is:
 
 Then each group needs one batch matrix-vector product.
 
-The LM Jacobian is the memory limit, and not the normal matrix. `optimistix`
-holds `J` with shape `(N_pts, n_θ)`. At k = 20 with `N_pts = 1e5` that is
-228 MB. At k = 38 with `N_pts = 1e6` it is 190 GB, which does not fit. So
-`optimistix` covers k ≤ 20 directly, and the high-k step needs a measurement of
-`cond(J)` first.
+**The intermediates of the LM Jacobian are the memory limit, and not `J`
+itself.** `J` has shape `(N_pts, n_θ)`, which is only 228 MB at k = 20 with
+`N_pts = 1e5`. But forward-mode autodiff nests three things: the points, the 8
+real directions inside `complex_hessian`, and the `n_θ` tangents. One fused pass
+therefore holds this much for each point:
+
+| k | n_θ | memory for each point | `N_pts = 1e5`, one pass |
+|---|---|---|---|
+| 12 | 56 | 2.58 MB | 258 GB |
+| 16 | 135 | 8.79 MB | 879 GB |
+| 20 | 285 | 31.26 MB | 3,126 GB |
+
+A run at k = 12 with `N_pts = 1e5` failed on an 80 GB A100 for this reason.
+
+**The fix is `lax.map` over the points inside the residual.** One block frees its
+intermediates before the next block starts, so the peak follows the block and
+not `N_pts`. We measured the peak as flat at 0.646 GB for `N_pts` of 2e3, 8e3 and
+2e4 at k = 12 with a block of 250. Only `J` grows. The result changes by 1.3e-16,
+which is the order of the sum and nothing more.
+
+* `metric.volumes(lay, theta, batch, chunk)` puts `lax.map` in that path.
+* `fit.jacobian_memory` reports the peak from the compiled program, with no run.
+* `fit.suggest_chunk` picks the block from a memory budget. `run_fit.py` calls it
+  by default, through `--budget-gb`.
+
+Do **not** use mini-batches for the fit. LM solves `min ‖Jδ + r‖² + λ‖δ‖²`, and a
+mini-batch makes `J` and `r` stochastic. The trust region compares the predicted
+reduction against the true one, so it would then accept or reject a step on
+noise. `lax.map` gives the exact full-batch step instead.
 
 ### Fermat quintic, secondary
 

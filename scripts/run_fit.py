@@ -52,6 +52,12 @@ def main():
     ap.add_argument('--max-steps', type=int, default=200)
     ap.add_argument('--chunk', type=int, default=100_000,
                     help='points per chunk when the hold-out set is evaluated')
+    ap.add_argument('--fit-chunk', type=int, default=None,
+                    help='points per chunk inside the LM Jacobian. The peak '
+                         'memory follows this and not --n-train. The default '
+                         'picks it from --budget-gb.')
+    ap.add_argument('--budget-gb', type=float, default=40.0,
+                    help='device memory for one Jacobian; sets --fit-chunk')
     ap.add_argument('--cond', action='store_true', help='also measure cond(J)')
     ap.add_argument('--out', type=str, default='runs')
     args = ap.parse_args()
@@ -68,7 +74,17 @@ def main():
 
     for k in args.k:
         lay = sections.layout(k)
-        theta, stats = fit.fit(lay, train, max_steps=args.max_steps)
+
+        fit_chunk = args.fit_chunk
+        if fit_chunk is None:
+            fit_chunk, info = fit.suggest_chunk(lay, train, args.budget_gb)
+            print(f"    k={k}: fit chunk {fit_chunk}, predicted peak "
+                  f"{info['predicted_total_gb']:.1f} GB of {args.budget_gb:.0f} GB "
+                  f"({info['gb_per_point_in_chunk'] * 1e3:.2f} MB per point, "
+                  f"J is {info['output_gb']:.2f} GB)")
+
+        theta, stats = fit.fit(lay, train, max_steps=args.max_steps,
+                               chunk=fit_chunk)
         rep = metric.report(lay, theta, hold, chunk=args.chunk)
         known = KNOWN_SIGMA.get(k)
         ratio = f"{rep['mape'] / known:.2f}" if known else ''
@@ -88,7 +104,8 @@ def main():
                                   'bound a supremum',
                   **stats, **rep}
         if args.cond:
-            record['cond'] = fit.condition_number(lay, theta, train)
+            record['cond'] = fit.condition_number(lay, theta, train,
+                                                  chunk=fit_chunk)
             print(f"    cond(J) = {record['cond']['cond']:.3e}, "
                   f"null sigma = {record['cond']['null_sigma']:.3e}, "
                   f"J shape = {record['cond']['shape']}")
