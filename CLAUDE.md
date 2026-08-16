@@ -131,7 +131,12 @@ adds no cancellation. A form such as `⟨η²⟩ − ⟨η⟩²` would cancel. D
 * **Complete:** fits to k = 20 on the quartic, in FP64, with a first-order
   method. See "Convergence rate". **No fit is saved.** `draft/` is not in this
   directory, and no checkpoint file is here.
-* **Not started:** the model above k = 4, and the solver. No code exists.
+* **Complete:** the model, the solver and the analytic Jacobian. The fits at
+  k = 2 to 10 reproduce the earlier sigma values to 4 percent.
+* **Complete:** task 1. The optimizer stopped early, and the rate does not fall.
+  See "Convergence rate".
+* **Not started:** task 2 needs `R = ‖∇f‖_{L²}/‖f‖_{L²}`; the other two ratios
+  are in the table. The compensated accumulator is not written.
 
 ---
 
@@ -143,8 +148,9 @@ and no model above k = 4 exists. So the order is:
 0. **Build the model and the solver.** The model is the section evaluator at
    degree k, with the 64 residue blocks and the S₄-invariant parametrization of
    `h`. The solver is `optimistix.LevenbergMarquardt` on MSPE.
-1. **Test the convergence rate.** Fit k = 12, 16, and 20 with LM. See
-   "Convergence rate". This test decides the target k.
+1. **Test the convergence rate.** Complete. The rate holds at 2.73 to 2.90
+   against the HN prediction of 2.83, so stage 1 needs k = 31 and not 38. See
+   "Convergence rate".
 2. **Measure three ratios** on the fits at k = 12, 16, and 20:
    * `rms(f) / mean abs(f)`.
    * `max abs(f) / rms(f)` on the sample.
@@ -345,17 +351,57 @@ from `draft/atlas_bounds.tex`. The values at k = 16 and k = 20 come from
 | σ | 1.90e-2 | 1.68e-3 | 1.60e-4 | 1.69e-5 | 1.85e-6 | 2.96e-7 | 8.5e-9 | 6.3e-10 |
 | rate | — | 3.37 | 3.24 | 3.08 | 3.02 | 2.50 | 2.43 | 1.92 |
 
-**The rate falls. This is the largest risk in the project.** The HN law
-`E ≈ 8^(−k)` predicts a constant rate of 2.83. Two explanations are possible:
+### Task 1 is done. The optimizer stopped early
 
-* The optimizer stops early. The condition number of the loss surface is large,
-  because the modes at high k are exponentially small. A first-order method in
-  FP64 then stops above the true minimum. In that case a converged GN fit at
-  k = 20 gives approximately 4.5e-11, and stage 1 needs k = 32.
-* The ansatz itself slows down. Then stage 1 needs k = 38, and stage 2 becomes
-  much more expensive.
+The LM fits of 2026-08-16, on 1e5 fit points with an 8e6 hold-out set, give:
 
-**Task 1 decides between the two. Do it first.**
+| k | 12 | 16 | 20 |
+|---|----|----|----|
+| σ, LM | **2.2018e-07** | **3.5096e-09** | **6.3276e-11** |
+| σ, first-order | 2.96e-07 | 8.5e-09 | 6.3e-10 |
+| ratio | 0.74 | 0.41 | **0.10** |
+| standard error | 0.04 % | 0.04 % | 0.04 % |
+| `cond(J)` | 2.24e7 | 2.14e10 | 2.34e13 |
+| `rms(f)/mean abs(f)` | 1.695 | 1.905 | 2.096 |
+| `max abs(f)/rms(f)` | 29.9 | 41.6 | 54.8 |
+| `min λ(φ_{ij̄})` | 1.498 | 1.998 | 2.497 |
+
+**The rate no longer falls.** With the same definition as the table above:
+
+| span | 10 → 12 | 12 → 16 | 16 → 20 |
+|---|---|---|---|
+| first-order | 2.50 | 2.43 | 1.92 |
+| LM | **2.90** | **2.81** | **2.73** |
+
+The HN law predicts 2.83, so the first explanation was the correct one, and the
+ansatz does not slow down. Their own estimate of a converged fit at k = 20 was
+4.5e-11 against the 6.33e-11 we measured. **The largest risk in the project is
+closed.**
+
+The k = 20 fit hit the 200-step limit, so its σ is an upper bound. A lower value
+would raise the 16 → 20 rate, and the small decline that is left can be that.
+
+**Stage 1 needs k ≈ 31, and not 38.** At a rate of 2.73 to 2.83, σ = 1e-15 comes
+at k = 30.6 to 31.0, and k = 32 gives 2.4e-16 to 3.7e-16.
+
+### The binding constraint is now the arithmetic
+
+σ falls below the FP64 floor of "Precision budget" before k = 32:
+
+| k | 24 | 28 | 30 | 32 |
+|---|----|----|----|----|
+| σ predicted | 9.9e-13 | 1.5e-14 | 1.9e-15 | 2.4e-16 |
+
+The floor is approximately 5e-15. So **σ meets it near k = 28, and past that the
+number is round-off and not the ansatz.** The compensated accumulator on `p`,
+`∂p` and `∂∂̄p` therefore decides whether stage 1 reaches 1e-15. It is no longer
+an item for the end of the project.
+
+`cond(J)` grows by 5.65 for each unit of k. It passes `1/ε = 4.5e15` at
+**k = 23**, so `J` is numerically singular in FP64 from k = 24. A large condition
+number costs θ and not the residual, which we measured to `cond(J) = 1e11`. Past
+`1/ε` the QR cannot resolve the smallest directions at all. **Run k = 24 next and
+compare σ against the rate. That test is cheap and it decides the endgame.**
 
 ---
 
