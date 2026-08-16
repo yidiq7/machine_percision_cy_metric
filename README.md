@@ -56,6 +56,26 @@ different limits:
   `mean abs(f)` is `1/sqrt(N)`, so 8e6 points give 0.035 percent. `max abs(f)`
   also grows with N.
 
+## The analytic path, not yet merged
+
+`quartic/analytic.py` gives `φ` from the Gram sums of the holomorphic section
+vector and its 4 derivatives, and `∂v/∂θ` from Jacobi's formula. The present
+`metric.py` and `fit.py` do not use it, so no result changes.
+
+On the laptop CPU the Jacobian became 10 times faster at k = 6 and 110 times
+faster at k = 16, with the same answer to 1.5e-15. A GPU has a different balance
+of arithmetic against bandwidth, so measure it there before you trust it:
+
+```bash
+uv run python -u scripts/bench_analytic.py --k 6 8 12 16 20 \
+    --n-points 20000 --budget-gb 20 --out bench_gpu.json
+uv run python -u scripts/bench_analytic.py --k 8 --fit      # end to end, slower
+```
+
+The script reports the device, the time and the memory of each configuration,
+and how far the analytic result sits from the present one. Each configuration is
+guarded, so an out-of-memory case prints `OOM` and the table continues.
+
 ## Results so far
 
 `mean abs(f)` on a hold-out set, against σ from the earlier fits of this group,
