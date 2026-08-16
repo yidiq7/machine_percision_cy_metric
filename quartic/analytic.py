@@ -18,6 +18,8 @@ agree with `metric` to round-off, and the tests check that.
 """
 from __future__ import annotations
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 
@@ -25,7 +27,8 @@ from . import sections
 
 __all__ = ['section_vectors', 'phi_analytic', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
-           'volume_jacobian', 'residual_jacobian']
+           'volume_and_weights', 'volume_tangent', 'volume_jacobian',
+           'residual_jacobian', 'weighted_residual_fast']
 
 
 def section_vectors(lay, z):
@@ -121,16 +124,20 @@ def weighted_residual_analytic(lay, theta, batch, chunk=None):
     return jnp.sqrt(weights) * residual_analytic(lay, theta, batch, chunk)
 
 
-def volume_jacobian(lay, theta, z, restriction, omega):
-    """v and dv/dtheta at one point, with no tangent for each parameter.
+def volume_and_weights(lay, mats, z, restriction, omega):
+    """v at one point, and the matrix W_r of each block that carries dv.
 
     Jacobi's formula gives dv/dtheta_alpha = v * tr(g^-1 R dphi_alpha R^dag).
     p is linear in theta, so dphi_alpha is linear in the Gram sums of B_alpha.
     The contraction with K = R^dag g^-1 R collapses every index except the block
-    one, so each alpha costs one Frobenius product against a single matrix W_r.
+    one, and what is left is
+
+        dv = v * sum_r tr(dH_r W_r),
+
+    where dH_r is the block matrix of the tangent direction. So one direction
+    costs one Frobenius product for each block, and nothing more.
     """
     sig, dsig = section_vectors(lay, z)
-    mats = sections.prepare(lay, theta)
     p, p_i, p_ij, store = _gram_parts(lay, mats, sig, dsig)
 
     phi = jnp.zeros((4, 4), jnp.complex128)
@@ -144,34 +151,48 @@ def volume_jacobian(lay, theta, z, restriction, omega):
     v = jnp.real(jnp.linalg.det(g)) / omega
     k_mat = jnp.conj(restriction).T @ jnp.linalg.inv(g) @ restriction   # (4, 4)
 
-    # Scalars that multiply the outer products inside W_r.
+    # Scalars and vectors that multiply the outer products inside W_r.
     k_p = jnp.einsum('lk,kl->', k_mat, p_ij)
     k_phi = jnp.einsum('lk,kl->', k_mat, phi)
     coeff = k_p / p ** 2 - 2.0 * k_phi / p
     left = jnp.einsum('kl,k->l', k_mat, jnp.conj(p_i))     # (K^T conj(p))
     right = jnp.einsum('kl,l->k', k_mat, p_i)              # (K p)
 
-    grads = []
-    for g_layout, s, ds in zip(lay.groups, sig, dsig):
-        # W_r assembles every index except the block index, so the parameter
-        # derivative is one Frobenius product against it.
+    weights = []
+    for s, ds in zip(sig, dsig):
         w = coeff * jnp.einsum('bi,bj->bij', s, jnp.conj(s))
         w = w + jnp.einsum('bik,lk,bjl->bij', ds, k_mat, jnp.conj(ds)) / p
         w = w - jnp.einsum('bik,k,bj->bij', ds, left, jnp.conj(s)) / p ** 2
         w = w - jnp.einsum('bi,bjl,l->bij', s, jnp.conj(ds), right) / p ** 2
+        weights.append(v * jnp.real(w))
+    return v, tuple(weights)
+
+
+def volume_tangent(weights, dmats):
+    """dv along one direction, from the block matrices of that direction.
+
+    dH_r is symmetric, so tr(dH_r W_r) is the plain Frobenius product.
+    """
+    return sum(jnp.einsum('bij,bij->', dmat, w)
+               for dmat, w in zip(dmats, weights))
+
+
+def volume_jacobian(lay, theta, z, restriction, omega):
+    """v and the full dv/dtheta at one point. This is the reference for tests."""
+    mats = sections.prepare(lay, theta)
+    v, weights = volume_and_weights(lay, mats, z, restriction, omega)
+
+    out = jnp.zeros((lay.n_theta,), jnp.float64)
+    for g_layout, w in zip(lay.groups, weights):
         rot = jnp.asarray(g_layout.rot)
         # H_r = rot H_rep rot^T, so tr(B_r W) = tr(B_rep rot^T W rot).
         w_orbit = jnp.einsum('bik,bij,bjl->bkl', rot, w, rot)
-        grads.append((g_layout, w_orbit))
-
-    out = jnp.zeros((lay.n_theta,), jnp.float64)
-    for g_layout, w_orbit in grads:
         for local, sl in enumerate(g_layout.slices):
             take = g_layout.orbit_of == local
             summed = jnp.sum(jnp.where(take[:, None, None], w_orbit, 0.0), axis=0)
             basis = jnp.asarray(g_layout.basis[local, :sl.stop - sl.start])
-            out = out.at[sl].add(jnp.real(jnp.einsum('aij,ij->a', basis, summed)))
-    return v, v * out
+            out = out.at[sl].add(jnp.einsum('aij,ij->a', basis, summed))
+    return v, out
 
 
 def residual_jacobian(lay, theta, batch, chunk=None):
@@ -184,3 +205,37 @@ def residual_jacobian(lay, theta, batch, chunk=None):
     if chunk is None:
         return jax.vmap(one)(xs)
     return jax.lax.map(one, xs, batch_size=chunk)
+
+
+@partial(jax.custom_jvp, nondiff_argnums=(0, 2, 3))
+def weighted_residual_fast(lay, theta, batch, chunk):
+    """sqrt(w) f, with a hand-written derivative rule.
+
+    `lineax` materializes the LM operator with `jax.vmap` over the basis of
+    theta. `vmap` only batches an operation whose input carries a batch axis, so
+    the rule below computes v and W once, outside the batch, and only the final
+    Frobenius product runs for each direction.
+    """
+    return weighted_residual_analytic(lay, theta, batch, chunk)
+
+
+@weighted_residual_fast.defjvp
+def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
+    (theta,), (dtheta,) = primals, tangents
+    mats = sections.prepare(lay, theta)
+    dmats = sections.prepare(lay, dtheta)
+
+    def one(args):
+        z, restriction, omega = args
+        v, w = volume_and_weights(lay, mats, z, restriction, omega)
+        return v, volume_tangent(w, dmats)
+
+    xs = (batch['points'], batch['restriction'], batch['Omega_Omegabar'])
+    v, dv = (jax.vmap(one)(xs) if chunk is None
+             else jax.lax.map(one, xs, batch_size=chunk))
+
+    weights = batch['mass'] / jnp.sum(batch['mass'])
+    mean = jnp.sum(weights * v)
+    d_mean = jnp.sum(weights * dv)
+    root = jnp.sqrt(weights)
+    return root * (v / mean - 1.0), root * (dv / mean - v * d_mean / mean ** 2)

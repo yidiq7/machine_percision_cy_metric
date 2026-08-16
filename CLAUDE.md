@@ -413,6 +413,31 @@ from `draft/atlas_bounds.tex`. The values at k = 16 and k = 20 come from
 
 ## Decisions
 
+* **The Jacobian is analytic, and `quartic/analytic.py` holds it.** Nested
+  autodiff pays two factors that the structure does not need:
+  * one residual costs approximately 50 evaluations of `p`, because
+    `complex_hessian` differentiates through an 8-dimensional real split, and
+  * one `jacfwd` costs 1.5 to 1.9 times `n_θ` residuals.
+
+  Instead, `p`, `∂p` and `∂∂̄p` are Gram sums of the holomorphic section vector
+  and its 4 derivatives, and Jacobi's formula plus the contraction with
+  `K = R† g⁻¹ R` reduces `∂v/∂θ_α` to one Frobenius product for each block.
+  Measured on one A100, Jacobian time only:
+
+| k | 6 | 8 | 12 | 16 | 20 |
+|---|---|---|----|----|----|
+| autodiff | 0.070 s | 0.192 s | 0.902 s | 3.405 s | 12.158 s |
+| analytic | 0.005 s | 0.010 s | 0.021 s | 0.047 s | 0.096 s |
+| gain | 14.7x | 19.4x | 42.1x | 72.3x | **126x** |
+| memory | 3.11→0.41 GB | 5.62→0.91 GB | 32.1→1.44 GB | 26.2→0.73 GB | 22.8→0.40 GB |
+
+  `analytic.weighted_residual_fast` carries a `jax.custom_jvp`. `lineax`
+  materializes the LM operator with `jax.vmap` over the basis of θ, and `vmap`
+  only batches an operation whose input carries a batch axis. So `v` and the
+  block matrices `W` come out once, outside the batch, and only the Frobenius
+  product runs for each direction. **`optimistix` therefore keeps its own trust
+  region and convergence tests.** `fit.fit(analytic_jac=False)` gives the old
+  path, and the tests hold the two against each other.
 * **Optimizer: `optimistix.LevenbergMarquardt` on MSPE.** `optax` and
   `jax.scipy.optimize` have no LM. `optimistix` 0.1.0 works with JAX 0.11.0, and
   it has `LevenbergMarquardt`, `IndirectLevenbergMarquardt`, `GaussNewton`,

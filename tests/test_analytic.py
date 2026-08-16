@@ -85,10 +85,41 @@ def test_chunking_does_not_change_the_result():
     print(f"  lax.map changes the residual by {err:.2e}")
 
 
+def test_custom_jvp_matches_autodiff():
+    """`lineax` materializes with vmap, so the rule must survive jacfwd."""
+    from quartic import analytic as an
+    worst = 0.0
+    for k in (4, 8):
+        lay = sections.layout(k)
+        theta = perturbed_theta(lay, k)
+        got = jax.jacfwd(lambda t: an.weighted_residual_fast(lay, t, BATCH, 25))(theta)
+        want = jax.jacfwd(lambda t: metric.weighted_residual(lay, t, BATCH, 25))(theta)
+        worst = max(worst, float(jnp.abs(got - want).max() / jnp.abs(want).max()))
+    assert worst < 1e-12, worst
+    print(f"  jacfwd through the custom rule differs by {worst:.2e}")
+
+
+def test_fit_matches_between_the_two_paths():
+    """The same optimistix solver must land on the same sigma either way."""
+    from quartic import data as qdata, fit as qfit
+    batch = qdata.make(250, 5)
+    for k in (4, 6):
+        lay = sections.layout(k)
+        th_b, _ = qfit.fit(lay, batch, chunk=1000, analytic_jac=False)
+        th_a, _ = qfit.fit(lay, batch, chunk=1000, analytic_jac=True)
+        sig_b = metric.report(lay, th_b, batch)['mape']
+        sig_a = metric.report(lay, th_a, batch)['mape']
+        rel = abs(sig_a / sig_b - 1)
+        assert rel < 1e-8, (k, sig_a, sig_b)
+        print(f"  k={k}: sigma {sig_b:.10e} against {sig_a:.10e}, rel {rel:.2e}")
+
+
 if __name__ == "__main__":
     for fn in (test_phi_matches_complex_hessian, test_residual_matches,
                test_jacobian_matches_jacfwd,
-               test_chunking_does_not_change_the_result):
+               test_chunking_does_not_change_the_result,
+               test_custom_jvp_matches_autodiff,
+               test_fit_matches_between_the_two_paths):
         print(fn.__name__)
         fn()
     print("\nall analytic tests pass")

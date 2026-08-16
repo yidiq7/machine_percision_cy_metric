@@ -56,25 +56,30 @@ different limits:
   `mean abs(f)` is `1/sqrt(N)`, so 8e6 points give 0.035 percent. `max abs(f)`
   also grows with N.
 
-## The analytic path, not yet merged
+## The analytic Jacobian
 
 `quartic/analytic.py` gives `φ` from the Gram sums of the holomorphic section
-vector and its 4 derivatives, and `∂v/∂θ` from Jacobi's formula. The present
-`metric.py` and `fit.py` do not use it, so no result changes.
+vector and its 4 derivatives, and `∂v/∂θ` from Jacobi's formula. **The fit uses
+it by default.** `--autodiff-jac` selects the old nested-autodiff path, and the
+tests hold the two against each other.
 
-On the laptop CPU the Jacobian became 10 times faster at k = 6 and 110 times
-faster at k = 16, with the same answer to 1.5e-15. A GPU has a different balance
-of arithmetic against bandwidth, so measure it there before you trust it:
+Jacobian time on one A100, at 20,000 points:
+
+| k | 6 | 8 | 12 | 16 | 20 |
+|---|---|---|----|----|----|
+| autodiff | 0.070 s | 0.192 s | 0.902 s | 3.405 s | 12.158 s |
+| analytic | 0.005 s | 0.010 s | 0.021 s | 0.047 s | 0.096 s |
+| gain | 14.7x | 19.4x | 42.1x | 72.3x | **126x** |
+| memory | 3.11→0.41 GB | 5.62→0.91 GB | 32.1→1.44 GB | 26.2→0.73 GB | 22.8→0.40 GB |
+
+`optimistix` keeps its own trust region: the residual carries a `jax.custom_jvp`
+whose costly part depends on the primal alone, so `jax.vmap` over the basis of θ
+computes it once. Reproduce the table with:
 
 ```bash
 uv run python -u scripts/bench_analytic.py --k 6 8 12 16 20 \
     --n-points 20000 --budget-gb 20 --out bench_gpu.json
-uv run python -u scripts/bench_analytic.py --k 8 --fit      # end to end, slower
 ```
-
-The script reports the device, the time and the memory of each configuration,
-and how far the analytic result sits from the present one. Each configuration is
-guarded, so an out-of-memory case prints `OOM` and the table continues.
 
 ## Results so far
 
