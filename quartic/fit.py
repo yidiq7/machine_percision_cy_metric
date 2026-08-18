@@ -116,6 +116,66 @@ def jacobian_memory(lay, batch, chunk=2000, theta=None, analytic_jac=True):
     }
 
 
+def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
+             max_steps=200, tries=6):
+    """Fit-set size and block size that keep the whole LM solve in the budget.
+
+    The peak follows `a * N_fit + b * chunk + c`. The `a` term is the surprise:
+    the LM `while_loop` keeps one residual's per-point work alive for every
+    point, and the `lax.map` block does not bound it. Measured at k = 12 it is
+    4554 doubles for each point, which is sigma, dsigma, H sigma, H dsigma and W
+    together, and it grows as `sum_r d_r^2`.
+
+    So a block alone cannot fit a large k. The fit set must shrink as well, and
+    the cost of that is the excess risk `n_theta / N_fit`.
+    """
+    n_points = int(batch['points'].shape[0])
+    if budget_gb is None:
+        budget_gb = 0.45 * device_memory_gb() or 8.0
+
+    def peak(n_fit, chunk):
+        small = {k: v[:n_fit] for k, v in batch.items()}
+        return solve_memory(lay, small, min(chunk, n_fit), max_steps=max_steps,
+                            analytic_jac=analytic_jac)
+
+    # Two point counts at one block, and one more block, give a, b and c.
+    n_lo, n_hi = min(2000, n_points), min(8000, n_points)
+    c_lo, c_hi = min(250, n_lo), min(1000, n_lo)
+    p_lo, p_hi = peak(n_lo, c_lo), peak(n_hi, c_lo)
+    p_chunk = peak(n_lo, c_hi)
+    per_point = max((p_hi - p_lo) / max(n_hi - n_lo, 1), 1e-12)
+    per_chunk = max((p_chunk - p_lo) / max(c_hi - c_lo, 1), 1e-12)
+    fixed = max(p_lo - per_point * n_lo - per_chunk * c_lo, 0.0)
+
+    # A fit set below this carries no information about n_theta parameters, so
+    # a plan that needs one is a failure and not a small answer.
+    floor = min(n_points, max(4 * lay.n_theta, 1000))
+
+    chunk = min(chunk_cap, n_points)
+    n_fit = int((budget_gb - fixed - per_chunk * chunk) / per_point)
+    n_fit = max(floor, min(n_points, n_fit))
+    for _ in range(tries):
+        chunk = min(chunk, n_fit)
+        measured = peak(n_fit, chunk)
+        if measured <= budget_gb or n_fit <= floor:
+            break
+        n_fit = max(floor, int(n_fit * min(0.8, budget_gb / measured)))
+
+    if measured > budget_gb:
+        need = fixed + per_chunk * min(chunk_cap, floor) + per_point * floor
+        raise MemoryError(
+            f"k={lay.k} needs approximately {need:.1f} GB for the smallest "
+            f"useful fit set of {floor} points, and the budget is "
+            f"{budget_gb:.1f} GB on a {device_memory_gb():.1f} GB device. Raise "
+            f"--budget-gb, set XLA_PYTHON_CLIENT_MEM_FRACTION=0.95, or lower k.")
+
+    return n_fit, chunk, {
+        'gb_per_fit_point': per_point, 'gb_per_chunk_point': per_chunk,
+        'fixed_gb': fixed, 'measured_total_gb': measured,
+        'budget_gb': budget_gb, 'excess_risk': lay.n_theta / max(n_fit, 1),
+    }
+
+
 def suggest_chunk(lay, batch, budget_gb=None, probe=256, analytic_jac=True,
                   tries=8, max_steps=200):
     """Largest chunk that keeps the whole LM solve under `budget_gb`.

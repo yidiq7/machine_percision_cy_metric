@@ -82,21 +82,23 @@ def main():
         lay = sections.layout(k)
 
         analytic_jac = not args.autodiff_jac
-        fit_chunk = args.fit_chunk
+        fit_set, fit_chunk = train, args.fit_chunk
         if fit_chunk is None:
-            fit_chunk, info = fit.suggest_chunk(lay, train, args.budget_gb,
-                                                analytic_jac=analytic_jac,
-                                                max_steps=args.max_steps)
-            print(f"    k={k}: fit chunk {fit_chunk}, measured peak "
+            n_fit, fit_chunk, info = fit.plan_fit(
+                lay, train, args.budget_gb, analytic_jac=analytic_jac,
+                max_steps=args.max_steps)
+            fit_set = {key: val[:n_fit] for key, val in train.items()}
+            print(f"    k={k}: fit set {n_fit} of {int(train['points'].shape[0])}, "
+                  f"block {fit_chunk}, measured peak "
                   f"{info['measured_total_gb']:.1f} GB of {info['budget_gb']:.1f} GB "
-                  f"budget on a {fit.device_memory_gb():.1f} GB device "
-                  f"({info['gb_per_point_in_chunk'] * 1e3:.3f} MB per point, "
-                  f"fixed {info['fixed_gb']:.2f} GB)")
+                  f"on a {fit.device_memory_gb():.1f} GB device. "
+                  f"{info['gb_per_fit_point'] * 1e6:.2f} kB for each fit point, "
+                  f"excess risk {info['excess_risk']:.1e}")
 
         if args.dry_run:
             continue
 
-        theta, stats = fit.fit(lay, train, max_steps=args.max_steps,
+        theta, stats = fit.fit(lay, fit_set, max_steps=args.max_steps,
                                chunk=fit_chunk, analytic_jac=analytic_jac)
         rep = metric.report(lay, theta, hold, chunk=args.chunk)
         known = KNOWN_SIGMA.get(k)
@@ -110,14 +112,14 @@ def main():
               f"{rep['min_eig']:>11.3e} {rep['min_p']:>10.3e}{flag}")
 
         record = {'k': k, 'n_theta': lay.n_theta, 'seed': args.seed,
-                  'n_train': int(train['points'].shape[0]),
+                  'n_train': int(fit_set['points'].shape[0]),
                   'normalization': 'sampled mean of v over the hold-out set',
                   'loss': 'MSPE, LM from optimistix',
                   'max_abs_note': 'a lower bound on sup abs(f); a sample cannot '
                                   'bound a supremum',
                   **stats, **rep}
         if args.cond:
-            record['cond'] = fit.condition_number(lay, theta, train,
+            record['cond'] = fit.condition_number(lay, theta, fit_set,
                                                   chunk=fit_chunk,
                                                   analytic_jac=analytic_jac)
             print(f"    cond(J) = {record['cond']['cond']:.3e}, "
