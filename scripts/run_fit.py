@@ -62,6 +62,11 @@ def main():
     ap.add_argument('--autodiff-jac', action='store_true',
                     help='use nested autodiff for the Jacobian; the default is '
                          'the analytic rule, which is much faster above k = 8')
+    ap.add_argument('--rcond', type=float, default=None,
+                    help='rank cutoff for the LM step. None uses QR, which '
+                         'fails once cond(J) passes 1/eps near k = 23. Set it '
+                         'near a tenth of the sigma you expect, because the '
+                         'sigma reached is approximately rcond.')
     ap.add_argument('--dry-run', action='store_true',
                     help='size the block and report the memory, then stop')
     ap.add_argument('--cond', action='store_true', help='also measure cond(J)')
@@ -99,7 +104,8 @@ def main():
             continue
 
         theta, stats = fit.fit(lay, fit_set, max_steps=args.max_steps,
-                               chunk=fit_chunk, analytic_jac=analytic_jac)
+                               chunk=fit_chunk, analytic_jac=analytic_jac,
+                               rcond=args.rcond)
         rep = metric.report(lay, theta, hold, chunk=args.chunk)
         known = KNOWN_SIGMA.get(k)
         ratio = f"{rep['mape'] / known:.2f}" if known else ''

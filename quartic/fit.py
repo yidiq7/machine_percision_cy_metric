@@ -22,12 +22,13 @@ import time
 import jax
 import jax.numpy as jnp
 import numpy as np
+import lineax as lx
 import optimistix as optx
 
 from . import analytic, metric, sections
 
 __all__ = ['residual_fn', 'fit', 'condition_number', 'jacobian_memory',
-           'suggest_chunk']
+           'plan_fit', 'suggest_chunk', 'solve_memory', 'device_memory_gb']
 
 
 def residual_fn(lay, batch, chunk, analytic_jac=True):
@@ -48,13 +49,24 @@ def device_memory_gb():
         return 0.0
 
 
-def _solver(rtol, atol, verbose):
+def _solver(rtol, atol, verbose, rcond=None):
+    """LM, with a rank-revealing step when `rcond` is set.
+
+    cond(J) grows by 5.65 for each unit of k, and it passes 1/eps near k = 23.
+    Past that J is numerically rank deficient, and lineax QR returns a step
+    built from noise: at k = 24 LM stopped at the start point, and at k = 28 it
+    threw theta out of the region where p is positive. `lx.SVD` drops every
+    direction below rcond * sigma_max instead, and those directions carry
+    almost none of the residual.
+    """
+    linear = lx.QR() if rcond is None else lx.SVD(rcond=rcond)
     # optimistix 0.1.0 takes a bool or a callable here, and not a frozenset.
-    return optx.LevenbergMarquardt(rtol=rtol, atol=atol, verbose=verbose)
+    return optx.LevenbergMarquardt(rtol=rtol, atol=atol, verbose=verbose,
+                                   linear_solver=linear)
 
 
 def solve_memory(lay, batch, chunk, theta=None, max_steps=200, rtol=1e-15,
-                 atol=1e-32, analytic_jac=True):
+                 atol=1e-32, analytic_jac=True, rcond=None):
     """Peak memory of the whole LM solve, in GB, from the compiled program.
 
     One Jacobian is not the peak. The same program also holds J, the stacked
@@ -63,7 +75,7 @@ def solve_memory(lay, batch, chunk, theta=None, max_steps=200, rtol=1e-15,
     """
     theta = sections.fubini_study_theta(lay) if theta is None else theta
     residual = residual_fn(lay, batch, chunk, analytic_jac)
-    solver = _solver(rtol, atol, False)
+    solver = _solver(rtol, atol, False, rcond)
 
     def solve(start):
         return optx.least_squares(lambda q, args: residual(q), solver, start,
@@ -74,11 +86,11 @@ def solve_memory(lay, batch, chunk, theta=None, max_steps=200, rtol=1e-15,
 
 
 def fit(lay, batch, theta0=None, max_steps=200, rtol=1e-15, atol=1e-32,
-        chunk=2000, analytic_jac=True, verbose=False):
+        chunk=2000, analytic_jac=True, verbose=False, rcond=None):
     """Minimize the MSPE over theta. Returns the solution and its statistics."""
     theta0 = sections.fubini_study_theta(lay) if theta0 is None else theta0
     residual = residual_fn(lay, batch, chunk, analytic_jac)
-    solver = _solver(rtol, atol, verbose)
+    solver = _solver(rtol, atol, verbose, rcond)
 
     start = time.perf_counter()
     sol = optx.least_squares(lambda theta, args: residual(theta), solver, theta0,
@@ -92,6 +104,7 @@ def fit(lay, batch, theta0=None, max_steps=200, rtol=1e-15, atol=1e-32,
         'message': str(optx.RESULTS[sol.result]) or 'successful',
         'chunk': chunk,
         'analytic_jac': analytic_jac,
+        'rcond': rcond,
         'seconds': time.perf_counter() - start,
     }
 
