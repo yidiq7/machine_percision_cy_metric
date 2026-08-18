@@ -24,14 +24,17 @@ SEED=${SEED:-20260813}
 TRAIN=${TRAIN:-100000}
 EVAL=${EVAL:-8000000}
 CHUNK=${CHUNK:-200000}
-BUDGET=${BUDGET:-40}       # GB for one LM Jacobian; sets the fit block
+BUDGET=${BUDGET:-}       # GB for the whole LM solve; empty means 45 percent of the device
+
+# JAX takes 75 percent of the card by default. This gives back the rest.
+export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.95}
 
 uv run python -u scripts/run_fit.py \
     --k 12 16 20 \
     --n-train "$TRAIN" \
     --n-eval "$EVAL" \
     --chunk "$CHUNK" \
-    --budget-gb "$BUDGET" \
+    ${BUDGET:+--budget-gb "$BUDGET"} \
     --seed "$SEED" \
     --cond \
     --out runs 2>&1 | tee "runs_task1_seed${SEED}.log"

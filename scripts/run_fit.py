@@ -56,11 +56,14 @@ def main():
                     help='points per chunk inside the LM Jacobian. The peak '
                          'memory follows this and not --n-train. The default '
                          'picks it from --budget-gb.')
-    ap.add_argument('--budget-gb', type=float, default=40.0,
-                    help='device memory for one Jacobian; sets --fit-chunk')
+    ap.add_argument('--budget-gb', type=float, default=None,
+                    help='device memory for the whole LM solve; sets '
+                         '--fit-chunk. The default is 45 percent of the device.')
     ap.add_argument('--autodiff-jac', action='store_true',
                     help='use nested autodiff for the Jacobian; the default is '
                          'the analytic rule, which is much faster above k = 8')
+    ap.add_argument('--dry-run', action='store_true',
+                    help='size the block and report the memory, then stop')
     ap.add_argument('--cond', action='store_true', help='also measure cond(J)')
     ap.add_argument('--out', type=str, default='runs')
     args = ap.parse_args()
@@ -82,11 +85,16 @@ def main():
         fit_chunk = args.fit_chunk
         if fit_chunk is None:
             fit_chunk, info = fit.suggest_chunk(lay, train, args.budget_gb,
-                                                analytic_jac=analytic_jac)
-            print(f"    k={k}: fit chunk {fit_chunk}, predicted peak "
-                  f"{info['predicted_total_gb']:.1f} GB of {args.budget_gb:.0f} GB "
-                  f"({info['gb_per_point_in_chunk'] * 1e3:.2f} MB per point, "
-                  f"J is {info['output_gb']:.2f} GB)")
+                                                analytic_jac=analytic_jac,
+                                                max_steps=args.max_steps)
+            print(f"    k={k}: fit chunk {fit_chunk}, measured peak "
+                  f"{info['measured_total_gb']:.1f} GB of {info['budget_gb']:.1f} GB "
+                  f"budget on a {fit.device_memory_gb():.1f} GB device "
+                  f"({info['gb_per_point_in_chunk'] * 1e3:.3f} MB per point, "
+                  f"fixed {info['fixed_gb']:.2f} GB)")
+
+        if args.dry_run:
+            continue
 
         theta, stats = fit.fit(lay, train, max_steps=args.max_steps,
                                chunk=fit_chunk, analytic_jac=analytic_jac)

@@ -37,14 +37,48 @@ def residual_fn(lay, batch, chunk, analytic_jac=True):
     return lambda theta: metric.weighted_residual(lay, theta, batch, chunk)
 
 
+def device_memory_gb():
+    """Memory that JAX can use on device 0. JAX takes 75 percent by default.
+
+    Raise it with XLA_PYTHON_CLIENT_MEM_FRACTION, for example to 0.95.
+    """
+    try:
+        return (jax.devices()[0].memory_stats() or {}).get('bytes_limit', 0) / 1e9
+    except Exception:
+        return 0.0
+
+
+def _solver(rtol, atol, verbose):
+    # optimistix 0.1.0 takes a bool or a callable here, and not a frozenset.
+    return optx.LevenbergMarquardt(rtol=rtol, atol=atol, verbose=verbose)
+
+
+def solve_memory(lay, batch, chunk, theta=None, max_steps=200, rtol=1e-15,
+                 atol=1e-32, analytic_jac=True):
+    """Peak memory of the whole LM solve, in GB, from the compiled program.
+
+    One Jacobian is not the peak. The same program also holds J, the stacked
+    [J; sqrt(lambda) I], the QR of it, and the candidates of the trust region.
+    Sizing against the Jacobian alone under-counts, and the run then fails.
+    """
+    theta = sections.fubini_study_theta(lay) if theta is None else theta
+    residual = residual_fn(lay, batch, chunk, analytic_jac)
+    solver = _solver(rtol, atol, False)
+
+    def solve(start):
+        return optx.least_squares(lambda q, args: residual(q), solver, start,
+                                  max_steps=max_steps, throw=False).value
+
+    info = jax.jit(solve).lower(theta).compile().memory_analysis()
+    return (info.temp_size_in_bytes + info.output_size_in_bytes) / 1e9
+
+
 def fit(lay, batch, theta0=None, max_steps=200, rtol=1e-15, atol=1e-32,
         chunk=2000, analytic_jac=True, verbose=False):
     """Minimize the MSPE over theta. Returns the solution and its statistics."""
     theta0 = sections.fubini_study_theta(lay) if theta0 is None else theta0
     residual = residual_fn(lay, batch, chunk, analytic_jac)
-
-    # optimistix 0.1.0 takes a bool or a callable here, and not a frozenset.
-    solver = optx.LevenbergMarquardt(rtol=rtol, atol=atol, verbose=verbose)
+    solver = _solver(rtol, atol, verbose)
 
     start = time.perf_counter()
     sol = optx.least_squares(lambda theta, args: residual(theta), solver, theta0,
@@ -82,21 +116,38 @@ def jacobian_memory(lay, batch, chunk=2000, theta=None, analytic_jac=True):
     }
 
 
-def suggest_chunk(lay, batch, budget_gb=40.0, probe=500, analytic_jac=True):
-    """Largest chunk that keeps one Jacobian under `budget_gb`.
+def suggest_chunk(lay, batch, budget_gb=None, probe=256, analytic_jac=True,
+                  tries=8, max_steps=200):
+    """Largest chunk that keeps the whole LM solve under `budget_gb`.
 
-    The temporary memory is proportional to the chunk, so one probe gives the
-    constant. Leave head room, because LM also holds [J; sqrt(lambda) I] and the
-    QR needs a few copies of it.
+    Two probes separate the fixed cost from the part that follows the chunk.
+    The prediction is then checked by a compile at the chosen chunk, and the
+    chunk halves until it fits. A compile costs seconds and an out-of-memory
+    run costs the whole job, so the check is worth it.
     """
-    info = jacobian_memory(lay, batch, chunk=probe, analytic_jac=analytic_jac)
     n_points = int(batch['points'].shape[0])
-    per_point = info['gb_per_point_in_chunk']
-    room = budget_gb - info['output_gb']
-    chunk = max(1, min(n_points, int(room / max(per_point, 1e-12))))
-    return chunk, {'gb_per_point_in_chunk': per_point,
-                   'output_gb': info['output_gb'],
-                   'predicted_total_gb': per_point * chunk + info['output_gb']}
+    if budget_gb is None:
+        budget_gb = 0.45 * device_memory_gb() or 8.0
+
+    def peak(size):
+        return solve_memory(lay, batch, min(size, n_points), max_steps=max_steps,
+                            analytic_jac=analytic_jac)
+
+    small, large = min(probe, n_points), min(2 * probe, n_points)
+    peak_small, peak_large = peak(small), peak(large)
+    per_point = max((peak_large - peak_small) / max(large - small, 1), 1e-12)
+    fixed = max(peak_small - per_point * small, 0.0)
+
+    chunk = max(1, min(n_points, int((budget_gb - fixed) / per_point)))
+    for _ in range(tries):
+        measured = peak(chunk)
+        if measured <= budget_gb or chunk == 1:
+            return chunk, {'gb_per_point_in_chunk': per_point,
+                           'fixed_gb': fixed, 'measured_total_gb': measured,
+                           'budget_gb': budget_gb}
+        chunk = max(1, chunk // 2)
+    return chunk, {'gb_per_point_in_chunk': per_point, 'fixed_gb': fixed,
+                   'measured_total_gb': peak(chunk), 'budget_gb': budget_gb}
 
 
 def condition_number(lay, theta, batch, chunk=2000, drop_scale=True,
