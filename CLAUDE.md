@@ -368,10 +368,10 @@ The LM fits of 2026-08-16, on 1e5 fit points with an 8e6 hold-out set, give:
 
 **The rate no longer falls.** With the same definition as the table above:
 
-| span | 10 → 12 | 12 → 16 | 16 → 20 |
-|---|---|---|---|
-| first-order | 2.50 | 2.43 | 1.92 |
-| LM | **2.90** | **2.81** | **2.73** |
+| span | 10 → 12 | 12 → 16 | 16 → 20 | 20 → 24 |
+|---|---|---|---|---|
+| first-order | 2.50 | 2.43 | 1.92 | — |
+| LM | **2.90** | **2.81** | **2.73** | **2.68** |
 
 The HN law predicts 2.83, so the first explanation was the correct one, and the
 ansatz does not slow down. Their own estimate of a converged fit at k = 20 was
@@ -425,9 +425,19 @@ points:
 | 24 | raw | 2 | 9.09e-02 | 9.09e-02 |
 | 24 | **scaled** | 60 | 9.09e-02 | **6.01e-24** |
 
-At k = 24 the scaled run reaches `rms(f) = 2.45e-12` in 60 steps, against the
-2.2e-12 that the rate predicts. **So the rate holds past `1/ε`, and the
-ill-conditioning of `J` does not block the fit.**
+A whole fit at k = 24 then converged in 116 steps, with `cond(J) = 4.71e16`,
+which is 10 times past `1/ε`:
+
+| k | σ | fit points | excess risk | `cond(J)` | `min λ(φ)` | `min p` |
+|---|---|---|---|---|---|---|
+| 20 | 6.4043e-11 | 12,000 | 2.4e-2 | 5.48e13 | 2.541 | 5.93e6 |
+| 24 | **1.2818e-12** | 5,981 | 9.1e-2 | 4.71e16 | 3.049 | 1.76e8 |
+
+**So the rate holds past `1/ε`, and the ill-conditioning of `J` does not block
+the fit.** The rate for 20 → 24 is 2.65, or 2.68 after a correction for the
+excess risk of the small fit set. With 12,000 points the k = 20 fit gave
+6.4043e-11 against the 6.3276e-11 of the 100,000-point run, which is the 1.2
+percent that the excess risk predicts.
 
 `lx.SVD(rcond)` is available through `fit.fit(rcond=...)`, and it is **not**
 necessary. With the scale fixed, plain QR does better: 6.01e-24 against 9.07e-21
