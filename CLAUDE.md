@@ -398,10 +398,45 @@ number is round-off and not the ansatz.** The compensated accumulator on `p`,
 an item for the end of the project.
 
 `cond(J)` grows by 5.65 for each unit of k. It passes `1/ε = 4.5e15` at
-**k = 23**, so `J` is numerically singular in FP64 from k = 24. A large condition
-number costs θ and not the residual, which we measured to `cond(J) = 1e11`. Past
-`1/ε` the QR cannot resolve the smallest directions at all. **Run k = 24 next and
-compare σ against the rate. That test is cheap and it decides the endgame.**
+**k = 23**, so `J` is numerically singular in FP64 from k = 24.
+
+### The parametrization must be scaled
+
+The first fits at k = 24 and k = 28 failed. At k = 24 LM took 2 steps and
+returned the start point. At k = 28 it left the region where `p` is positive,
+with `min p = -3.1e14`. `cond(J) > 1/ε` looked like the cause, and it is not.
+
+**The cause was the scale of θ.** The invariant basis is orthonormal in the
+Frobenius norm, so `θ_FS` carries the multinomial coefficients: its components
+run from 1.8e8 to 5.1e11 at k = 24, and `σ_max(J)` is only 1.1e-7. LM damps with
+`λI` and tests the step in absolute size, and neither is invariant under a
+change of scale. A trust-region step of order 1 was therefore a relative change
+of 1e-11, and the fit did not move.
+
+`sections.layout` now divides θ by `|θ_FS|`, so the fit starts at ±1 and
+`lay.scale` holds the factors. `prepare` applies the scale, so a tangent gets it
+too and the chain rule is automatic. The loss after 60 LM steps, on 2,800
+points:
+
+| k | parametrization | steps | loss at the start | loss at the end |
+|---|---|---|---|---|
+| 20 | raw | 60 | 9.08e-02 | 4.15e-12 |
+| 20 | **scaled** | 60 | 9.08e-02 | **1.71e-20** |
+| 24 | raw | 2 | 9.09e-02 | 9.09e-02 |
+| 24 | **scaled** | 60 | 9.09e-02 | **6.01e-24** |
+
+At k = 24 the scaled run reaches `rms(f) = 2.45e-12` in 60 steps, against the
+2.2e-12 that the rate predicts. **So the rate holds past `1/ε`, and the
+ill-conditioning of `J` does not block the fit.**
+
+`lx.SVD(rcond)` is available through `fit.fit(rcond=...)`, and it is **not**
+necessary. With the scale fixed, plain QR does better: 6.01e-24 against 9.07e-21
+at `rcond = 1e-13`. A cutoff throws away the small directions that carry the
+last digits, and a scan at k = 16 and k = 20 shows that the σ reached is
+approximately `rcond`. Use it only to diagnose.
+
+**Report the scale with `h`.** `lay.scale` is part of the basis convention that
+"Output" asks for.
 
 ---
 

@@ -42,14 +42,24 @@ class Group:
 
 @dataclass(frozen=True)
 class Layout:
-    """Static description of the model at degree k."""
+    """Static description of the model at degree k.
+
+    `scale` reparametrizes theta so that the Fubini-Study point is +/-1 in every
+    component. The raw invariant basis is orthonormal in the Frobenius norm, so
+    theta_FS carries the multinomial coefficients: its components run from 1.8e8
+    to 5.1e11 at k = 24. LM damps with lambda*I and tests the step in absolute
+    size, and neither is invariant under a change of scale, so a trust-region
+    step of order 1 was a relative change of 1e-11 and the fit did not move. The
+    scale is part of the reported convention for h.
+    """
     k: int
     groups: tuple
     n_theta: int
     structure: blocks.Structure
+    scale: np.ndarray
 
 
-def layout(k, struct=None):
+def layout(k, struct=None, normalize=True):
     """Group the blocks of degree k by m, ready for a batch matrix-vector product."""
     struct = struct or blocks.build(k)
     slices = struct.param_slices()
@@ -77,8 +87,15 @@ def layout(k, struct=None):
             basis=basis,
             slices=tuple(slices[o] for o in orbit_ids),
         ))
-    return Layout(k=k, groups=tuple(groups), n_theta=struct.n_theta,
-                  structure=struct)
+    lay = Layout(k=k, groups=tuple(groups), n_theta=struct.n_theta,
+                 structure=struct, scale=np.ones(struct.n_theta))
+    if not normalize:
+        return lay
+    # theta_FS in the raw basis sets the scale, so the fit starts at +/-1.
+    raw = np.asarray(fubini_study_theta(lay))
+    scale = np.where(np.abs(raw) > 0, np.abs(raw), 1.0)
+    return Layout(k=k, groups=lay.groups, n_theta=lay.n_theta,
+                  structure=struct, scale=scale)
 
 
 def _integer_powers(x, top):
@@ -120,9 +137,11 @@ def prepare(lay, theta):
     """H_r for every block, built once for a whole point set.
 
     theta -> H costs O(64 d^3) and does not depend on the point, so it must stay
-    outside the loop over points.
+    outside the loop over points. `lay.scale` enters here, so a tangent gets the
+    same factor and the chain rule of the reparametrization is automatic.
     """
-    return tuple(block_matrices(g, theta) for g in lay.groups)
+    scaled = theta * jnp.asarray(lay.scale)
+    return tuple(block_matrices(g, scaled) for g in lay.groups)
 
 
 def potential_at(lay, mats, z):
@@ -174,7 +193,7 @@ def fubini_study_theta(lay):
         rebuilt = np.einsum('a,aij->ij', coeffs, orb.basis)
         assert np.abs(rebuilt - h_rep).max() < 1e-9 * max(np.abs(h_rep).max(), 1.0)
         theta[sl] = coeffs
-    return jnp.asarray(theta)
+    return jnp.asarray(theta / lay.scale)
 
 
 def batched_log_potential(lay, theta, points):

@@ -192,7 +192,8 @@ def volume_jacobian(lay, theta, z, restriction, omega):
             summed = jnp.sum(jnp.where(take[:, None, None], w_orbit, 0.0), axis=0)
             basis = jnp.asarray(g_layout.basis[local, :sl.stop - sl.start])
             out = out.at[sl].add(jnp.einsum('aij,ij->a', basis, summed))
-    return v, out
+    # The basis is the raw one, so the derivative needs the scale of the layout.
+    return v, out * jnp.asarray(lay.scale)
 
 
 def residual_jacobian(lay, theta, batch, chunk=None):
