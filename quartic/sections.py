@@ -14,7 +14,7 @@ Two rules come from measurements, and both matter below 1e-13:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import factorial
+from math import factorial, prod
 
 import jax
 import jax.numpy as jnp
@@ -185,9 +185,13 @@ def fubini_study_theta(lay):
     theta = np.zeros(lay.n_theta)
     for orb, sl in zip(lay.structure.orbits, lay.structure.param_slices()):
         frame = lay.structure.frames[orb.m]
-        diag = np.array([factorial(k) / np.prod([factorial(int(r + 4 * c))
-                                                 for r, c in zip(orb.rep, e)])
-                         for e in blocks.monomial_exponents(orb.m)])
+        # sum_a A_a = k exactly, so the multinomial is an integer. Keep it in
+        # Python ints: np.prod wraps int64 and gives 3.049e18 for the 5.839e19
+        # of A = (20, 4, 0, 0), which makes p wrong by 95 at k = 28.
+        diag = np.array([
+            float(factorial(k) // prod(factorial(int(r + 4 * c))
+                                       for r, c in zip(orb.rep, e)))
+            for e in blocks.monomial_exponents(orb.m)])
         h_rep = frame.T @ np.diag(diag) @ frame
         coeffs = np.einsum('aij,ij->a', orb.basis, h_rep)
         rebuilt = np.einsum('a,aij->ij', coeffs, orb.basis)

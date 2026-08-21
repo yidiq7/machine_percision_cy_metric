@@ -329,6 +329,15 @@ Both cost many digits. We measured both.
    a factor of 21.8 at k = 32. Use `complex_math.complex_hessian`, or the
    centered Gram form: put `t_i = ∂_i s − (⟨∂_i s, s⟩/p)·s`, and then
    `φ_{ij̄} = ⟨t_i,t_j⟩/p`.
+3. **Keep the multinomial coefficients in Python integers.** `numpy` wraps int64
+   without a warning. For `A = (20, 4, 0, 0)` the coefficient `k!/∏A_a!` is
+   5.839e19, and `np.prod` returns 3.049e18, which is 19 times too small. Every
+   `A_a!` fits in int64, so only the product overflows. The relative error of `p`
+   at `θ_FS` was then 1.5e-5 at k = 24, 0.199 at k = 26 and 95 at k = 28, and at
+   k = 28 `min p` went to −2.5e14 before the fit took one step. `math.prod` with
+   an exact integer division fixes it, and `Σ_a A_a = k` makes the division
+   exact. **Test the model at the largest k you intend to run.** Our test stopped
+   at k = 20 and so it missed this for a long time.
 
 Relative error of φ against an exact reference, worst of 8 random points:
 

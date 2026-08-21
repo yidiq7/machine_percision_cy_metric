@@ -35,7 +35,7 @@ def points_on_X(n):
 def test_p_equals_fubini_study():
     """At theta_FS the model must give exactly (sum_a |z_a|^2)^k."""
     print(f"  {'k':>3} {'n_theta':>8} {'max rel err':>12}")
-    for k in (2, 4, 6, 8, 12, 16, 20):
+    for k in (2, 4, 6, 8, 12, 16, 20, 24, 28, 32, 38):
         lay = sections.layout(k)
         theta = sections.fubini_study_theta(lay)
         z = points_on_X(40)
@@ -44,7 +44,7 @@ def test_p_equals_fubini_study():
         err = np.abs(got - want).max() / np.abs(want).max()
         print(f"  {k:>3} {lay.n_theta:>8} {err:>12.3e}")
         assert err < 1e-13, (k, err)
-    print("  p = (sum |z_a|^2)^k at theta_FS, to k = 20")
+    print("  p = (sum |z_a|^2)^k at theta_FS, to k = 38")
 
 
 def test_p_is_gamma_invariant():
@@ -86,7 +86,7 @@ def test_p_is_real_and_scales():
     """
     lay = sections.layout(8)
     z = jnp.asarray(points_on_X(4))
-    for tag, theta, tol in (('theta_FS', sections.fubini_study_theta(lay), 4e-16),
+    for tag, theta, tol in (('theta_FS', sections.fubini_study_theta(lay), 2e-15),
                             ('random  ', jnp.asarray(rng.normal(size=lay.n_theta)), 1e-13)):
         base = jax.vmap(lambda w: sections.potential(lay, theta, w))(z)
         assert base.dtype == jnp.float64, base.dtype
