@@ -433,9 +433,43 @@ plain monomial basis, where every term of the sum is positive. The real model
 carries the frame and the 64 blocks, and it is 1,000 times worse. Do not
 estimate this floor again; measure it with the oracle.
 
-The frame is not the main cause. `Q` mixes monomials of opposite sign, and the
-measured cancellation of `psi = Q^T psi_full` is only 18 at k = 12 and 133 at
-k = 32, which is about 2 digits.
+### Where the error is born
+
+`scripts/oracle_stages.py` runs any subset of the 5 stages of the evaluation in
+mpmath and the rest in FP64. The stages are:
+
+1. `u = z^4` and the monomials `u^C` of each group,
+2. `psi = Qᵀ psi_full`, the frame of the sections,
+3. `σ = z^r psi` and its 4 holomorphic derivatives,
+4. `H σ`, `H ∂σ`, and the Gram sums `p`, `∂p`, `∂∂̄p`,
+5. the centered form of φ.
+
+Relative error of φ, worst of 6 points:
+
+| k | all FP64 | dd on 4 | dd on 5 | dd on 1-3 | dd on 4+5 | dd on 1-4 |
+|---|---|---|---|---|---|---|
+| 24 | 1.94e-14 | 3.67e-15 | 1.96e-14 | 1.81e-14 | 3.36e-15 | 4.4e-16 |
+| 28 | 6.88e-14 | 3.39e-15 | 6.89e-14 | 2.12e-13 | 3.46e-15 | 2.7e-16 |
+| 32 | 4.44e-13 | **1.06e-14** | 4.43e-13 | 5.10e-13 | 1.06e-14 | **5.1e-16** |
+
+* **Stage 4 carries almost all of it.** dd there alone gives 42 times at k = 32,
+  and it takes the floor on `abs(f)` from 5.1e-12 to approximately 3.4e-14.
+* **Stage 5 gives nothing on its own**, and stages 1 to 3 give nothing on their
+  own. They matter only after stage 4 is fixed.
+* **dd on stages 1 to 4 puts the error of φ at 5e-16, and flat in k.** The floor
+  on `abs(f)` is then approximately 1.6e-15, at every k.
+
+So the fix that "Precision budget" proposes, a two-term accumulator on `p`, `∂p`
+and `∂∂̄p`, **is aimed correctly**, and stage 4 is exactly those sums together
+with the matrix-vector products that make them. But stage 4 alone stops at
+3.4e-14. **To reach 1e-15 the accumulator must cover stages 1 to 4, and stage 5
+as well for a margin.**
+
+A count of cancellation factors does not find this. The sum over the 64 blocks
+cancels by only 1.9 at k = 32, and the frame by 133, so that count points at the
+frame. The cancellation is inside the matrix-vector product `H σ`, which the
+count does not see, because `H` has entries of mixed sign and `σ` spans a large
+dynamic range. Trust the oracle and not the count.
 
 `cond(J)` grows by 5.65 for each unit of k. It passes `1/ε = 4.5e15` at
 **k = 23**, so `J` is numerically singular in FP64 from k = 24.
