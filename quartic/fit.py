@@ -130,7 +130,7 @@ def jacobian_memory(lay, batch, chunk=2000, theta=None, analytic_jac=True):
 
 
 def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
-             max_steps=200, tries=8, min_chunk=64):
+             max_steps=200, tries=8, min_chunk=64, target_risk=5e-3):
     """Fit-set size and block size that keep the whole LM solve in the budget.
 
     The peak follows `a * N_fit + b * chunk + c`. The `a` term is the surprise:
@@ -164,14 +164,17 @@ def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
     # a plan that needs one is a failure and not a small answer.
     floor = min(n_points, max(4 * lay.n_theta, 1000))
 
-    # The fit set decides the science, through the excess risk n_theta/N_fit.
-    # The block only decides the speed. So take the largest fit set that a small
-    # block allows, and then spend what is left of the budget on the block. With
-    # the Gram stage in double-double the block term dominates, and a search
-    # that shrinks only the fit set reports failure where a plan exists.
+    # Enough fit points to bring the excess risk n_theta/N_fit down to
+    # `target_risk`, and no more. Past that the points cost far more than they
+    # buy: at k = 20, 141948 points against 100000 lowered the risk from 2.9e-3
+    # to 2.0e-3, moved sigma by 0.04 percent, and made the run 2.5 times longer,
+    # because the budget went to the fit set and left a block of 64.
+    want = max(floor, int(lay.n_theta / max(target_risk, 1e-9)))
     small = min(min_chunk, n_points)
-    n_fit = int((budget_gb - fixed - per_chunk * small) / per_point)
-    n_fit = max(floor, min(n_points, n_fit))
+    afford = int((budget_gb - fixed - per_chunk * small) / per_point)
+    n_fit = max(floor, min(n_points, want, afford))
+
+    # Everything left goes to the block, which only buys speed.
     chunk = int((budget_gb - fixed - per_point * n_fit) / per_chunk)
     chunk = max(1, min(chunk_cap, n_fit, chunk))
 
@@ -200,6 +203,7 @@ def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
         'gb_per_fit_point': per_point, 'gb_per_chunk_point': per_chunk,
         'fixed_gb': fixed, 'measured_total_gb': measured,
         'budget_gb': budget_gb, 'excess_risk': lay.n_theta / max(n_fit, 1),
+        'target_risk': target_risk, 'n_points_available': n_points,
     }
 
 

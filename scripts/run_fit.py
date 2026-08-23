@@ -62,6 +62,10 @@ def main():
     ap.add_argument('--autodiff-jac', action='store_true',
                     help='use nested autodiff for the Jacobian; the default is '
                          'the analytic rule, which is much faster above k = 8')
+    ap.add_argument('--target-risk', type=float, default=5e-3,
+                    help='excess risk n_theta/N_fit to aim for. The planner '
+                         'takes only as many fit points as this needs and gives '
+                         'the rest of the budget to the block, which buys speed.')
     ap.add_argument('--gram-dd', choices=['off', 'inner', 'on'], default='off',
                     help='precision of the Gram stage. `on` puts the matrix-'
                          'vector products and the inner products in double-'
@@ -102,7 +106,7 @@ def main():
         if fit_chunk is None:
             n_fit, fit_chunk, info = fit.plan_fit(
                 lay, train, args.budget_gb, analytic_jac=analytic_jac,
-                max_steps=args.max_steps)
+                max_steps=args.max_steps, target_risk=args.target_risk)
             fit_set = {key: val[:n_fit] for key, val in train.items()}
             print(f"    k={k}: fit set {n_fit} of {int(train['points'].shape[0])}, "
                   f"block {fit_chunk}, measured peak "

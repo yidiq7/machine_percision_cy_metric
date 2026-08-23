@@ -70,9 +70,13 @@ different limits:
 
 * **fit set: the intermediates of the Jacobian.** `fit.plan_fit` compiles the
   real solve and sizes both the fit set and the `lax.map` block against the
-  budget, then shrinks until the measured peak fits. It refuses any plan below
-  `4 n_θ` points rather than return a fit that carries no information. A large
-  fit set buys little anyway, because the excess risk is only `n_θ / N_fit`.
+  budget. It takes only as many fit points as `--target-risk` needs, which is
+  `n_θ / N_fit` and defaults to 5e-3, and gives the rest of the budget to the
+  block. That order matters: at k = 20 a planner that maximized the fit set took
+  141,948 points, was left with a block of 64, ran 2.5 times longer and moved σ
+  by 0.04 percent. Use `--target-risk 1e-3` for a number you intend to publish.
+  The planner refuses any plan below `4 n_θ` points rather than return a fit that
+  carries no information.
 * **hold-out set: one forward pass in chunks.** The standard error of
   `mean abs(f)` is `1/sqrt(N)`, so 8e6 points give 0.035 percent. `max abs(f)`
   also grows with N, and it is a lower bound on `sup abs(f)`.
@@ -148,6 +152,10 @@ standard error of the reported number.
 | 16 | 135 | 112 | 3.5096e-9 | 8.5e-9 | 0.41 | 2.1e10 | 8e6 | 0.04% |
 | 20 | 285 | 140 | 6.3276e-11 | 6.3e-10 | 0.10 | 2.3e13 | 8e6 | 0.04% |
 | 24 | 542 | 117 | 1.2566e-12 | — | — | 5.4e16 | 8e6 | 0.04% |
+
+Reproduced after the scaling of θ and the multinomial fix, on 8e6 hold-out
+points: 2.1950e-07, 3.5140e-09 and 6.3524e-11 at k = 12, 16 and 20, in 71, 92
+and 106 LM steps against 103, 112 and 140 before.
 
 The rate is 2.81, 2.73 and 2.67 across 12 → 16 → 20 → 24, against the
 Headrick-Nassar prediction of 2.83. k = 28 needs `--gram-dd on`, because in FP64
