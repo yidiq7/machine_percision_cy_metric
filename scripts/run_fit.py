@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import MLGeometry as mlg                                    # noqa: E402
 mlg.set_precision(64)
 
-from quartic import data, fit, metric, sections             # noqa: E402
+from quartic import analytic, data, fit, metric, sections   # noqa: E402
 
 # sigma = mean abs(f) from the earlier fits, for comparison. CLAUDE.md holds them.
 KNOWN_SIGMA = {2: 1.90e-2, 4: 1.68e-3, 6: 1.60e-4, 8: 1.69e-5,
@@ -62,6 +62,11 @@ def main():
     ap.add_argument('--autodiff-jac', action='store_true',
                     help='use nested autodiff for the Jacobian; the default is '
                          'the analytic rule, which is much faster above k = 8')
+    ap.add_argument('--gram-dd', choices=['off', 'inner', 'on'], default='off',
+                    help='precision of the Gram stage. `on` puts the matrix-'
+                         'vector products and the inner products in double-'
+                         'double, which lowers the floor on abs(f) from 3.97e-13'
+                         ' to 1.61e-14 at k = 28 and costs 41 times the time.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -72,6 +77,12 @@ def main():
     ap.add_argument('--cond', action='store_true', help='also measure cond(J)')
     ap.add_argument('--out', type=str, default='runs')
     args = ap.parse_args()
+
+    analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[args.gram_dd]
+    print(f"Gram stage: {args.gram_dd}"
+          + ("  (floor on abs(f) is approximately 1.6e-14 at k = 28)"
+             if args.gram_dd == 'on' else
+             "  (floor on abs(f) is approximately 4.0e-13 at k = 28)"))
 
     train = sample(args.n_train, args.seed, 'fit set     ')
     hold = sample(args.n_eval, args.seed + 1000, 'hold-out set')
@@ -121,6 +132,7 @@ def main():
                   'n_train': int(fit_set['points'].shape[0]),
                   'normalization': 'sampled mean of v over the hold-out set',
                   'loss': 'MSPE, LM from optimistix',
+                  'gram_dd': args.gram_dd,
                   'max_abs_note': 'a lower bound on sup abs(f); a sample cannot '
                                   'bound a supremum',
                   **stats, **rep}

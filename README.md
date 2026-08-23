@@ -28,33 +28,59 @@ must leave the extra out. `uv sync` makes `.venv`, and `uv run` uses it.
 
 ```bash
 uv run python -m tests.test_blocks     # the symmetry structure, ~10 s
-uv run python -m tests.test_sections   # the potential p, ~30 s
+uv run python -m tests.test_sections   # the potential p, ~40 s
+uv run python -m tests.test_dd         # the double-double arithmetic, ~30 s
+uv run python -m tests.test_analytic   # the analytic phi and Jacobian, ~5 min
 ```
 
-`test_blocks` checks `n_θ` against an independent character-theory count, and
-`test_sections` checks that `p = (Σ_a abs(z_a)²)^k` at the Fubini-Study point.
+* `test_blocks` checks `n_θ` against an independent character-theory count.
+* `test_sections` checks that `p = (Σ_a abs(z_a)²)^k` at the Fubini-Study point,
+  to k = 38.
+* `test_dd` checks the error-free transformations against mpmath, **through
+  `jax.jit`**. Keep it that way: the fault it guards against does not appear
+  outside `jax.jit`.
+* `test_analytic` holds the analytic path against nested autodiff, and holds a
+  whole fit against a whole fit.
 
 ## Run
 
 ```bash
-./scripts/run_cluster.sh                                  # k = 12, 16, 20
-uv run python -u scripts/run_fit.py --k 12 --n-train 100000 \
-    --n-eval 8000000 --chunk 200000 --seed 20260813 --cond
+STAGE=dry   ./scripts/run_cluster.sh    # size the blocks, report memory, stop
+STAGE=task1 ./scripts/run_cluster.sh    # k = 12, 16, 20 in FP64
+STAGE=high  ./scripts/run_cluster.sh    # k = 24, 28 with the Gram stage in dd
+```
+
+`STAGE=dry` first: it compiles the real solve and prints the fit-set size, the
+block size and the measured peak, so an out-of-memory run costs seconds and not
+the job. `K=28`, `SEED`, `TRAIN`, `EVAL`, `BUDGET` all override. One fit takes
+about a minute in FP64 at k = 20, and about 45 minutes at k = 28 in dd.
+
+For one degree directly:
+
+```bash
+uv run python -u scripts/run_fit.py --k 28 --n-train 200000 \
+    --n-eval 8000000 --gram-dd on --max-steps 600 --seed 20260813 --cond
 ```
 
 Each fit writes `runs/theta_k<k>_seed<seed>.npy` and a JSON record with every
-reported number. `run_cluster.sh` takes `SEED`, `TRAIN`, `EVAL` and `CHUNK`.
+reported number, including `gram_dd` and the sizes used.
 
 The fit set and the hold-out set are two independent samples, because they have
 different limits:
 
-* **fit set: memory.** LM materializes `[J; sqrt(λ)I]`, which is
-  `N_fit · n_θ · 8` bytes, and lineax QR needs about 3 copies. A large fit set
-  also buys little, because the excess risk is only `n_θ / N_fit`. Use 1e5 to
-  k = 20, and 5e5 at k ≥ 32.
+* **fit set: the intermediates of the Jacobian.** `fit.plan_fit` compiles the
+  real solve and sizes both the fit set and the `lax.map` block against the
+  budget, then shrinks until the measured peak fits. It refuses any plan below
+  `4 n_θ` points rather than return a fit that carries no information. A large
+  fit set buys little anyway, because the excess risk is only `n_θ / N_fit`.
 * **hold-out set: one forward pass in chunks.** The standard error of
   `mean abs(f)` is `1/sqrt(N)`, so 8e6 points give 0.035 percent. `max abs(f)`
-  also grows with N.
+  also grows with N, and it is a lower bound on `sup abs(f)`.
+
+`h → λh` leaves the metric unchanged, and `θ` is scaled so that the Fubini-Study
+point is ±1. Without that scaling `θ_FS` carries the multinomial coefficients,
+which reach 5.1e11 at k = 24, and LM stops after 2 steps because its damping and
+its step test are both absolute.
 
 ## The analytic Jacobian
 
@@ -81,6 +107,30 @@ uv run python -u scripts/bench_analytic.py --k 6 8 12 16 20 \
     --n-points 20000 --budget-gb 20 --out bench_gpu.json
 ```
 
+## Precision
+
+`quartic/dd.py` gives double-double arithmetic, and `--gram-dd on` puts the Gram
+stage of the evaluation in it. `scripts/oracle_precision.py` measures the floor
+under `mean abs(f)` against mpmath at 50 digits, and
+`scripts/oracle_stages.py` says which stage of the evaluation carries the error.
+
+| k | floor, FP64 | floor, `--gram-dd on` |
+|---|---|---|
+| 24 | 6.04e-14 | 4.33e-15 |
+| 28 | 3.97e-13 | **1.61e-14** |
+| 32 | 5.07e-12 | 3.03e-14 |
+
+**Report no σ that sits below the floor.** At k = 28 in FP64 the fit returned
+1.7077e-13 against a floor of 3.97e-13, which means it fitted round-off and the
+number is not a measurement.
+
+The cost of `--gram-dd on` is 41 times the time and 14 times the memory at
+k = 28. The floor still grows with k, by 1.28 for each unit, so the useful limit
+moves from k = 27.1 to k = 28.6. Reaching 1e-15 needs stages 1 to 3 of the
+evaluation in dd as well, and the oracle says those give a floor of 1.6e-15 that
+does not grow. `analytic.section_vectors_closed` is the piece that work needs,
+because `dd.split` carries no derivative.
+
 ## Results so far
 
 `mean abs(f)` on a hold-out set, against σ from the earlier fits of this group,
@@ -94,8 +144,16 @@ standard error of the reported number.
 | 6 | 10 | 65 | 1.6268e-4 | 1.60e-4 | 1.02 | 3.7e2 | 2e6 | 0.07% |
 | 8 | 19 | 73 | 1.6278e-5 | 1.69e-5 | 0.96 | 2.3e4 | 8e3 | 1.1% |
 | 10 | 33 | 80 | 1.8202e-6 | 1.85e-6 | 0.98 | 1.9e5 | 8e3 | 1.1% |
+| 12 | 56 | 103 | 2.2018e-7 | 2.96e-7 | 0.74 | 2.2e7 | 8e6 | 0.04% |
+| 16 | 135 | 112 | 3.5096e-9 | 8.5e-9 | 0.41 | 2.1e10 | 8e6 | 0.04% |
+| 20 | 285 | 140 | 6.3276e-11 | 6.3e-10 | 0.10 | 2.3e13 | 8e6 | 0.04% |
+| 24 | 542 | 117 | 1.2566e-12 | — | — | 5.4e16 | 8e6 | 0.04% |
 
-`h → λh` leaves the metric unchanged, so `J` has one exact null direction.
+The rate is 2.81, 2.73 and 2.67 across 12 → 16 → 20 → 24, against the
+Headrick-Nassar prediction of 2.83. k = 28 needs `--gram-dd on`, because in FP64
+its σ falls below the floor.
+
+`J` has one exact null direction, from the scale of `h`.
 `fit.condition_number` drops it before it reports `cond(J)`.
 
 ## Layout
@@ -106,9 +164,14 @@ standard error of the reported number.
 | `quartic/sections.py` | the potential `p` at degree k, and the Fubini-Study point |
 | `quartic/metric.py` | `v = det(g\|_X)/ΩΩ̄`, the residual `f`, and the reported numbers |
 | `quartic/data.py` | point sets from the MLGeometry sampler, with a seed |
-| `quartic/fit.py` | the LM fit on MSPE, and `cond(J)` |
+| `quartic/analytic.py` | `φ` from Gram sums, `∂v/∂θ` from Jacobi's formula |
+| `quartic/dd.py` | double-double arithmetic that survives the XLA simplifier |
+| `quartic/fit.py` | the LM fit on MSPE, `plan_fit`, and `cond(J)` |
 | `notes/symmetry_param_counts_s4.py` | the exact count of `n_θ` from character theory |
-| `scripts/` | setup, one fit, and the cluster job |
+| `scripts/setup.sh`, `run_cluster.sh`, `run_fit.py` | environment and fits |
+| `scripts/oracle_precision.py` | the floor on `abs(f)`, against mpmath |
+| `scripts/oracle_stages.py` | which stage of the evaluation carries the error |
+| `scripts/bench_analytic.py` | the analytic path against nested autodiff |
 | `tests/` | the tests above |
 | `pyproject.toml`, `uv.lock` | the environment; `uv sync --locked` reproduces it |
 

@@ -25,7 +25,8 @@ import jax.numpy as jnp
 
 from . import dd, sections
 
-__all__ = ['section_vectors', 'phi_analytic', 'volumes_analytic',
+__all__ = ['section_vectors', 'section_vectors_closed', 'phi_analytic',
+           'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
            'volume_and_weights', 'volume_tangent', 'volume_jacobian',
            'residual_jacobian', 'weighted_residual_fast']
@@ -66,6 +67,48 @@ def section_vectors(lay, z):
         return tuple(out)
 
     return sigma(z), jax.jacfwd(sigma, holomorphic=True)(z.astype(jnp.complex128))
+
+
+def section_vectors_closed(lay, z):
+    """The same, with the derivatives in closed form instead of by autodiff.
+
+    With A = r + 4C the section is z^A, so
+
+        d_i (z^r u^C) = (z^r / z_i) (r_i + 4 C_i) u^C,
+
+    and the sum over C of Q_{C alpha} C_i u^C is one more frame projection. So 5
+    projections replace the 4 autodiff tangents.
+
+    This form is what extended precision needs for stages 1 to 3 of the
+    evaluation: `dd.split` uses a bitcast, which carries no derivative, so
+    `jax.jacfwd` cannot pass through it.
+
+    It is **not** the default. It agrees with the autodiff form to 6.3e-16, and
+    it is approximately 30 percent slower, because XLA fuses the 4 tangents
+    better than it fuses the extra projection and the (blocks, d, 4) tensor. So
+    it waits until stages 1 to 3 need it.
+    """
+    z2 = z * z
+    u = z2 * z2
+    sig, dsig = [], []
+    for g in lay.groups:
+        exps = jnp.asarray(g.exps)
+        frame = jnp.asarray(g.frame)
+        mono = sections._monomials(u, exps, g.m)             # (n_monomials,)
+        psi = frame.T @ mono                                 # (d,)
+        # The C_i weighted projection, for each of the 4 directions.
+        psi_i = frame.T @ (exps.astype(mono.dtype) * mono[:, None])   # (d, 4)
+
+        powers = sections._integer_powers(z, 3)              # r_a is 0 to 3
+        res = jnp.asarray(g.residues)
+        weight = jnp.prod(powers[res, jnp.arange(4)], axis=1)         # (n_blocks,)
+
+        sig.append(weight[:, None] * psi[None, :])
+        # (r_i psi + 4 psi_i) * z^r / z_i
+        inner = res[:, None, :].astype(psi.dtype) * psi[None, :, None] \
+            + 4.0 * psi_i[None, :, :]
+        dsig.append(inner * (weight[:, None, None] / z[None, None, :]))
+    return tuple(sig), tuple(dsig)
 
 
 def _matvec_dd(mat, vecs):
