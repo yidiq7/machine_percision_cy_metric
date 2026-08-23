@@ -253,9 +253,18 @@ not `N_pts`. We measured the peak as flat at 0.646 GB for `N_pts` of 2e3, 8e3 an
 which is the order of the sum and nothing more.
 
 * `metric.volumes(lay, theta, batch, chunk)` puts `lax.map` in that path.
-* `fit.jacobian_memory` reports the peak from the compiled program, with no run.
-* `fit.suggest_chunk` picks the block from a memory budget. `run_fit.py` calls it
-  by default, through `--budget-gb`.
+* `fit.solve_memory` lowers the whole `least_squares` and reads the peak from the
+  compiled program. One Jacobian is not the peak, because the same program holds
+  `J`, the stacked `[J; sqrt(λ)I]`, its QR and the candidates of the trust
+  region.
+* `fit.plan_fit` sizes the fit set **and** the block against a budget, from
+  `peak = a·N_fit + b·chunk + c`. **It spends the budget on the fit set first
+  and the block second**, because the fit set sets the excess risk `n_θ/N_fit`
+  and the block only sets the speed. An earlier version shrank only the fit set,
+  and with the Gram stage in dd, where the block term dominates, it reported
+  failure where a plan existed. It refuses any plan below `4 n_θ` points and
+  raises `MemoryError`, because an earlier version answered a small budget with
+  a fit set of 1 point and then reported σ = 0.23 as a result.
 
 Do **not** use mini-batches for the fit. LM solves `min ‖Jδ + r‖² + λ‖δ‖²`, and a
 mini-batch makes `J` and `r` stochastic. The trust region compares the predicted

@@ -130,7 +130,7 @@ def jacobian_memory(lay, batch, chunk=2000, theta=None, analytic_jac=True):
 
 
 def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
-             max_steps=200, tries=6):
+             max_steps=200, tries=8, min_chunk=64):
     """Fit-set size and block size that keep the whole LM solve in the budget.
 
     The peak follows `a * N_fit + b * chunk + c`. The `a` term is the surprise:
@@ -164,23 +164,37 @@ def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
     # a plan that needs one is a failure and not a small answer.
     floor = min(n_points, max(4 * lay.n_theta, 1000))
 
-    chunk = min(chunk_cap, n_points)
-    n_fit = int((budget_gb - fixed - per_chunk * chunk) / per_point)
+    # The fit set decides the science, through the excess risk n_theta/N_fit.
+    # The block only decides the speed. So take the largest fit set that a small
+    # block allows, and then spend what is left of the budget on the block. With
+    # the Gram stage in double-double the block term dominates, and a search
+    # that shrinks only the fit set reports failure where a plan exists.
+    small = min(min_chunk, n_points)
+    n_fit = int((budget_gb - fixed - per_chunk * small) / per_point)
     n_fit = max(floor, min(n_points, n_fit))
+    chunk = int((budget_gb - fixed - per_point * n_fit) / per_chunk)
+    chunk = max(1, min(chunk_cap, n_fit, chunk))
+
+    measured = peak(n_fit, chunk)
     for _ in range(tries):
-        chunk = min(chunk, n_fit)
-        measured = peak(n_fit, chunk)
-        if measured <= budget_gb or n_fit <= floor:
+        if measured <= budget_gb:
             break
-        n_fit = max(floor, int(n_fit * min(0.8, budget_gb / measured)))
+        if chunk > 1:
+            chunk = max(1, chunk // 4)          # time before information
+        elif n_fit > floor:
+            n_fit = max(floor, int(n_fit * min(0.8, budget_gb / measured)))
+        else:
+            break
+        measured = peak(n_fit, chunk)
 
     if measured > budget_gb:
-        need = fixed + per_chunk * min(chunk_cap, floor) + per_point * floor
+        need = fixed + per_chunk + per_point * floor
         raise MemoryError(
             f"k={lay.k} needs approximately {need:.1f} GB for the smallest "
-            f"useful fit set of {floor} points, and the budget is "
-            f"{budget_gb:.1f} GB on a {device_memory_gb():.1f} GB device. Raise "
-            f"--budget-gb, set XLA_PYTHON_CLIENT_MEM_FRACTION=0.95, or lower k.")
+            f"useful fit set of {floor} points with a block of 1, and the budget "
+            f"is {budget_gb:.1f} GB on a {device_memory_gb():.1f} GB device. "
+            f"Raise --budget-gb, set XLA_PYTHON_CLIENT_MEM_FRACTION=0.95, turn "
+            f"--gram-dd off, or lower k.")
 
     return n_fit, chunk, {
         'gb_per_fit_point': per_point, 'gb_per_chunk_point': per_chunk,
