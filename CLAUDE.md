@@ -377,10 +377,12 @@ The LM fits of 2026-08-16, on 1e5 fit points with an 8e6 hold-out set, give:
 
 **The rate no longer falls.** With the same definition as the table above:
 
-| span | 10 → 12 | 12 → 16 | 16 → 20 | 20 → 24 |
-|---|---|---|---|---|
-| first-order | 2.50 | 2.43 | 1.92 | — |
-| LM | **2.90** | **2.81** | **2.73** | **2.68** |
+| span | 10 → 12 | 12 → 16 | 16 → 20 | 20 → 24 | 24 → 28 |
+|---|---|---|---|---|---|
+| first-order | 2.50 | 2.43 | 1.92 | — | — |
+| LM | **2.90** | **2.81** | **2.73** | **2.67** | 1.65, not real |
+
+The last column is below the FP64 floor. See "The binding constraint".
 
 The HN law predicts 2.83, so the first explanation was the correct one, and the
 ansatz does not slow down. Their own estimate of a converged fit at k = 20 was
@@ -393,18 +395,47 @@ would raise the 16 → 20 rate, and the small decline that is left can be that.
 **Stage 1 needs k ≈ 31, and not 38.** At a rate of 2.73 to 2.83, σ = 1e-15 comes
 at k = 30.6 to 31.0, and k = 32 gives 2.4e-16 to 3.7e-16.
 
-### The binding constraint is now the arithmetic
+### The binding constraint is the arithmetic, and FP64 stops at k = 27
 
-σ falls below the FP64 floor of "Precision budget" before k = 32:
+`scripts/oracle_precision.py` measures the FP64 error of the evaluation against
+mpmath at 50 digits. The block matrices `H_r` go in as exact input, so the test
+covers what the per-point path does: the monomials of `u`, the frame of the
+sections, the Gram sums, and the centered form of φ. The relative error of `v`
+is the floor under `mean abs(f)`.
 
-| k | 24 | 28 | 30 | 32 |
-|---|----|----|----|----|
-| σ predicted | 9.9e-13 | 1.5e-14 | 1.9e-15 | 2.4e-16 |
+| k | 12 | 20 | 24 | 28 | 32 |
+|---|----|----|----|----|----|
+| error of φ | 6.2e-16 | 3.2e-15 | 2.4e-14 | 9.9e-14 | 1.6e-12 |
+| **floor on `abs(f)`** | <1e-16 | **4.4e-15** | **6.0e-14** | **4.0e-13** | **5.1e-12** |
+| σ measured | 2.2018e-07 | 6.3276e-11 | 1.2566e-12 | 1.7077e-13 | — |
+| σ over the floor | huge | 14,391 | **20.8** | **0.43** | — |
 
-The floor is approximately 5e-15. So **σ meets it near k = 28, and past that the
-number is round-off and not the ansatz.** The compensated accumulator on `p`,
-`∂p` and `∂∂̄p` therefore decides whether stage 1 reaches 1e-15. It is no longer
-an item for the end of the project.
+The floor grows by 1.80 for each unit of k, and σ falls by 2.66, so the ratio
+falls by 2.64 for each unit of k. **It reaches 1 at k = 27.1, with the floor at
+2.6e-13.**
+
+Three conclusions follow:
+
+* **σ at k = 20 and k = 24 is real.** It sits 14,391 and 20.8 times above the
+  floor, so the rates 2.81, 2.73 and 2.67 stand.
+* **σ at k = 28 is not a measurement.** 1.7077e-13 is below the floor of
+  3.969e-13, so the optimizer drove its own computed residual under the error of
+  the arithmetic. The apparent fall of the rate to 1.65 across 20 → 28 is that
+  artifact. **The ansatz does not slow down.**
+* **Plain FP64 cannot reach 1e-15.** It stops near σ = 4e-13 at k = 27, which is
+  400 times short. At the rate of 2.67, σ = 1e-15 comes at k = 31.3, and the
+  floor there is above 1e-11.
+
+**Therefore the compensated accumulator is the whole of the remaining work for
+stage 1, and it is needed from k = 24 and not from k = 28.** An earlier estimate
+of the floor gave 5e-15 at k = 32. That measurement used a diagonal `h` in the
+plain monomial basis, where every term of the sum is positive. The real model
+carries the frame and the 64 blocks, and it is 1,000 times worse. Do not
+estimate this floor again; measure it with the oracle.
+
+The frame is not the main cause. `Q` mixes monomials of opposite sign, and the
+measured cancellation of `psi = Q^T psi_full` is only 18 at k = 12 and 133 at
+k = 32, which is about 2 digits.
 
 `cond(J)` grows by 5.65 for each unit of k. It passes `1/ε = 4.5e15` at
 **k = 23**, so `J` is numerically singular in FP64 from k = 24.
