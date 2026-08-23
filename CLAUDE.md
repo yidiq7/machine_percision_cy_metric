@@ -465,6 +465,46 @@ with the matrix-vector products that make them. But stage 4 alone stops at
 3.4e-14. **To reach 1e-15 the accumulator must cover stages 1 to 4, and stage 5
 as well for a margin.**
 
+### Stage 4 is done. `analytic.GRAM_DD` selects it
+
+`quartic/dd.py` holds the arithmetic and `analytic._gram_parts` uses it. Measured
+against the oracle, and the gain matches what the staged test predicted:
+
+| k | φ error, FP64 | φ error, dd | floor on `abs(f)`, FP64 | floor, dd |
+|---|---|---|---|---|
+| 24 | 2.37e-14 | 8.79e-16 | 6.04e-14 | **4.33e-15** |
+| 28 | 9.93e-14 | 3.24e-15 | 3.97e-13 | **1.61e-14** |
+| 32 | 1.56e-12 | 1.04e-14 | 5.07e-12 | **3.03e-14** |
+
+**The cost is 41 times at k = 28, and not the 3 to 4 flops for each MAC that
+"Precision budget" estimates.** Correct that line. dd gives up the
+matrix-vector product: FP64 calls one matmul kernel, and dd must broadcast and
+reduce by hand.
+
+| k | Jacobian, FP64 | Jacobian, dd | memory, FP64 | memory, dd |
+|---|---|---|---|---|
+| 20 | 0.54 s | 30.1 s | 0.12 GB | 2.70 GB |
+| 28 | 2.66 s | 109.5 s | 0.60 GB | 8.21 GB |
+
+`GRAM_DD = 'inner'` puts only the inner products in dd. That is enough at k = 20,
+where it matches full dd at 1.47e-15 for a sixth of the cost, and it is **not**
+enough higher up: at k = 28 it gives 3.03e-14 against 3.24e-15. The
+matrix-vector products carry the error exactly where it matters.
+
+**Two traps in the arithmetic, both measured.** See "Notes for stage 2" for the
+XLA simplifier. The second is the size of the program: a Python loop over the
+groups, the 4 derivative directions and the 4 partial products made the graph 48
+times the FP64 one, and XLA took 79 s to compile k = 6 and 339 s to compile
+k = 8. One reduction tree shared by all 10 columns brings that to 13 s and 63 s
+at k = 6 and k = 20, with the graph 11 to 15 times the FP64 one.
+
+**What stage 4 buys.** The floor still grows with k, by 1.28 for each unit, while
+σ falls by 2.67. The ratio σ over the floor is 290 at k = 24 and 1.5 at k = 28,
+so it reaches 1 near **k = 28.6**. Stage 4 therefore moves the useful limit from
+k = 27.1 to k = 28.6, and σ there is approximately 2e-14. **k = 28 becomes a real
+measurement, and 1e-15 still needs stages 1 to 3.** The oracle says those give a
+floor of 1.6e-15 that does not grow with k.
+
 A count of cancellation factors does not find this. The sum over the 64 blocks
 cancels by only 1.9 at k = 32, and the frame by 133, so that count points at the
 frame. The cancellation is inside the matrix-vector product `H σ`, which the

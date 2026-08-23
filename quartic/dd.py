@@ -29,8 +29,8 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-__all__ = ['split', 'two_sum', 'quick_two_sum', 'add', 'sum_dd', 'dot',
-           'dot_dd_fp', 'mul_dd_fp', 'to_dd', 'to_fp']
+__all__ = ['split', 'two_sum', 'quick_two_sum', 'add', 'sum_dd', 'sum_fp',
+           'dot', 'dot_dd_fp', 'mul_dd_fp', 'to_dd', 'to_fp']
 
 # Keeps the top 26 mantissa bits, so a product of two high parts is exact.
 _LOW27 = jnp.int64(~((1 << 27) - 1))
@@ -53,17 +53,20 @@ def split(a):
     return hi, a - hi
 
 
-def _partials(a, b, axis):
-    """The partial products of a * b, stacked along `axis`.
+def _partials(a, b):
+    """The partial products of a * b, as 4 separate arrays.
 
     Three of the four are exact in FP64. The fourth, lo times lo, can round, and
     it is smaller than the result by 2^-54, so its error sits below the precision
     that a pair of FP64 values can hold anyway.
+
+    They stay separate on purpose. Stacking them along the reduction axis would
+    make a tensor 4 times the size of the FP64 one, and the matrix-vector
+    products of the model are already the largest arrays in the step.
     """
     a_hi, a_lo = split(a)
     b_hi, b_lo = split(b)
-    return jnp.concatenate([a_hi * b_hi, a_hi * b_lo, a_lo * b_hi, a_lo * b_lo],
-                           axis=axis)
+    return (a_hi * b_hi, a_hi * b_lo, a_lo * b_hi, a_lo * b_lo)
 
 
 def two_sum(a, b):
@@ -115,10 +118,43 @@ def sum_dd(hi, lo, axis=-1):
     return hi[..., 0], lo[..., 0]
 
 
+def sum_fp(x, axis=-1):
+    """Sum FP64 values along `axis`, in double-double.
+
+    The first level pairs the input with `two_sum`, so no array of zeros is ever
+    made for the low parts.
+    """
+    x = jnp.moveaxis(x, axis, -1)
+    n = x.shape[-1]
+    if n == 1:
+        return x[..., 0], jnp.zeros_like(x[..., 0])
+    half = (n + 1) // 2
+    if n % 2:
+        x = jnp.concatenate([x, jnp.zeros_like(x[..., :1])], axis=-1)
+    hi, lo = two_sum(x[..., :half], x[..., half:])
+    n = half
+    while n > 1:
+        half = (n + 1) // 2
+        if n % 2:
+            hi = jnp.concatenate([hi, jnp.zeros_like(hi[..., :1])], axis=-1)
+            lo = jnp.concatenate([lo, jnp.zeros_like(lo[..., :1])], axis=-1)
+        hi, lo = add((hi[..., :half], lo[..., :half]),
+                     (hi[..., half:], lo[..., half:]))
+        n = half
+    return hi[..., 0], lo[..., 0]
+
+
 def dot(a, b, axis=-1):
-    """Sum of a * b over `axis`, for FP64 arrays, in double-double."""
-    parts = _partials(a, b, axis)
-    return sum_dd(parts, jnp.zeros_like(parts), axis=axis)
+    """Sum of a * b over `axis`, for FP64 arrays, in double-double.
+
+    Each partial product is reduced on its own and the 4 results are added, so
+    the peak memory stays at the size of one FP64 term.
+    """
+    acc = None
+    for term in _partials(a, b):
+        piece = sum_fp(term, axis=axis)
+        acc = piece if acc is None else add(acc, piece)
+    return acc
 
 
 def mul_dd_fp(x, b):
@@ -127,20 +163,19 @@ def mul_dd_fp(x, b):
     The last term, lo times b, is the only one that rounds, and it is smaller
     than the result by 2^-53.
     """
-    hi_hi, hi_lo = split(x[0])
-    b_hi, b_lo = split(b)
-    terms = jnp.stack([hi_hi * b_hi, hi_hi * b_lo, hi_lo * b_hi, hi_lo * b_lo,
-                       x[1] * b], axis=-1)
-    return sum_dd(terms, jnp.zeros_like(terms), axis=-1)
+    acc = to_dd(x[1] * b)
+    for term in _partials(x[0], b):
+        acc = add(acc, to_dd(term))
+    return acc
 
 
 def dot_dd_fp(x, b, axis=-1):
     """Sum of x * b over `axis`, where x is double-double and b is FP64."""
-    hi_hi, hi_lo = split(x[0])
-    b_hi, b_lo = split(b)
-    terms = jnp.concatenate([hi_hi * b_hi, hi_hi * b_lo, hi_lo * b_hi,
-                             hi_lo * b_lo, x[1] * b], axis=axis)
-    return sum_dd(terms, jnp.zeros_like(terms), axis=axis)
+    acc = None
+    for term in _partials(x[0], b) + (x[1] * b,):
+        piece = sum_fp(term, axis=axis)
+        acc = piece if acc is None else add(acc, piece)
+    return acc
 
 
 def to_dd(x):

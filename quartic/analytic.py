@@ -23,12 +23,26 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from . import sections
+from . import dd, sections
 
 __all__ = ['section_vectors', 'phi_analytic', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
            'volume_and_weights', 'volume_tangent', 'volume_jacobian',
            'residual_jacobian', 'weighted_residual_fast']
+
+# Stage 4 of the evaluation, the Gram stage, in double-double. The oracle in
+# scripts/oracle_stages.py measured it as the source of almost all of the FP64
+# error: 4.4e-13 at k = 32, against 1.1e-14 with this stage exact.
+#
+#   False    everything in FP64
+#   'inner'  the inner products in dd, and the matrix-vector products in FP64
+#   True     both in dd
+#
+# 'inner' exists because dd gives up the matrix-vector product: FP64 uses one
+# matmul kernel, and dd has to broadcast and reduce by hand. That made the whole
+# Jacobian 91 times slower at k = 20. The inner products run over (blocks, d)
+# and not (blocks, d, d), so they cost far less.
+GRAM_DD = True
 
 
 def section_vectors(lay, z):
@@ -54,12 +68,99 @@ def section_vectors(lay, z):
     return sigma(z), jax.jacfwd(sigma, holomorphic=True)(z.astype(jnp.complex128))
 
 
+def _matvec_dd(mat, vecs):
+    """H @ vecs, in double-double, for every column of `vecs` at once.
+
+    `mat` is (blocks, d, d) and real, `vecs` is (blocks, d, c) and real. The
+    reduction runs over the middle axis of `vecs`.
+
+    Every column shares one reduction tree. That matters for the size of the
+    program and not for the arithmetic: a Python loop over the columns, over the
+    4 derivative directions and over the real and imaginary parts made the graph
+    48 times the FP64 one, and XLA then took 79 s to compile k = 6 and 339 s to
+    compile k = 8, against 0.5 s and 0.7 s for FP64.
+    """
+    a_hi, a_lo = dd.split(mat[..., None])            # (blocks, d, d, 1)
+    v_hi, v_lo = dd.split(vecs[:, None, :, :])       # (blocks, 1, d, c)
+    acc = None
+    for term in (a_hi * v_hi, a_hi * v_lo, a_lo * v_hi, a_lo * v_lo):
+        piece = dd.sum_fp(term, axis=-2)
+        acc = piece if acc is None else dd.add(acc, piece)
+    return acc                                        # (blocks, d, c) as dd
+
+
+def _inner_dd(u, v, axes):
+    """sum of u * v over `axes`, in double-double, for every column at once.
+
+    u is FP64 and v is double-double, which is the case that the Gram sums need.
+    One tree serves every column, for the same reason as in `_matvec_dd`.
+    """
+    acc = None
+    for term in dd._partials(v[0], u) + (v[1] * u,):
+        flat = jnp.reshape(term, (-1,) + term.shape[len(axes):])
+        piece = dd.sum_fp(flat, axis=0)
+        acc = piece if acc is None else dd.add(acc, piece)
+    return acc
+
+
 def _gram_parts(lay, mats, sig, dsig):
     """p, dp and ddbar-p, from the Gram sums over every block.
 
     `H sigma` and the four `H dsigma_i` are the only matrix-vector products, so
     one point costs 5 of them for each block, in place of approximately 50.
+
+    With `GRAM_DD` the products and the sums run in double-double. That is stage
+    4 of `scripts/oracle_stages.py`, which carries almost all of the FP64 error.
+    The results round back to FP64 on the way out, which is what the oracle
+    measured: the centered form of phi does not need the extra digits.
     """
+    if not GRAM_DD:
+        return _gram_parts_fp(lay, mats, sig, dsig)
+    matvec_dd = GRAM_DD != 'inner'
+
+    p = dd.to_dd(jnp.zeros(()))
+    p_i_re = dd.to_dd(jnp.zeros((4,)))
+    p_i_im = dd.to_dd(jnp.zeros((4,)))
+    p_ij = jnp.zeros((4, 4), jnp.complex128)
+    store = []
+
+    for mat, s, ds in zip(mats, sig, dsig):
+        # sigma and its 4 derivatives, real and imaginary, as 10 columns.
+        cols = jnp.concatenate([s[..., None], ds], axis=-1)          # (b, d, 5)
+        stack = jnp.concatenate([jnp.real(cols), jnp.imag(cols)], axis=-1)
+        if matvec_dd:
+            out = _matvec_dd(mat, stack)                               # (b, d, 10)
+        else:
+            plain = jnp.einsum('bij,bjc->bic', mat, stack)
+            out = dd.to_dd(plain)
+        h_re = (out[0][..., :5], out[1][..., :5])
+        h_im = (out[0][..., 5:], out[1][..., 5:])
+
+        # conj(sigma) against each column, so p is column 0 and dp is 1 to 4.
+        s_re = jnp.real(s)[..., None]
+        s_im = jnp.imag(s)[..., None]
+        rr = _inner_dd(s_re, h_re, (0, 1))
+        ii = _inner_dd(s_im, h_im, (0, 1))
+        ri = _inner_dd(s_re, h_im, (0, 1))
+        ir = _inner_dd(s_im, h_re, (0, 1))
+        real_part = dd.add(rr, ii)
+        imag_part = dd.add(ri, (-ir[0], -ir[1]))
+
+        p = dd.add(p, (real_part[0][0], real_part[1][0]))
+        p_i_re = dd.add(p_i_re, (real_part[0][1:], real_part[1][1:]))
+        p_i_im = dd.add(p_i_im, (imag_part[0][1:], imag_part[1][1:]))
+
+        h_s = dd.to_fp(h_re)[..., 0] + 1j * dd.to_fp(h_im)[..., 0]
+        h_d_fp = dd.to_fp(h_re)[..., 1:] + 1j * dd.to_fp(h_im)[..., 1:]
+        # Entry [i, j] is d_i d_jbar p, so the conjugated index comes second.
+        p_ij = p_ij + jnp.einsum('bil,bik->kl', jnp.conj(ds), h_d_fp)
+        store.append((h_s, h_d_fp))
+
+    return (dd.to_fp(p), dd.to_fp(p_i_re) + 1j * dd.to_fp(p_i_im), p_ij, store)
+
+
+def _gram_parts_fp(lay, mats, sig, dsig):
+    """The same in plain FP64, kept so the two can be held against each other."""
     p = jnp.zeros((), jnp.float64)
     p_i = jnp.zeros((4,), jnp.complex128)
     p_ij = jnp.zeros((4, 4), jnp.complex128)
@@ -70,7 +171,6 @@ def _gram_parts(lay, mats, sig, dsig):
         h_d = jnp.einsum('bij,bjk->bik', mat, ds)            # (n_blocks, d, 4)
         p = p + jnp.real(jnp.einsum('bi,bi->', jnp.conj(s), h_s))
         p_i = p_i + jnp.einsum('bi,bik->k', jnp.conj(s), h_d)
-        # Entry [i, j] is d_i d_jbar p, so the conjugated index comes second.
         p_ij = p_ij + jnp.einsum('bil,bik->kl', jnp.conj(ds), h_d)
         store.append((h_s, h_d))
     return p, p_i, p_ij, store
