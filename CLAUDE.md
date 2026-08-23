@@ -678,8 +678,19 @@ not depend on θ, and the true gradient has no term from it. Do not "repair" thi
 Two facts that are expensive to rediscover:
 
 * The algebraic simplifier of XLA can change `(a+b)-a` to `b`. That change
-  destroys the error-free transformations of dd. Use
-  `jax.lax.optimization_barrier`, and test this danger early.
+  destroys the error-free transformations of dd. **`optimization_barrier` is not
+  enough.** We measured this on a dot product that cancels by 7.9e16. A product
+  from Veltkamp splitting gave a relative error of 1.1e-32 outside `jax.jit` and
+  9.2e-17 inside it, with barriers on every intermediate, on every returned pair,
+  and at every level of the reduction. The composition also came out correct as
+  soon as the intermediates escaped as outputs, which makes it a fault that only
+  appears when nothing observes it.
+  * **The cure is to remove the identity, and not to fence it.** `dd.split` masks
+    the low 27 mantissa bits with a bitcast, so `hi` is exact and no subtraction
+    is left to simplify, and the partial products of two split values are exact
+    in FP64. That version gives 1.1e-32 inside `jax.jit` and outside it.
+  * `two_sum` does survive `jax.jit`, so the reduction still uses it.
+  * **Run the test through `jax.jit`.** A test that does not cannot see this.
 * `get_restriction` uses a symbolic `jac.inv()` and `lambdify`, and both are
   FP64 numpy. `J` has a closed form: `∂w_1/∂t_i = −(∂P/∂t_i)/(∂P/∂w_1)`, with
   the identity on the other rows. `ΩΩ̄` has one too.
