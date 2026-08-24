@@ -5,8 +5,13 @@ per-point path does: the monomials of u, the frame of the sections, the Gram
 sums, and the centered form of phi. That is the part whose error sets the floor
 under `mean abs(f)`.
 
+The floor depends on the point and on theta, so measure it at the theta of the
+fit and not only at the Fubini-Study point. A sigma below the floor at its own
+theta is not a measurement.
+
 Usage:
     uv run python -u scripts/oracle_precision.py --k 12 20 24 28 --points 3
+    uv run python -u scripts/oracle_precision.py --k 28 --theta runs/theta_k28_seed20260813.npy
 """
 import argparse
 import sys
@@ -21,6 +26,7 @@ import MLGeometry as mlg                                    # noqa: E402
 mlg.set_precision(64)
 
 import jax                                                  # noqa: E402
+import jax.numpy as jnp                                     # noqa: E402
 from quartic import analytic, data, sections                # noqa: E402
 
 
@@ -89,20 +95,35 @@ def main():
     ap.add_argument('--k', type=int, nargs='+', default=[12, 20, 24, 28])
     ap.add_argument('--points', type=int, default=3)
     ap.add_argument('--dps', type=int, default=50)
+    ap.add_argument('--theta', type=str, default=None,
+                    help='a saved theta, so the floor is measured where the fit '
+                         'landed. One --k only.')
+    ap.add_argument('--gram-dd', choices=['off', 'inner', 'on'], default='off')
     args = ap.parse_args()
+    analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[args.gram_dd]
+    if args.theta is not None and len(args.k) != 1:
+        ap.error('--theta needs exactly one --k')
     mp.dps = args.dps
 
     batch = data.make(40, 3)
     restriction = np.asarray(batch['restriction'])
     omega = np.asarray(batch['Omega_Omegabar'])
-    print(f"mpmath at {args.dps} digits, {args.points} points, H_r taken as exact\n")
+    where = 'the saved theta' if args.theta else 'theta_FS'
+    print(f"mpmath at {args.dps} digits, {args.points} points, at {where}, "
+          f"Gram stage {args.gram_dd}, H_r taken as exact\n")
     print(f"{'k':>3} {'rel err phi':>12} {'rel err v':>11} {'sigma':>12} {'sigma/err':>10}")
     known = {12: 2.2018e-07, 16: 3.5096e-09, 20: 6.3276e-11,
              24: 1.2566e-12, 28: 1.7077e-13}
 
     for k in args.k:
         lay = sections.layout(k)
-        theta = sections.fubini_study_theta(lay)
+        if args.theta is None:
+            theta = sections.fubini_study_theta(lay)
+        else:
+            theta = jnp.asarray(np.load(args.theta))
+            if theta.shape != (lay.n_theta,):
+                raise SystemExit(f'theta has {theta.shape}, k={k} needs '
+                                 f'({lay.n_theta},)')
         mats = sections.prepare(lay, theta)
         worst_phi = worst_v = 0.0
         for idx in range(args.points):

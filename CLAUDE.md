@@ -389,9 +389,37 @@ The LM fits of 2026-08-16, on 1e5 fit points with an 8e6 hold-out set, give:
 | span | 10 → 12 | 12 → 16 | 16 → 20 | 20 → 24 | 24 → 28 |
 |---|---|---|---|---|---|
 | first-order | 2.50 | 2.43 | 1.92 | — | — |
-| LM | **2.90** | **2.81** | **2.73** | **2.67** | 1.65, not real |
+| LM | **2.90** | **2.81** | **2.73** | **2.67** | **1.57** |
 
-The last column is below the FP64 floor. See "The binding constraint".
+### The fits with the Gram stage in dd, 2026-08-24
+
+| k | σ | fit points | excess risk | `cond(J)` | dd floor | σ over floor |
+|---|---|---|---|---|---|---|
+| 24 | 1.2529e-12 | 69,076 | 7.8e-3 | 5.77e16 | 4.33e-15 | 289 |
+| 28 | **2.0566e-13** | 37,346 | 2.5e-2 | 8.73e18 | 1.61e-14 | **12.8** |
+
+* **k = 24 is confirmed.** dd gives 1.2529e-12 against the 1.2566e-12 of FP64,
+  0.29 percent apart, which is right because σ there sits 21 times above the FP64
+  floor. Two arithmetics agree, so the number is solid.
+* **k = 28 is now a measurement.** σ sits 12.8 times above the dd floor. In FP64
+  it read 1.7077e-13 against a floor of 3.97e-13, so that number was not one.
+* **The rate for 24 → 28 is 1.57**, and σ at k = 28 is 8.3 times above the
+  2.47e-14 that a rate of 2.67 predicts.
+
+**Do not yet call this a slowdown of the ansatz.** Three things can hold σ at
+2.06e-13, and only the first is settled:
+
+1. The floor of the residual. Ruled out at `θ_FS`, where it is 1.61e-14. **It is
+   not ruled out at the θ of the fit.** `scripts/oracle_precision.py --theta`
+   measures it there, and that is the first test to run.
+2. The accuracy of `J`. The rank scan showed that the σ reached is approximately
+   the relative cutoff, and the cutoff that FP64 imposes is the relative error of
+   `J` itself. `J` uses the dd Gram stage, and the rest of it, the matrices `W`
+   and the contraction with `K`, is FP64. `cond(J) = 8.7e18` is 1,900 times past
+   `1/ε`, against 13 times at k = 24.
+3. The excess risk, which is 2.5e-2 at k = 28 and the largest of the series. It
+   predicts only 1.25 percent, so it cannot carry the whole factor of 8.3, but a
+   run at `BUDGET=70` gives approximately 73,000 fit points and settles it.
 
 The HN law predicts 2.83, so the first explanation was the correct one, and the
 ansatz does not slow down. Their own estimate of a converged fit at k = 20 was
