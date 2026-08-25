@@ -76,11 +76,26 @@ def main():
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
                          'near a tenth of the sigma you expect, because the '
                          'sigma reached is approximately rcond.')
+    ap.add_argument('--require-gpu', action='store_true',
+                    help='stop if JAX did not find a GPU. `uv run` without '
+                         '--extra gpu removes jax[cuda12] and falls back to the '
+                         'CPU without failing.')
     ap.add_argument('--dry-run', action='store_true',
                     help='size the block and report the memory, then stop')
     ap.add_argument('--cond', action='store_true', help='also measure cond(J)')
     ap.add_argument('--out', type=str, default='runs')
     args = ap.parse_args()
+
+    import jax
+    dev = jax.devices()[0]
+    print(f"device: {dev.platform} {dev.device_kind} x{len(jax.devices())}, "
+          f"{fit.device_memory_gb():.1f} GB")
+    if args.require_gpu and dev.platform != 'gpu':
+        raise SystemExit(
+            f"--require-gpu, but JAX is on {dev.platform!r}. `uv run` syncs "
+            f"before it runs, and without `--extra gpu` it removes "
+            f"jax[cuda12]. Use `uv run --extra gpu ...`, or "
+            f"`./scripts/setup.sh` and then `./scripts/run_cluster.sh`.")
 
     analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[args.gram_dd]
     print(f"Gram stage: {args.gram_dd}"

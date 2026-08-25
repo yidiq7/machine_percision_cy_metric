@@ -31,16 +31,29 @@ K=${K:-}                 # override the degrees of the stage, for a quick check
 # JAX takes 75 percent of the card by default. This gives back the rest.
 export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.95}
 
+# `uv run` syncs before it runs, and a sync with no --extra gpu removes
+# jax[cuda12]. The run then falls back to the CPU without failing, and a budget
+# meant for the card becomes a request for host memory. Carry the extra here.
+# Plain strings, not arrays: `set -u` with bash 3.2 rejects an empty array.
+if [ "${NO_GPU:-0}" = "1" ]; then
+    UV_EXTRA=""
+    REQUIRE=""
+else
+    UV_EXTRA="--extra gpu"
+    REQUIRE="--require-gpu"
+fi
+
 case "$STAGE" in
-  task1) KS="12 16 20"; DD=off;  EXTRA="" ;;
-  high)  KS="24 28";    DD=on;   EXTRA="" ;;
-  dry)   KS="24 28";    DD=on;   EXTRA="--dry-run" ;;
+  task1) KS="12 16 20"; DD=off;  STAGE_FLAGS="" ;;
+  high)  KS="24 28";    DD=on;   STAGE_FLAGS="" ;;
+  dry)   KS="24 28";    DD=on;   STAGE_FLAGS="--dry-run" ;;
   *) echo "unknown STAGE '$STAGE'; use task1, high or dry" >&2; exit 2 ;;
 esac
 KS=${K:-$KS}
 
 # shellcheck disable=SC2086
-uv run python -u scripts/run_fit.py \
+uv run $UV_EXTRA python -u scripts/run_fit.py \
+    $REQUIRE \
     --k $KS \
     --n-train "$TRAIN" \
     --n-eval "$EVAL" \
@@ -50,5 +63,5 @@ uv run python -u scripts/run_fit.py \
     --max-steps 600 \
     --seed "$SEED" \
     --cond \
-    $EXTRA \
+    $STAGE_FLAGS \
     --out runs 2>&1 | tee "runs_${STAGE}_seed${SEED}.log"

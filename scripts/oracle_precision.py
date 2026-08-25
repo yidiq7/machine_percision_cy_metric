@@ -112,8 +112,9 @@ def main():
     print(f"mpmath at {args.dps} digits, {args.points} points, at {where}, "
           f"Gram stage {args.gram_dd}, H_r taken as exact\n")
     print(f"{'k':>3} {'rel err phi':>12} {'rel err v':>11} {'sigma':>12} {'sigma/err':>10}")
-    known = {12: 2.2018e-07, 16: 3.5096e-09, 20: 6.3276e-11,
-             24: 1.2566e-12, 28: 1.7077e-13}
+    # sigma from the fits with the Gram stage in dd where there is one.
+    known = {12: 2.1950e-07, 16: 3.5140e-09, 20: 6.3524e-11,
+             24: 1.2529e-12, 28: 2.0566e-13}
 
     for k in args.k:
         lay = sections.layout(k)
