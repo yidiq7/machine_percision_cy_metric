@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import jax.numpy as jnp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -76,6 +77,11 @@ def main():
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
                          'near a tenth of the sigma you expect, because the '
                          'sigma reached is approximately rcond.')
+    ap.add_argument('--theta-init', type=str, default=None,
+                    help='start from a saved theta instead of Fubini-Study. A '
+                         'restart that lowers sigma means the earlier fit '
+                         'stopped early, and one that does not means it '
+                         'converged. One --k only.')
     ap.add_argument('--require-gpu', action='store_true',
                     help='stop if JAX did not find a GPU. `uv run` without '
                          '--extra gpu removes jax[cuda12] and falls back to the '
@@ -113,8 +119,21 @@ def main():
           f"{'mean abs(f)':>13} {'+/-':>7} {'known':>10} {'ratio':>7} "
           f"{'rms(f)':>11} {'max abs(f)':>11} {'min lambda':>11} {'min p':>10}")
 
+    if args.theta_init is not None and len(args.k) != 1:
+        ap.error('--theta-init needs exactly one --k')
+
     for k in args.k:
         lay = sections.layout(k)
+
+        theta0 = None
+        if args.theta_init is not None:
+            theta0 = jnp.asarray(np.load(args.theta_init))
+            if theta0.shape != (lay.n_theta,):
+                raise SystemExit(f'theta has {theta0.shape}, k={k} needs '
+                                 f'({lay.n_theta},)')
+            start = metric.report(lay, theta0, hold, chunk=args.chunk)
+            print(f"    restart from {args.theta_init}: "
+                  f"mean abs(f) = {start['mape']:.4e}")
 
         analytic_jac = not args.autodiff_jac
         fit_set, fit_chunk = train, args.fit_chunk
@@ -133,7 +152,8 @@ def main():
         if args.dry_run:
             continue
 
-        theta, stats = fit.fit(lay, fit_set, max_steps=args.max_steps,
+        theta, stats = fit.fit(lay, fit_set, theta0=theta0,
+                               max_steps=args.max_steps,
                                chunk=fit_chunk, analytic_jac=analytic_jac,
                                rcond=args.rcond)
         rep = metric.report(lay, theta, hold, chunk=args.chunk)
@@ -152,6 +172,7 @@ def main():
                   'normalization': 'sampled mean of v over the hold-out set',
                   'loss': 'MSPE, LM from optimistix',
                   'gram_dd': args.gram_dd,
+                  'theta_init': args.theta_init,
                   'max_abs_note': 'a lower bound on sup abs(f); a sample cannot '
                                   'bound a supremum',
                   **stats, **rep}
