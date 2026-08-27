@@ -12,6 +12,7 @@ conditioned, and it fixes the gauge of h, because h is orthogonal to K.
 """
 from __future__ import annotations
 
+import hashlib
 import itertools
 from dataclasses import dataclass
 from math import comb
@@ -19,8 +20,8 @@ from math import comb
 import numpy as np
 
 __all__ = ['S4', 'act', 'monomial_exponents', 'relation_columns',
-           'section_frame', 'rho', 'invariant_basis',
-           'Orbit', 'Block', 'Structure', 'build']
+           'section_frame', 'rho', 'invariant_basis', 'orthonormalize',
+           'fingerprint', 'Orbit', 'Block', 'Structure', 'build']
 
 S4 = list(itertools.permutations(range(4)))
 
@@ -61,17 +62,68 @@ def relation_columns(m):
     return out
 
 
+def orthonormalize(columns, against=(), tol=1e-9):
+    """Gram-Schmidt over `columns` in the order given, after `against`.
+
+    **The order is the convention.** An SVD picks an arbitrary rotation inside a
+    degenerate subspace, and both bases here come from one: the section frame is
+    a null space, where every singular value is zero. LAPACK then answers with
+    *an* orthonormal basis, which is reproducible on one machine and not across
+    nodes. A theta saved on one node and read on another became meaningless: at
+    k = 28 it reported `mean abs(f) = 1.34` in place of 2.06e-13.
+
+    Gram-Schmidt in a fixed order has no such freedom. It runs twice over the
+    accepted vectors, because one pass loses orthogonality when a column is
+    nearly dependent.
+    """
+    cols = [np.asarray(c, dtype=float).ravel() for c in columns]
+    prior = [np.asarray(v, dtype=float).ravel() for v in against]
+    if not cols:
+        return []
+
+    # One matrix for the accepted vectors, so each projection is two BLAS calls
+    # instead of a Python loop. The order of the columns still fixes the answer;
+    # only the summation inside a dot product can differ between machines, and
+    # that moves the basis by round-off and not by a rotation.
+    length = cols[0].size
+    mat = np.zeros((len(prior) + len(cols), length))
+    for i, v in enumerate(prior):
+        mat[i] = v
+    used = len(prior)
+
+    out = []
+    for col in cols:
+        v = col.copy()
+        scale = np.linalg.norm(v)
+        for _ in range(2):
+            if used:
+                block = mat[:used]
+                v -= block.T @ (block @ v)
+        norm = np.linalg.norm(v)
+        if norm > tol * max(scale, 1.0):
+            v /= norm
+            mat[used] = v
+            used += 1
+            out.append(v)
+    return out
+
+
 def section_frame(m):
     """Orthonormal frame (n_monomials, d) of the complement of the relations.
 
-    d = C(m+2,2), which is the dimension of the block section space.
+    d = C(m+2,2), which is the dimension of the block section space. The frame
+    comes from Gram-Schmidt in a fixed order, so it is the same on every machine.
     """
     n_mono = comb(m + 3, 3)
     rel = relation_columns(m)
     if rel.shape[1] == 0:
         return np.eye(n_mono)
-    left, _, _ = np.linalg.svd(rel, full_matrices=True)
-    return left[:, rel.shape[1]:]
+    span = orthonormalize(rel.T)
+    eye = np.eye(n_mono)
+    kept = orthonormalize((eye[i] for i in range(n_mono)), against=span)
+    frame = np.stack(kept, axis=1)
+    assert frame.shape == (n_mono, n_mono - rel.shape[1]), frame.shape
+    return frame
 
 
 def rho(m, sigma, frame=None):
@@ -110,10 +162,18 @@ def invariant_basis(m, subgroup, frame=None, tol=1e-8):
             e[i, j] = e[j, i] = 1.0
             sym.append(e.ravel())
 
-    left, sing, _ = np.linalg.svd(pi @ np.stack(sym, axis=1), full_matrices=False)
-    rank = int(np.sum(sing > 0.5))
-    assert sing.size == rank or sing[rank] < tol, (m, sing[rank - 1], sing[rank])
-    return left[:, :rank].T.reshape(rank, d, d)
+    # Gram-Schmidt in the fixed order of the symmetric basis, for the same
+    # reason as in `section_frame`: an SVD is free to rotate inside the image.
+    image = pi @ np.stack(sym, axis=1)
+    basis = np.stack(orthonormalize(image.T, tol=tol), axis=0)
+
+    # Gram-Schmidt combines nearly dependent columns, and the normalization then
+    # amplifies their round-off: the invariance residual came out at 1.5e-9 at
+    # k = 38. Pi is a projector, so one pass of project-then-orthonormalize
+    # restores invariance, and a few passes reach round-off in both properties.
+    for _ in range(3):
+        basis = np.stack(orthonormalize(basis @ pi.T, tol=0.0), axis=0)
+    return basis.reshape(basis.shape[0], d, d)
 
 
 @dataclass(frozen=True)
@@ -156,6 +216,14 @@ class Structure:
         """MACs of one matrix-vector product over every block, for one point."""
         return sum(self.frames[b.m].shape[1] ** 2 for b in self.blocks)
 
+    def fingerprint(self):
+        """A short digest of the basis, so a saved theta names its convention.
+
+        theta means nothing without the basis it belongs to. Save this with the
+        fit and compare it on a restart.
+        """
+        return fingerprint(self)
+
     def param_slices(self):
         """Slice of the flat parameter vector that belongs to each orbit."""
         out, start = [], 0
@@ -163,6 +231,19 @@ class Structure:
             out.append(slice(start, start + orb.basis.shape[0]))
             start += orb.basis.shape[0]
         return out
+
+
+def fingerprint(struct):
+    """A digest of every frame and invariant basis of a structure."""
+    digest = hashlib.sha256()
+    digest.update(str(struct.k).encode())
+    for m in sorted(struct.frames):
+        digest.update(np.ascontiguousarray(
+            np.round(struct.frames[m], 10)).tobytes())
+    for orb in struct.orbits:
+        digest.update(str(orb.rep).encode())
+        digest.update(np.ascontiguousarray(np.round(orb.basis, 10)).tobytes())
+    return digest.hexdigest()[:16]
 
 
 def build(k):

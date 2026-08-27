@@ -97,8 +97,11 @@ def test_basis_is_invariant():
         for orb in st.orbits:
             for s in orb.stabilizer:
                 r_mat = blocks.rho(orb.m, s, st.frames[orb.m])
-                for b_mat in orb.basis:
-                    worst = max(worst, np.abs(r_mat @ b_mat @ r_mat.T - b_mat).max())
+                # Every basis matrix in one einsum: a loop over 2987 of them at
+                # k = 38 makes the test too slow to run.
+                moved = np.einsum('ij,ajk,lk->ail', r_mat, orb.basis, r_mat,
+                                  optimize=True)
+                worst = max(worst, np.abs(moved - orb.basis).max())
     assert worst < 1e-13, worst
     print(f"  max |rho B rho^T - B| over the stabilizers = {worst:.2e}, to k = 38")
 
@@ -114,6 +117,43 @@ def test_blocks_cover_every_residue():
     print("  64 blocks at k = 12, 20, 32 and 38, and each residue appears once")
 
 
+def test_basis_is_deterministic():
+    """theta means nothing without its basis, so the basis must be canonical.
+
+    Both bases used to come from an SVD of a degenerate subspace: the section
+    frame is a null space, where every singular value is zero. LAPACK then
+    returns an arbitrary rotation inside it, which is stable on one machine and
+    not across nodes. A theta saved on one node read as `mean abs(f) = 1.34` on
+    another, in place of 2.06e-13. Gram-Schmidt in a fixed order removes the
+    freedom, and `fingerprint` names the convention.
+    """
+    for k in (6, 12, 20):
+        first = blocks.build(k)
+        second = blocks.build(k)
+        assert first.fingerprint() == second.fingerprint(), k
+        for m in first.frames:
+            assert np.array_equal(first.frames[m], second.frames[m]), (k, m)
+        for a_orb, b_orb in zip(first.orbits, second.orbits):
+            assert np.array_equal(a_orb.basis, b_orb.basis), k
+    print("  the basis and its fingerprint repeat exactly, k = 6, 12, 20")
+
+
+def test_frame_is_the_complement_of_the_relations():
+    """Gram-Schmidt must still span exactly the complement of the relations."""
+    worst = 0.0
+    for m in range(1, 8):
+        frame = blocks.section_frame(m)
+        rel = blocks.relation_columns(m)
+        # Every relation must be orthogonal to the frame.
+        worst = max(worst, np.abs(frame.T @ rel).max())
+        # And the two together must span the whole monomial space.
+        both = np.concatenate([frame, rel], axis=1)
+        assert np.linalg.matrix_rank(both) == frame.shape[0], m
+    assert worst < 1e-12, worst
+    print(f"  the frame is orthogonal to the relations to {worst:.2e}, and "
+          f"together they span")
+
+
 def test_high_k_counts():
     for k, n_theta, secs in ((32, 1559, 2050), (36, 2432, 2594), (38, 2987, 2890)):
         st = blocks.build(k)
@@ -126,7 +166,10 @@ if __name__ == "__main__":
                test_frame_dimension_and_orthonormality,
                test_rho_is_an_orthogonal_representation,
                test_counts_match_character_theory, test_basis_is_invariant,
-               test_blocks_cover_every_residue, test_high_k_counts):
+               test_blocks_cover_every_residue,
+               test_basis_is_deterministic,
+               test_frame_is_the_complement_of_the_relations,
+               test_high_k_counts):
         print(fn.__name__)
         fn()
     print("\nall block tests pass")

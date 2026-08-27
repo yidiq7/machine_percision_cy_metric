@@ -125,12 +125,28 @@ def main():
     for k in args.k:
         lay = sections.layout(k)
 
+        basis_id = lay.structure.fingerprint()
+
         theta0 = None
         if args.theta_init is not None:
             theta0 = jnp.asarray(np.load(args.theta_init))
             if theta0.shape != (lay.n_theta,):
                 raise SystemExit(f'theta has {theta0.shape}, k={k} needs '
                                  f'({lay.n_theta},)')
+            # theta means nothing without the basis it belongs to, so refuse a
+            # theta from another basis instead of fitting from a wrong start.
+            side = Path(args.theta_init).with_suffix('.basis')
+            if side.exists():
+                saved = side.read_text().strip()
+                if saved != basis_id:
+                    raise SystemExit(
+                        f'theta was saved against basis {saved} and this build '
+                        f'has {basis_id}. The two are different conventions, so '
+                        f'the values do not carry over. Refit, or rebuild on the '
+                        f'machine that made it.')
+            else:
+                print(f"    warning: {side.name} is absent, so the basis of "
+                      f"{args.theta_init} cannot be checked")
             start = metric.report(lay, theta0, hold, chunk=args.chunk)
             print(f"    restart from {args.theta_init}: "
                   f"mean abs(f) = {start['mape']:.4e}")
@@ -173,6 +189,7 @@ def main():
                   'loss': 'MSPE, LM from optimistix',
                   'gram_dd': args.gram_dd,
                   'theta_init': args.theta_init,
+                  'basis_fingerprint': basis_id,
                   'max_abs_note': 'a lower bound on sup abs(f); a sample cannot '
                                   'bound a supremum',
                   **stats, **rep}
@@ -185,6 +202,7 @@ def main():
                   f"J shape = {record['cond']['shape']}")
 
         np.save(out_dir / f"theta_k{k}_seed{args.seed}.npy", np.asarray(theta))
+        (out_dir / f"theta_k{k}_seed{args.seed}.basis").write_text(basis_id + "\n")
         (out_dir / f"fit_k{k}_seed{args.seed}.json").write_text(
             json.dumps(record, indent=2))
 
