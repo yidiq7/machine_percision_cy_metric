@@ -724,6 +724,21 @@ Three rules protect the value of the result:
 
 1. **Keep `h` exactly in the invariant subspace.** Do not let the optimizer
    leave it. The symmetry is the reason that `n_θ` is small.
+   * **The basis must be canonical, and not whatever LAPACK returns.** Both
+     bases come from a degenerate subspace: `section_frame` is a null space,
+     where every singular value is zero, and `invariant_basis` is the image of a
+     projector. An SVD then gives *an* orthonormal basis, which repeats on one
+     machine and not across nodes. A θ written on an A100 node and read on an
+     H200 node reported `mean abs(f) = 1.34` at k = 28, in place of 2.06e-13.
+     `blocks.orthonormalize` does Gram-Schmidt in a fixed order instead, so the
+     order is the convention. Gram-Schmidt combines nearly dependent columns and
+     the normalization amplifies their round-off, which put the invariance
+     residual at 1.5e-9, so `invariant_basis` then re-projects with `Π` a few
+     times and reaches 2.7e-15.
+   * **Save `blocks.fingerprint` with every θ.** `run_fit.py` writes it beside
+     the θ and refuses a restart whose fingerprint differs. Without that check a
+     θ from another convention fits from a wrong start and still reports a
+     number.
 2. **Keep the arithmetic swappable.** Put the scalar operations behind one small
    interface, so that stage 2 can change the type and not the algorithm.
 3. **State the normalization of η.** `loss.py:133` divides by a sampled mean.
