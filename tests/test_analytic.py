@@ -20,9 +20,17 @@ from quartic import analytic, data, metric, sections        # noqa: E402
 BATCH = data.make(50, 3)
 
 
-def perturbed_theta(lay, seed):
-    """A point away from Fubini-Study, so the test does not sit on a symmetry."""
-    noise = np.random.default_rng(seed).normal(size=lay.n_theta) * 0.1
+def perturbed_theta(lay, seed, size=1e-3):
+    """A point near Fubini-Study, so the test does not sit on a symmetry.
+
+    The step is a fraction of the largest component of theta_FS, which is 1 in
+    the convention of `sections.layout`. An absolute step of 0.1 was a small
+    perturbation when every component of theta_FS was 1, and it is a large one
+    now that the scale is global and the components run down to 1e-18. That put
+    the test at a badly conditioned h, where the two Jacobians differ by 3e-10
+    for reasons that have nothing to do with either of them.
+    """
+    noise = np.random.default_rng(seed).normal(size=lay.n_theta) * size
     return sections.fubini_study_theta(lay) + jnp.asarray(noise)
 
 

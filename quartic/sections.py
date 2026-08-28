@@ -44,13 +44,23 @@ class Group:
 class Layout:
     """Static description of the model at degree k.
 
-    `scale` reparametrizes theta so that the Fubini-Study point is +/-1 in every
-    component. The raw invariant basis is orthonormal in the Frobenius norm, so
-    theta_FS carries the multinomial coefficients: its components run from 1.8e8
-    to 5.1e11 at k = 24. LM damps with lambda*I and tests the step in absolute
-    size, and neither is invariant under a change of scale, so a trust-region
-    step of order 1 was a relative change of 1e-11 and the fit did not move. The
-    scale is part of the reported convention for h.
+    `scale` is **one number for every component**, the largest of `abs(theta_FS)`.
+    The raw invariant basis is orthonormal in the Frobenius norm, so theta_FS
+    carries the multinomial coefficients: they reach 1.2e14 at k = 28. LM damps
+    with lambda*I and tests the step in absolute size, and neither is invariant
+    under a change of scale, so a trust-region step of order 1 was a relative
+    change of 1e-14 and the fit stopped after 2 steps.
+
+    A scale for each component, `abs(theta_FS)` itself, looks tidier and is
+    wrong. It measures how far a basis matrix leans on the Fubini-Study point,
+    not how much it moves the model, and a basis vector nearly orthogonal to
+    h_FS gets a tiny scale that then amplifies its direction. At k = 28 the
+    spread of those scales is 8.6e17 with 56 components under 1e-6 of the
+    largest, and cond(J) reached 8.1e30. Measured at theta_FS, one global scale
+    gives cond(J) of 2.36e17 at k = 24 against 1.05e25 for a scale for each
+    component.
+
+    The scale is part of the reported convention for h.
     """
     k: int
     groups: tuple
@@ -91,9 +101,10 @@ def layout(k, struct=None, normalize=True):
                  structure=struct, scale=np.ones(struct.n_theta))
     if not normalize:
         return lay
-    # theta_FS in the raw basis sets the scale, so the fit starts at +/-1.
+    # One global scale, from the largest raw component. See `Layout`.
     raw = np.asarray(fubini_study_theta(lay))
-    scale = np.where(np.abs(raw) > 0, np.abs(raw), 1.0)
+    largest = float(np.abs(raw).max())
+    scale = np.full(struct.n_theta, largest if largest > 0 else 1.0)
     return Layout(k=k, groups=lay.groups, n_theta=lay.n_theta,
                   structure=struct, scale=scale)
 
