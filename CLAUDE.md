@@ -389,7 +389,11 @@ The LM fits of 2026-08-16, on 1e5 fit points with an 8e6 hold-out set, give:
 | span | 10 → 12 | 12 → 16 | 16 → 20 | 20 → 24 | 24 → 28 |
 |---|---|---|---|---|---|
 | first-order | 2.50 | 2.43 | 1.92 | — | — |
-| LM | **2.90** | **2.81** | **2.73** | **2.67** | **1.57** |
+| LM | **2.90** | **2.81** | **2.73** | **2.67** | **2.06** |
+
+The 24 → 28 entry is provisional. Its two ends come from different code:
+k = 24 predates the canonical basis and the global scale of θ, and k = 28
+carries both. See "k = 28 after the canonical basis and the global scale".
 
 ### The fits with the Gram stage in dd, 2026-08-24
 
@@ -421,16 +425,48 @@ The LM fits of 2026-08-16, on 1e5 fit points with an 8e6 hold-out set, give:
    predicts only 1.25 percent, so it cannot carry the whole factor of 8.3, but a
    run at `BUDGET=70` gives approximately 73,000 fit points and settles it.
 
-The HN law predicts 2.83, so the first explanation was the correct one, and the
-ansatz does not slow down. Their own estimate of a converged fit at k = 20 was
-4.5e-11 against the 6.33e-11 we measured. **The largest risk in the project is
-closed.**
+None of the three was the answer. The floor at the θ of the fit is 1.899e-15,
+which is 108 times below σ, so explanation 1 is out. The next section holds the
+cause, which is a fourth thing: the scale of θ. Their own estimate of a converged
+fit at k = 20 was 4.5e-11 against the 6.33e-11 we measured.
 
 The k = 20 fit hit the 200-step limit, so its σ is an upper bound. A lower value
 would raise the 16 → 20 rate, and the small decline that is left can be that.
 
 **Stage 1 needs k ≈ 31, and not 38.** At a rate of 2.73 to 2.83, σ = 1e-15 comes
 at k = 30.6 to 31.0, and k = 32 gives 2.4e-16 to 3.7e-16.
+
+### k = 28 after the canonical basis and the global scale, 2026-08-30
+
+Three runs at k = 28, as each fix landed. The seed is 20260813 in each one.
+
+| fit points | basis | scale of θ | `cond(J)` | σ |
+|---|---|---|---|---|
+| 37,346 | SVD | for each component | 8.73e18 | 2.0566e-13 |
+| 90,134 | Gram-Schmidt | for each component | 8.14e30 | 8.6215e-14 |
+| 88,993 | Gram-Schmidt | **global** | **7.72e17** | **6.8949e-14** |
+
+A second seed at 91,113 points gave 7.4086e-14, which is 15 percent from the
+8.6215e-14 of the first. The three runs before those spanned 70 percent, so the
+small fit sets carried that spread and not the arithmetic.
+
+* **The scale of θ was the cause of `cond(J) = 8.1e30`, and one global scale
+  removes it.** 13 orders of magnitude, and σ fell by 20 percent with it.
+* σ sits 36 times above the dd floor of 1.899e-15 at the fitted θ. **k = 28 is a
+  measurement**, and it is not floor limited.
+* `min λ(φ) = 3.496` and `min p = 6.62e9`, so the margin above zero is large.
+* The fit converged in 123 steps and 3,189 s. It did not hit the step limit.
+
+**The rate for 24 → 28 is 2.06**, against 1.57 before. That number is not yet
+solid, because k = 24 is still the 1.2496e-12 of the old convention. **Both ends
+of a rate must come from the same code.** Refit k = 24 first.
+
+The planner left the block at 64, because dd needs 1.115 MB for each fit point at
+k = 28. A target risk of 5e-3 asks for 189,800 points, which is 212 GB, so the
+budget went to the points and the block got its floor. `RISK` in
+`scripts/run_cluster.sh` sets that trade-off. Excess risk of 1e-2 moves σ by
+approximately 0.5 percent, which is far below the 15 percent that two seeds give,
+so a larger block and fewer points is the faster plan.
 
 ### The binding constraint is the arithmetic, and FP64 stops at k = 27
 

@@ -17,6 +17,10 @@
 #
 # The Gram stage in dd costs 41 times the time and 14 times the memory at
 # k = 28, so expect roughly 45 minutes for k = 28 and a few hours for k = 32.
+#
+# RISK sets the fit set, and the block gets what is left. dd needs 1.1 MB for
+# each fit point at k = 28, so the default risk of 5e-3 asks for 212 GB, takes
+# every point the budget allows and leaves the block at its floor of 64.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,6 +31,7 @@ EVAL=${EVAL:-8000000}
 CHUNK=${CHUNK:-200000}
 BUDGET=${BUDGET:-}       # GB for the whole LM solve; empty means 45 percent
 K=${K:-}                 # override the degrees of the stage, for a quick check
+RISK=${RISK:-}           # excess risk n_theta/N_fit to aim for; sizes the fit set
 
 # JAX takes 75 percent of the card by default. This gives back the rest.
 export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.95}
@@ -60,6 +65,7 @@ uv run $UV_EXTRA python -u scripts/run_fit.py \
     --chunk "$CHUNK" \
     --gram-dd "$DD" \
     ${BUDGET:+--budget-gb "$BUDGET"} \
+    ${RISK:+--target-risk "$RISK"} \
     --max-steps 600 \
     --seed "$SEED" \
     --cond \
