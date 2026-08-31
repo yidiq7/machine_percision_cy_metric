@@ -389,11 +389,12 @@ The LM fits of 2026-08-16, on 1e5 fit points with an 8e6 hold-out set, give:
 | span | 10 → 12 | 12 → 16 | 16 → 20 | 20 → 24 | 24 → 28 |
 |---|---|---|---|---|---|
 | first-order | 2.50 | 2.43 | 1.92 | — | — |
-| LM | **2.90** | **2.81** | **2.73** | **2.67** | **2.06** |
+| LM | **2.90** | **2.81** | **2.73** | **2.67** | **2.05** |
 
-The 24 → 28 entry is provisional. Its two ends come from different code:
-k = 24 predates the canonical basis and the global scale of θ, and k = 28
-carries both. See "k = 28 after the canonical basis and the global scale".
+Both ends of the 24 → 28 entry now come from this code. The entry is still not
+the rate of the ansatz: σ at k = 28 falls steeply with the size of the fit set
+and memory stops it at 88,993 points. See "The fit set is the binding constraint
+at k = 28".
 
 ### The fits with the Gram stage in dd, 2026-08-24
 
@@ -457,16 +458,52 @@ small fit sets carried that spread and not the arithmetic.
 * `min λ(φ) = 3.496` and `min p = 6.62e9`, so the margin above zero is large.
 * The fit converged in 123 steps and 3,189 s. It did not hit the step limit.
 
-**The rate for 24 → 28 is 2.06**, against 1.57 before. That number is not yet
-solid, because k = 24 is still the 1.2496e-12 of the old convention. **Both ends
-of a rate must come from the same code.** Refit k = 24 first.
+**The rate for 24 → 28 is 2.06**, against 1.57 before. The refit of k = 24 in
+this convention gives 1.2118e-12 and a rate of 2.05, so both ends now come from
+the same code. The next section shows that the number is still not the rate of
+the ansatz.
 
 The planner left the block at 64, because dd needs 1.115 MB for each fit point at
 k = 28. A target risk of 5e-3 asks for 189,800 points, which is 212 GB, so the
 budget went to the points and the block got its floor. `RISK` in
-`scripts/run_cluster.sh` sets that trade-off. Excess risk of 1e-2 moves σ by
-approximately 0.5 percent, which is far below the 15 percent that two seeds give,
-so a larger block and fewer points is the faster plan.
+`scripts/run_cluster.sh` sets that trade-off.
+
+**Do not use `RISK` to buy speed at k = 28.** The excess-risk model
+`n_θ/N_fit` says that a move from 1.1e-2 to 2.5e-2 costs 0.7 percent of σ. The
+measurement says 296 percent. See "The fit set is the binding constraint at
+k = 28".
+
+### The fit set is the binding constraint at k = 28, 2026-08-31
+
+Two fits at k = 28 with the same code, and one at k = 24 for comparison. The
+block is 4096 in each one.
+
+| k | fit points | N/n_θ | excess risk | σ | `cond(J)` |
+|---|---|---|---|---|---|
+| 24 | 5,981 | 11 | 9.1e-2 | 1.2818e-12 | 4.71e16 |
+| 24 | 49,272 | 91 | 1.1e-2 | **1.2118e-12** | 2.78e16 |
+| 28 | 37,960 | 40 | 2.5e-2 | 2.7314e-13 | 6.09e17 |
+| 28 | 88,993 | 94 | 1.1e-2 | **6.8949e-14** | 7.72e17 |
+
+* **k = 24 does not depend on the fit set.** 8 times the points give 5.5 percent.
+* **k = 28 depends on it strongly.** 2.34 times the points give 3.96 times the
+  σ. The excess-risk model predicts 0.7 percent, so **that model does not hold at
+  k = 28**. Do not size a fit set with it above k = 24.
+* Two seeds and two parameter conventions give the same factor of 3 to 3.7, so
+  the effect is not a seed and not the basis.
+* **σ at k = 28 is therefore an upper bound that memory sets**, and not a
+  converged measurement. 88,993 points fill 101 GB of the 142.6 GB card.
+
+Neither standard model of the fit-set dependence fits the two points.
+`σ = σ_∞ + C/N` and `σ = σ_∞ + C/sqrt(N)` each give a negative `σ_∞`, so the
+fall is steeper than either. A power law gives `σ ~ N^-1.62` and 1.9e-14 at
+200,000 points, which is the value that the law of the collaborators predicts,
+but two points cannot support that. **Measure a third point before you believe
+it.**
+
+The rate for 24 → 28 is **2.05** with both ends from this code. If k = 28 reaches
+1.9e-14 with enough points, the rate is 2.84, and the whole apparent slowdown of
+the ansatz is the size of the fit set.
 
 ### The binding constraint is the arithmetic, and FP64 stops at k = 27
 
