@@ -600,9 +600,35 @@ residual. The defect stopped the fits of the collaborators from converging, and
 ours all converge, so we carried the defect without the symptom. One global scale
 for θ had already removed it.
 
-Keep `--whiten` off by default. It costs 20 percent more steps at k = 24 and it
-wins nothing below k = 28. Turn it on above k = 30, where plain `cond(J)` reaches
-1e19 and higher.
+**Use `--whiten` for any run that reports `h`.** σ does not change, so there is no
+risk, and the cost is 20 percent more steps at k = 24. What it buys is digits of
+`h`, which the Output section asks for. A matrix is numerically singular in FP64
+when `cond*eps >= 1`. Digits of `h` below are estimated from the one direct
+measurement, where `cond(J) = 1e11` gave a relative error of 1.3e-7 in θ:
+
+| k | `cond*eps` plain | whitened | digits of `h` plain | whitened |
+|---|---|---|---|---|
+| 16 | 4.6e-6 | 1.4e-7 | 7.6 | 9.1 |
+| 20 | 5.2e-3 | 5.4e-5 | 4.5 | 6.5 |
+| 24 | **6.4** | 1.1e-2 | **1.4** | **4.2** |
+| 28 | **171** | ~2.3 (est.) | **0.0** | ~0 to 1 |
+
+**σ is trustworthy at every k, and `h` is not.** σ is a forward evaluation that
+does not use `J`, it comes from 8e6 held-out points, and it sits 36 times above
+the dd floor. The direct proof is the paired run: `cond(J)` changed by 576 times
+and σ did not move in the fifth digit. LM also rejects a step from a bad solve,
+because its trust region compares the predicted reduction against the true one.
+So a large `cond(J)` can slow a fit; it cannot make a false σ.
+
+**At k = 28 neither parametrization gives a usable `h`.** Whitened `cond(J)`
+crosses `1/eps` at k = 27.2, because it still grows by 4.09 for each unit of k.
+Report σ at k = 28, and do not report digits of `h` there. The fix is extended
+precision in the LM linear solve, and not in the Gram stage alone. Collaborators
+reach the same conclusion for k above 26.
+
+This also explains why θ is not reproducible while σ is. Many θ give the same σ,
+so a fingerprint on the basis is necessary and a check on θ itself is not
+possible.
 
 `Layout.fingerprint` now covers the whitening, the Gram sample and the scale, and
 not the symmetry structure alone. Every earlier θ therefore fails the check.
