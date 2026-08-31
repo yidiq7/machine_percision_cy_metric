@@ -505,6 +505,37 @@ The rate for 24 → 28 is **2.05** with both ends from this code. If k = 28 reac
 1.9e-14 with enough points, the rate is 2.84, and the whole apparent slowdown of
 the ansatz is the size of the fit set.
 
+### The scale gauge of theta is free, and that is safe
+
+Collaborators report a second defect that we do not have, and the difference is
+worth keeping, because the question will come back. They normalize `p` at a fixed
+point. `p` is not invariant under `h -> lambda h`, so that choice selects one
+representative of each ray. It is therefore an affine chart on a projective
+parameter space, and it omits the hyperplane where `p` at that point is zero.
+Their optimizer ran toward the omitted hyperplane and reported convergence.
+
+We fix nothing. Measured at k = 8 over lambda from 1e-6 to 1e6:
+
+* `p -> lambda p` to 5.6e-16, and `v` does not move, to 1.6e-15.
+* `mean abs(f)` is the same to all 12 digits.
+* The null right-singular vector of `J` is theta itself, with an overlap of
+  1.0000000000, and `norm(J theta)/(sigma_max norm(theta))` is 4.9e-17.
+
+`lay.scale` and the `v/<v>` of `metric.py:95` are both normalizations, and
+neither one fixes the gauge. `lay.scale` is an invertible diagonal map on the
+whole of R^n_theta, so it omits nothing. `<v>` is itself gauge invariant, and an
+invariant quantity cannot select a representative.
+
+**`norm(theta)` grows by 0.7 percent over a fit, and that is the correct
+behaviour.** The LM step is orthogonal to the *current* theta, so it is a chord
+and not an arc: `norm(theta+delta)^2 = norm(theta)^2 + norm(delta)^2`. The growth
+is therefore second order in the step, always positive, and it stops when the fit
+converges. Measured at k = 6, 8 and 12: +0.75, +0.80 and +0.66 percent.
+
+So `norm(theta)` is a poor monitor here, although it is the right one for a code
+that carries their defect. Use `norm(J^T r)`, the residual gradient, which is the
+other quantity they name.
+
 ### The section basis is whitened in L2(X), 2026-08-31
 
 `blocks.section_frame` is orthonormal in the coefficients of the monomials, and
