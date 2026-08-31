@@ -135,8 +135,20 @@ adds no cancellation. A form such as `⟨η²⟩ − ⟨η⟩²` would cancel. D
   k = 2 to 10 reproduce the earlier sigma values to 4 percent.
 * **Complete:** task 1. The optimizer stopped early, and the rate does not fall.
   See "Convergence rate".
+* **Complete:** the compensated accumulator on stage 4, the Gram sums.
+  `quartic/dd.py` holds it and `analytic.GRAM_DD` selects it. It stops near
+  σ = 2.5e-14 at k = 29. See "Stage 4 is done".
+* **Complete:** the L2(X) whitening of the section basis, behind `--whiten`. It
+  moves `cond(J)` by 576 times at k = 24 and σ not at all.
 * **Not started:** task 2 needs `R = ‖∇f‖_{L²}/‖f‖_{L²}`; the other two ratios
-  are in the table. The compensated accumulator is not written.
+  are in the table. **This is the input that the perturbation argument of the
+  collaborators needs**, because its requirement is stated in `‖f‖_{H¹}` and we
+  report a mean.
+* **Not started:** the compensated accumulator on stages 1 to 3. It is the rest
+  of the work for stage 1, because stage 4 alone leaves the floor growing in k.
+* **Open:** σ at k = 28 falls steeply with the size of the fit set, and memory
+  stops it at 88,993 points. Until a third point on that curve exists, σ there is
+  an upper bound and the rate for 24 → 28 is not the rate of the ansatz.
 
 ---
 
