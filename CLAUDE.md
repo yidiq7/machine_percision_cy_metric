@@ -505,6 +505,48 @@ The rate for 24 → 28 is **2.05** with both ends from this code. If k = 28 reac
 1.9e-14 with enough points, the rate is 2.84, and the whole apparent slowdown of
 the ansatz is the size of the fit set.
 
+### The section basis is whitened in L2(X), 2026-08-31
+
+`blocks.section_frame` is orthonormal in the coefficients of the monomials, and
+not in `L2(X)`. Measured on 12,000 points, the worst Gram condition number over
+the 64 blocks is:
+
+| k | 8 | 12 | 16 | 20 | 24 |
+|---|---|----|----|----|----|
+| `cond(G)` | 78 | 699 | 4.30e3 | 3.40e4 | **4.47e5** |
+
+It grows by 1.9 for each unit of k, and it enters the fit twice, because `h` is
+quadratic in the sections. Collaborators report the same defect and give the
+cure: parametrize `H = W H_white W` with `W = G^-1/2`. `quartic/whiten.py` holds
+it, and `--whiten` selects it.
+
+Three facts make the change cheap and exact:
+
+* `G` for any block of an orbit is `rot G_rep rot^T`, so **one matrix for each
+  orbit is enough**, and the 64 blocks need no per-block frame.
+* `G_rep` commutes with `rho(s)` for `s` in the stabilizer, so `W` does too, and
+  `h` stays in the invariant subspace. The sampled `G` is symmetrized over the
+  stabilizer, because sample noise breaks the commutation by 1 percent.
+* `H` is built once for each fit step, outside the loop over points, so the
+  whitening **costs nothing for each point**.
+
+**A sampled Gram is enough.** The error of a sum of positive rank-one terms is
+multiplicative and not additive, so it does not scale with `cond(G)`. Measured
+across independent samples, the whitened condition number is 1.07 to 1.19 at
+k = 12 to 20. An additive error model predicts failure here, and it is wrong.
+
+`tests/test_whiten.py` holds the checks that matter. `p` at `theta_FS` comes back
+to 1e-15, the invariance holds to 5.6e-15, and the same `p` comes from plain and
+whitened coordinates to 5.5e-15, so the reachable set of metrics does not change.
+At k = 4 and k = 6 a whole fit gives the same σ to every digit.
+
+**The gain is not yet measured.** At k = 4 and 6 `cond(G)` is 1 to 3, so there is
+nothing to win, and the laptop cannot reach k = 16. Measure `cond(J)` and σ at
+k = 16, 20, 24 and 28 on the cluster before you trust the change.
+
+`Layout.fingerprint` now covers the whitening, the Gram sample and the scale, and
+not the symmetry structure alone. Every earlier θ therefore fails the check.
+
 ### The binding constraint is the arithmetic, and FP64 stops at k = 27
 
 `scripts/oracle_precision.py` measures the FP64 error of the evaluation against

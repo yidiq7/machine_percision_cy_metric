@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import MLGeometry as mlg                                    # noqa: E402
 mlg.set_precision(64)
 
-from quartic import analytic, data, fit, metric, sections   # noqa: E402
+from quartic import analytic, data, fit, metric, sections, whiten  # noqa: E402
 
 # sigma = mean abs(f) from the earlier fits, for comparison. CLAUDE.md holds them.
 KNOWN_SIGMA = {2: 1.90e-2, 4: 1.68e-3, 6: 1.60e-4, 8: 1.69e-5,
@@ -82,6 +82,17 @@ def main():
                          'restart that lowers sigma means the earlier fit '
                          'stopped early, and one that does not means it '
                          'converged. One --k only.')
+    ap.add_argument('--whiten', action='store_true',
+                    help='whiten the section basis in L2(X). The monomial frame '
+                         'is orthonormal in the coefficients and not on X, so '
+                         'its Gram condition number reaches 4.5e5 at k = 24 and '
+                         'enters twice, because h is quadratic in the sections. '
+                         'The change is an exact reparametrization.')
+    ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS,
+                    help='lines for the Gram sample; each line gives 4 points')
+    ap.add_argument('--gram-seed', type=int, default=whiten.GRAM_SEED,
+                    help='seed of the Gram sample. It is part of the convention '
+                         'for h, so the fingerprint covers it.')
     ap.add_argument('--require-gpu', action='store_true',
                     help='stop if JAX did not find a GPU. `uv run` without '
                          '--extra gpu removes jax[cuda12] and falls back to the '
@@ -123,9 +134,18 @@ def main():
         ap.error('--theta-init needs exactly one --k')
 
     for k in args.k:
-        lay = sections.layout(k)
+        if args.whiten:
+            t0 = time.perf_counter()
+            lay = whiten.whitened_layout(k, n_pairs=args.gram_pairs,
+                                         seed=args.gram_seed)
+            print(f"    k={k}: whitened basis from {lay.gram_id}, "
+                  f"{time.perf_counter() - t0:.1f}s")
+        else:
+            lay = sections.layout(k)
 
-        basis_id = lay.structure.fingerprint()
+        # The whitening and the scale are part of the convention, so the
+        # fingerprint must cover them and not the symmetry structure alone.
+        basis_id = lay.fingerprint()
 
         theta0 = None
         if args.theta_init is not None:
@@ -190,6 +210,8 @@ def main():
                   'gram_dd': args.gram_dd,
                   'theta_init': args.theta_init,
                   'basis_fingerprint': basis_id,
+                  'whiten': bool(args.whiten),
+                  'gram_id': lay.gram_id,
                   'max_abs_note': 'a lower bound on sup abs(f); a sample cannot '
                                   'bound a supremum',
                   **stats, **rep}

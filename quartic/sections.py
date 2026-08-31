@@ -13,6 +13,7 @@ Two rules come from measurements, and both matter below 1e-13:
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from math import factorial, prod
 
@@ -38,6 +39,7 @@ class Group:
     orbit_of: np.ndarray    # (n_blocks,) index into `basis`
     basis: np.ndarray       # (n_orbits, n_params_max, d, d) invariant matrices
     slices: tuple           # one slice of theta for each orbit in this group
+    whiten: np.ndarray      # (n_orbits, d, d) symmetric; H = W H_white W
 
 
 @dataclass(frozen=True)
@@ -67,12 +69,34 @@ class Layout:
     n_theta: int
     structure: blocks.Structure
     scale: np.ndarray
+    whiten_inv: tuple = ()   # (d, d) per orbit, G^1/2; empty means no whitening
+    gram_id: str = 'none'    # names the Gram sample, for the fingerprint
+
+    def fingerprint(self):
+        """Digest of every convention that theta depends on.
+
+        theta means nothing without the basis, the whitening and the scale.
+        Save this with the fit and compare it on a restart.
+        """
+        digest = hashlib.sha256()
+        digest.update(self.structure.fingerprint().encode())
+        digest.update(self.gram_id.encode())
+        for mat in self.whiten_inv:
+            digest.update(np.ascontiguousarray(np.round(mat, 8)).tobytes())
+        digest.update(np.ascontiguousarray(
+            np.round(self.scale / max(self.scale.max(), 1e-300), 12)).tobytes())
+        return digest.hexdigest()[:16]
 
 
-def layout(k, struct=None, normalize=True):
-    """Group the blocks of degree k by m, ready for a batch matrix-vector product."""
+def layout(k, struct=None, normalize=True, whiten=None, gram_id='none'):
+    """Group the blocks of degree k by m, ready for a batch matrix-vector product.
+
+    `whiten` is one symmetric matrix for each orbit, as `whiten.whitening_matrices`
+    returns. It reparametrizes h and moves no critical point. See `quartic.whiten`.
+    """
     struct = struct or blocks.build(k)
     slices = struct.param_slices()
+    w_fwd, w_inv = (whiten if whiten is not None else (None, None))
 
     groups = []
     for m in sorted({b.m for b in struct.blocks}):
@@ -87,6 +111,9 @@ def layout(k, struct=None, normalize=True):
             b_o = struct.orbits[o].basis
             basis[local[o], :b_o.shape[0]] = b_o
 
+        w_group = (np.stack([w_fwd[o] for o in orbit_ids]) if w_fwd is not None
+                   else np.stack([np.eye(d) for _ in orbit_ids]))
+
         groups.append(Group(
             m=m,
             exps=np.array(blocks.monomial_exponents(m), dtype=np.int32),
@@ -96,9 +123,12 @@ def layout(k, struct=None, normalize=True):
             orbit_of=np.array([local[b.orbit] for b in members]),
             basis=basis,
             slices=tuple(slices[o] for o in orbit_ids),
+            whiten=w_group,
         ))
+    inv = tuple(w_inv) if w_inv is not None else ()
     lay = Layout(k=k, groups=tuple(groups), n_theta=struct.n_theta,
-                 structure=struct, scale=np.ones(struct.n_theta))
+                 structure=struct, scale=np.ones(struct.n_theta),
+                 whiten_inv=inv, gram_id=gram_id)
     if not normalize:
         return lay
     # One global scale, from the largest raw component. See `Layout`.
@@ -106,7 +136,8 @@ def layout(k, struct=None, normalize=True):
     largest = float(np.abs(raw).max())
     scale = np.full(struct.n_theta, largest if largest > 0 else 1.0)
     return Layout(k=k, groups=lay.groups, n_theta=lay.n_theta,
-                  structure=struct, scale=scale)
+                  structure=struct, scale=scale, whiten_inv=inv,
+                  gram_id=gram_id)
 
 
 def _integer_powers(x, top):
@@ -137,9 +168,15 @@ def _quadratic_form(mats, vec):
 
 
 def block_matrices(group, theta):
-    """H_r for every block of a group, from the flat parameter vector."""
+    """H_r for every block of a group, from the flat parameter vector.
+
+    `group.whiten` carries the L^2(X) whitening W, so theta parametrizes
+    H_white and H = W H_white W. W is the identity when no Gram matrix is given.
+    """
     reps = jnp.stack([jnp.einsum('a,aij->ij', theta[s], group.basis[i, :s.stop - s.start])
                       for i, s in enumerate(group.slices)])
+    w = jnp.asarray(group.whiten)
+    reps = jnp.einsum('oik,okl,olj->oij', w, reps, w)
     per_block = reps[group.orbit_of]
     return jnp.einsum('bik,bkl,bjl->bij', group.rot, per_block, group.rot)
 
@@ -194,7 +231,8 @@ def fubini_study_theta(lay):
     """
     k = lay.k
     theta = np.zeros(lay.n_theta)
-    for orb, sl in zip(lay.structure.orbits, lay.structure.param_slices()):
+    for oi, (orb, sl) in enumerate(zip(lay.structure.orbits,
+                                       lay.structure.param_slices())):
         frame = lay.structure.frames[orb.m]
         # sum_a A_a = k exactly, so the multinomial is an integer. Keep it in
         # Python ints: np.prod wraps int64 and gives 3.049e18 for the 5.839e19
@@ -204,6 +242,10 @@ def fubini_study_theta(lay):
                                        for r, c in zip(orb.rep, e)))
             for e in blocks.monomial_exponents(orb.m)])
         h_rep = frame.T @ np.diag(diag) @ frame
+        if lay.whiten_inv:
+            # theta parametrizes H_white with H = W H_white W, so undo W here.
+            inv = lay.whiten_inv[oi]
+            h_rep = inv @ h_rep @ inv
         coeffs = np.einsum('aij,ij->a', orb.basis, h_rep)
         rebuilt = np.einsum('a,aij->ij', coeffs, orb.basis)
         assert np.abs(rebuilt - h_rep).max() < 1e-9 * max(np.abs(h_rep).max(), 1.0)
