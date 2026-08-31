@@ -30,7 +30,7 @@ import MLGeometry as mlg                                    # noqa: E402
 mlg.set_precision(64)
 
 import jax.numpy as jnp                                     # noqa: E402
-from quartic import analytic, data, sections                # noqa: E402
+from quartic import analytic, data, sections, whiten        # noqa: E402
 
 
 def _phi_mp(lay, mats_mp, z):
@@ -144,6 +144,12 @@ def main():
                          'measure it where the fit landed. One --k only.')
     ap.add_argument('--gram-dd', choices=['off', 'inner', 'on'], default='off')
     ap.add_argument('--seed', type=int, default=3)
+    ap.add_argument('--whiten', action='store_true',
+                    help='build the whitened layout. A theta from a whitened '
+                         'fit means nothing in the plain basis, so this must '
+                         'match the run that saved --theta.')
+    ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
+    ap.add_argument('--gram-seed', type=int, default=whiten.GRAM_SEED)
     args = ap.parse_args()
     analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[args.gram_dd]
     if args.theta is not None and len(args.k) != 1:
@@ -155,14 +161,19 @@ def main():
     omega = np.asarray(batch['Omega_Omegabar'])
     where = 'the saved theta' if args.theta else 'theta_FS'
     print(f"mpmath at {args.dps} digits, {args.points} points, "
-          f"{args.directions} directions, at {where}, Gram stage {args.gram_dd}")
+          f"{args.directions} directions, at {where}, Gram stage {args.gram_dd}, "
+          f"basis {'whitened' if args.whiten else 'plain'}")
     print("reference: central difference of v, two steps. "
           "H and dH/dtheta are exact input.\n")
     print(f"{'k':>3} {'rel err v':>11} {'rel err dv/dth':>15} "
           f"{'truncation':>11} {'worst alpha':>12}")
 
     for k in args.k:
-        lay = sections.layout(k)
+        if args.whiten:
+            lay = whiten.whitened_layout(k, n_pairs=args.gram_pairs,
+                                         seed=args.gram_seed)
+        else:
+            lay = sections.layout(k)
         if args.theta is None:
             theta = sections.fubini_study_theta(lay)
         else:
@@ -170,6 +181,12 @@ def main():
             if theta.shape != (lay.n_theta,):
                 raise SystemExit(f'theta has {theta.shape}, k={k} needs '
                                  f'({lay.n_theta},)')
+            side = Path(args.theta).with_suffix('.basis')
+            if side.exists() and side.read_text().strip() != lay.fingerprint():
+                raise SystemExit(
+                    f'theta was saved against basis {side.read_text().strip()} '
+                    f'and this build has {lay.fingerprint()}. Add or drop '
+                    f'--whiten so that the two agree.')
 
         alphas = np.linspace(0, lay.n_theta - 1, args.directions).astype(int)
         alphas = sorted(set(int(a) for a in alphas))

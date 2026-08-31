@@ -330,9 +330,14 @@ def volume_jacobian(lay, theta, z, restriction, omega):
         rot = jnp.asarray(g_layout.rot)
         # H_r = rot H_rep rot^T, so tr(B_r W) = tr(B_rep rot^T W rot).
         w_orbit = jnp.einsum('bik,bij,bjl->bkl', rot, w, rot)
+        whitening = jnp.asarray(g_layout.whiten)
         for local, sl in enumerate(g_layout.slices):
             take = g_layout.orbit_of == local
             summed = jnp.sum(jnp.where(take[:, None, None], w_orbit, 0.0), axis=0)
+            # H_rep = W H_white W, so dH_rep/dtheta_a is W B_a W. W is symmetric,
+            # so tr(W B_a W S) = tr(B_a W S W). W is the identity with no Gram.
+            w_mat = whitening[local]
+            summed = w_mat @ summed @ w_mat
             basis = jnp.asarray(g_layout.basis[local, :sl.stop - sl.start])
             out = out.at[sl].add(jnp.einsum('aij,ij->a', basis, summed))
     # The basis is the raw one, so the derivative needs the scale of the layout.

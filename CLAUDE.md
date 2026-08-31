@@ -685,6 +685,19 @@ component.** A component near zero gives a relative error of order 1 and says
 nothing about the step that LM takes: that convention alone read 2.2e-14 at
 k = 12 against the 7.3e-16 here.
 
+**The oracle found a bug on its first whitened run.** `volume_jacobian`
+contracted the weight with the raw basis `B_α`. θ parametrizes `H_white` and
+`H = W H_white W`, so the derivative is `W B_α W`, and the whitened Jacobian came
+out 840 times too small. `W` is the identity in the plain basis, so
+`test_jacobian_matches_jacfwd` passed throughout.
+
+**The fits are not affected.** `fit` and `condition_number` both go through
+`weighted_residual_fast` and its `jax.custom_jvp`, which builds the tangent with
+`sections.prepare` and therefore carries `W`. Measured against autodiff, that
+path gives 2.1e-15 whitened and 1.2e-15 plain. Only `volume_jacobian`, which
+`bench_analytic.py` and the oracle call, was wrong. `tests/test_analytic.py` now
+tests the whitened layout as well.
+
 **The measurement that decides the k = 28 plateau is at k = 24 and k = 28, with
 `--gram-dd on`, at the θ of the fit.** The error of `J` there must come out near
 1e-13 for it to explain a plateau at 1.1e-13. At k = 12 it is 7e-16 and σ is

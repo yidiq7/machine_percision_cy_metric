@@ -126,6 +126,25 @@ def test_fit_matches_between_the_two_paths():
         print(f"  k={k}: sigma {sig_b:.10e} against {sig_a:.10e}, rel {rel:.2e}")
 
 
+def test_jacobian_matches_jacfwd_when_whitened():
+    """`volume_jacobian` must carry the whitening, and the plain basis hides it.
+
+    theta parametrizes H_white and H = W H_white W, so dH/dtheta_a is W B_a W
+    and not B_a. With W the identity the two agree, so a test in the plain basis
+    alone passes while the whitened Jacobian is wrong by a factor of 840.
+    """
+    from quartic import whiten as qwhiten
+    worst = 0.0
+    for k in (4, 6, 8):
+        lay = qwhiten.whitened_layout(k, n_pairs=1500, seed=4242)
+        theta = sections.fubini_study_theta(lay)
+        _, dv = analytic.residual_jacobian(lay, theta, BATCH)
+        want = jax.jacfwd(lambda t: metric.volumes(lay, t, BATCH, chunk=50))(theta)
+        worst = max(worst, float(jnp.abs(dv - want).max() / jnp.abs(want).max()))
+    assert worst < 1e-12, worst
+    print(f"  max relative difference of the whitened Jacobian = {worst:.2e}")
+
+
 def test_run_to_limit_never_loses_to_the_default_stop():
     """The convergence test can only stop the fit early, never improve it.
 
@@ -155,6 +174,7 @@ if __name__ == "__main__":
                test_chunking_does_not_change_the_result,
                test_custom_jvp_matches_autodiff,
                test_fit_matches_between_the_two_paths,
+               test_jacobian_matches_jacfwd_when_whitened,
                test_run_to_limit_never_loses_to_the_default_stop):
         print(fn.__name__)
         fn()
