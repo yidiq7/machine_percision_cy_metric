@@ -146,9 +146,10 @@ adds no cancellation. A form such as `⟨η²⟩ − ⟨η⟩²` would cancel. D
   report a mean.
 * **Not started:** the compensated accumulator on stages 1 to 3. It is the rest
   of the work for stage 1, because stage 4 alone leaves the floor growing in k.
-* **Open:** σ at k = 28 falls steeply with the size of the fit set, and memory
-  stops it at 88,993 points. Until a third point on that curve exists, σ there is
-  an upper bound and the rate for 24 → 28 is not the rate of the ansatz.
+* **Open:** σ at k = 28 sits on a plateau near 1.1e-13 and scatters by 1.67
+  times between runs that differ only in round-off. The rate for 24 → 28 is 1.81
+  at the plateau. The rank of `J` in FP64 is the leading explanation, because
+  `cond(J)*eps = 133` there, and `--whiten` is the test.
 
 ---
 
@@ -403,10 +404,10 @@ The LM fits of 2026-08-16, on 1e5 fit points with an 8e6 hold-out set, give:
 | first-order | 2.50 | 2.43 | 1.92 | — | — |
 | LM | **2.90** | **2.81** | **2.73** | **2.67** | **2.05** |
 
-Both ends of the 24 → 28 entry now come from this code. The entry is still not
-the rate of the ansatz: σ at k = 28 falls steeply with the size of the fit set
-and memory stops it at 88,993 points. See "The fit set is the binding constraint
-at k = 28".
+Both ends of the 24 → 28 entry now come from this code. The sweep over the fit
+set puts σ at k = 28 on a plateau near 1.1e-13, so the entry is **1.81 at the
+plateau and 2.05 at the best σ seen**, and the fall is real. See "σ at k = 28
+saturates near 1.1e-13, and it scatters".
 
 ### The fits with the Gram stage in dd, 2026-08-24
 
@@ -480,73 +481,51 @@ k = 28. A target risk of 5e-3 asks for 189,800 points, which is 212 GB, so the
 budget went to the points and the block got its floor. `RISK` in
 `scripts/run_cluster.sh` sets that trade-off.
 
-**Do not use `RISK` to buy speed at k = 28.** The excess-risk model
-`n_θ/N_fit` says that a move from 1.1e-2 to 2.5e-2 costs 0.7 percent of σ. The
-measurement says 296 percent. See "The fit set is the binding constraint at
-k = 28".
+**`RISK` above 1.6e-2 costs σ at k = 28, and below it costs nothing.** The
+excess-risk model `n_θ/N_fit` predicts 0.7 percent from 1.1e-2 to 2.5e-2 and the
+measurement gives a factor of 2, so do not size a fit set with that model here.
+Keep approximately 60,000 fit points and spend the rest of the budget on the
+block. See "σ at k = 28 saturates near 1.1e-13, and it scatters".
 
-### The fit set is the binding constraint at k = 28, 2026-08-31
+### σ at k = 28 saturates near 1.1e-13, and it scatters, 2026-08-31
 
-Two fits at k = 28 with the same code, and one at k = 24 for comparison. The
-block is 4096 in each one.
+The sweep over the size of the fit set, at seed 20260813 and a hold-out of 8e6:
 
-| k | fit points | N/n_θ | excess risk | σ | `cond(J)` |
-|---|---|---|---|---|---|
-| 24 | 5,981 | 11 | 9.1e-2 | 1.2818e-12 | 4.71e16 |
-| 24 | 49,272 | 91 | 1.1e-2 | **1.2118e-12** | 2.78e16 |
-| 28 | 37,960 | 40 | 2.5e-2 | 2.7314e-13 | 6.09e17 |
-| 28 | 88,993 | 94 | 1.1e-2 | **6.8949e-14** | 7.72e17 |
+| fit points | N/n_θ | block | steps | σ |
+|---|---|---|---|---|
+| 18,980 | 20 | 4096 | 114 | 2.3250e-13 |
+| 37,960 | 40 | 4096 | **600, at the limit** | 1.3711e-13 |
+| 59,312 | 62 | 2967 | 116 | **1.1228e-13** |
+| 86,272 | 91 | 485 | 121 | **1.1483e-13** |
+| 88,993 | 94 | 64 | 123 | **6.8949e-14** |
 
-* **k = 24 does not depend on the fit set.** 8 times the points give 5.5 percent.
-* **k = 28 depends on it strongly.** 2.34 times the points give 3.96 times the
-  σ. The excess-risk model predicts 0.7 percent, so **that model does not hold at
-  k = 28**. Do not size a fit set with it above k = 24.
-* Two seeds and two parameter conventions give the same factor of 3 to 3.7, so
-  the effect is not a seed and not the basis.
-* **σ at k = 28 is therefore an upper bound that memory sets**, and not a
-  converged measurement. 88,993 points fill 101 GB of the 142.6 GB card.
+* **σ saturates.** 59,312 and 86,272 points agree to 2.3 percent, so the fit set
+  is not the binding constraint above approximately 60,000 points. The earlier
+  guess of `σ ~ N^-1.62`, from two points, is wrong. **Correct the earlier
+  claim** that memory sets σ at k = 28: memory binds below 60,000 points only.
+* **The plateau is approximately 1.1e-13**, and `σ_∞ + C/N` on the three
+  converged points gives 7.1e-14, so the plateau lies between those two values.
+* **σ scatters by 1.67 times at one seed and one point count.** 86,272 points
+  give 1.1483e-13 and 88,993 give 6.8949e-14, with 3 percent between the fit sets
+  and the same seed. The order of the summation inside `lax.map` moves the
+  residual by 1.3e-16 only, so that is not the cause by itself. At
+  `cond(J) = 6e17` the valley is flat, and a perturbation of 1e-16 sends LM to a
+  different point of the valley with a different σ. **The scatter, and not the
+  size of the fit set, is now the largest uncertainty at k = 28.**
+* The run at 37,960 points needed more than 600 steps, and the same size at
+  another seed converged in 111. That is the same instability.
 
-Neither standard model of the fit-set dependence fits the two points.
-`σ = σ_∞ + C/N` and `σ = σ_∞ + C/sqrt(N)` each give a negative `σ_∞`, so the
-fall is steeper than either. A power law gives `σ ~ N^-1.62` and 1.9e-14 at
-200,000 points, which is the value that the law of the collaborators predicts,
-but two points cannot support that. **Measure a third point before you believe
-it.**
+**Therefore the rate for 24 → 28 is 1.81 at the plateau, and 2.05 at the best σ
+seen.** σ over the law of the collaborators is 0.97, 1.06, 1.26 and 4.5 at
+k = 16, 20, 24 and 28. **The deviation at k = 28 is real.** It is not the fit set,
+not the seed, and not the arithmetic floor, which sits 60 times below the plateau.
 
-The rate for 24 → 28 is **2.05** with both ends from this code. If k = 28 reaches
-1.9e-14 with enough points, the rate is 2.84, and the whole apparent slowdown of
-the ansatz is the size of the fit set.
-
-### The scale gauge of theta is free, and that is safe
-
-Collaborators report a second defect that we do not have, and the difference is
-worth keeping, because the question will come back. They normalize `p` at a fixed
-point. `p` is not invariant under `h -> lambda h`, so that choice selects one
-representative of each ray. It is therefore an affine chart on a projective
-parameter space, and it omits the hyperplane where `p` at that point is zero.
-Their optimizer ran toward the omitted hyperplane and reported convergence.
-
-We fix nothing. Measured at k = 8 over lambda from 1e-6 to 1e6:
-
-* `p -> lambda p` to 5.6e-16, and `v` does not move, to 1.6e-15.
-* `mean abs(f)` is the same to all 12 digits.
-* The null right-singular vector of `J` is theta itself, with an overlap of
-  1.0000000000, and `norm(J theta)/(sigma_max norm(theta))` is 4.9e-17.
-
-`lay.scale` and the `v/<v>` of `metric.py:95` are both normalizations, and
-neither one fixes the gauge. `lay.scale` is an invertible diagonal map on the
-whole of R^n_theta, so it omits nothing. `<v>` is itself gauge invariant, and an
-invariant quantity cannot select a representative.
-
-**`norm(theta)` grows by 0.7 percent over a fit, and that is the correct
-behaviour.** The LM step is orthogonal to the *current* theta, so it is a chord
-and not an arc: `norm(theta+delta)^2 = norm(theta)^2 + norm(delta)^2`. The growth
-is therefore second order in the step, always positive, and it stops when the fit
-converges. Measured at k = 6, 8 and 12: +0.75, +0.80 and +0.66 percent.
-
-So `norm(theta)` is a poor monitor here, although it is the right one for a code
-that carries their defect. Use `norm(J^T r)`, the residual gradient, which is the
-other quantity they name.
+The leading explanation is now the rank of `J` in FP64. `cond(J)*eps = 133` at
+k = 28, so the weakest directions of the LM solve are round-off, and the fit stops
+where the effective rank stops. That also explains the scatter, because the
+effective rank depends on round-off. **`--whiten` takes `cond(J)*eps` to
+approximately 2.3, so the whitened run at k = 28 is now the test to make.** It was
+not worth making when the fit set looked like the cause.
 
 ### The section basis is whitened in L2(X), 2026-08-31
 
