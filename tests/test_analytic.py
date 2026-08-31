@@ -126,12 +126,36 @@ def test_fit_matches_between_the_two_paths():
         print(f"  k={k}: sigma {sig_b:.10e} against {sig_a:.10e}, rel {rel:.2e}")
 
 
+def test_run_to_limit_never_loses_to_the_default_stop():
+    """The convergence test can only stop the fit early, never improve it.
+
+    `rtol` and `atol` enter the termination test of optimistix and nothing else,
+    so both runs follow one trajectory. `best_so_far` over every step therefore
+    holds an iterate at least as good as the one where the test fires. At k = 28
+    the test cost a factor of 6.6 in sigma between two exact reparametrizations.
+    """
+    from quartic import data as qdata, fit as qfit
+    batch = qdata.make(250, 5)
+    for k in (4, 6):
+        lay = sections.layout(k)
+        th_d, st_d = qfit.fit(lay, batch, chunk=1000, max_steps=100)
+        th_l, st_l = qfit.fit(lay, batch, chunk=1000, max_steps=100,
+                              rtol=0.0, atol=0.0, best_so_far=True)
+        loss = lambda t: float(jnp.sum(
+            metric.weighted_residual(lay, t, batch) ** 2))
+        l_d, l_l = loss(th_d), loss(th_l)
+        assert l_l <= l_d * (1 + 1e-9), (k, l_d, l_l)
+        print(f"  k={k}: default stops at {st_d['steps']} steps, loss {l_d:.4e}; "
+              f"the whole budget gives {l_l:.4e}")
+
+
 if __name__ == "__main__":
     for fn in (test_phi_matches_complex_hessian, test_residual_matches,
                test_jacobian_matches_jacfwd,
                test_chunking_does_not_change_the_result,
                test_custom_jvp_matches_autodiff,
-               test_fit_matches_between_the_two_paths):
+               test_fit_matches_between_the_two_paths,
+               test_run_to_limit_never_loses_to_the_default_stop):
         print(fn.__name__)
         fn()
     print("\nall analytic tests pass")

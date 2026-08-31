@@ -97,6 +97,14 @@ def main():
                     help='stop if JAX did not find a GPU. `uv run` without '
                          '--extra gpu removes jax[cuda12] and falls back to the '
                          'CPU without failing.')
+    ap.add_argument('--run-to-limit', action='store_true',
+                    help='set rtol = atol = 0, run every one of --max-steps, '
+                         'and keep the theta with the smallest loss. The '
+                         'convergence test of optimistix measures the step in '
+                         'theta, so it fires where the step is small and not '
+                         'where the residual stops falling. Two exact '
+                         'reparametrizations of the same h then stop 6.6 times '
+                         'apart in sigma at k = 28.')
     ap.add_argument('--dry-run', action='store_true',
                     help='size the block and report the memory, then stop')
     ap.add_argument('--cond', action='store_true', help='also measure cond(J)')
@@ -176,7 +184,8 @@ def main():
         if fit_chunk is None:
             n_fit, fit_chunk, info = fit.plan_fit(
                 lay, train, args.budget_gb, analytic_jac=analytic_jac,
-                max_steps=args.max_steps, target_risk=args.target_risk)
+                max_steps=args.max_steps, target_risk=args.target_risk,
+                best_so_far=args.run_to_limit)
             fit_set = {key: val[:n_fit] for key, val in train.items()}
             print(f"    k={k}: fit set {n_fit} of {int(train['points'].shape[0])}, "
                   f"block {fit_chunk}, measured peak "
@@ -188,15 +197,24 @@ def main():
         if args.dry_run:
             continue
 
+        tols = {'rtol': 0.0, 'atol': 0.0} if args.run_to_limit else {}
         theta, stats = fit.fit(lay, fit_set, theta0=theta0,
                                max_steps=args.max_steps,
                                chunk=fit_chunk, analytic_jac=analytic_jac,
-                               rcond=args.rcond)
+                               rcond=args.rcond,
+                               best_so_far=args.run_to_limit, **tols)
         rep = metric.report(lay, theta, hold, chunk=args.chunk)
         known = KNOWN_SIGMA.get(k)
         ratio = f"{rep['mape'] / known:.2f}" if known else ''
-        flag = '' if stats['converged'] else (
-            ' HIT MAX STEPS' if stats['hit_max_steps'] else f" {stats['message']}")
+        # --run-to-limit means to use every step, so the step limit is the
+        # intent there and not a warning.
+        if args.run_to_limit:
+            flag = ' best of the whole budget'
+        elif stats['converged']:
+            flag = ''
+        else:
+            flag = (' HIT MAX STEPS' if stats['hit_max_steps']
+                    else f" {stats['message']}")
         print(f"{k:>3} {lay.n_theta:>8} {stats['steps']:>6} {stats['seconds']:>8.1f}s "
               f"{rep['mape']:>13.4e} {rep['mape_stderr'] / rep['mape']:>6.2%} "
               f"{known if known else '':>10} {ratio:>7} "

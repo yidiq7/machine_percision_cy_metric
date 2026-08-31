@@ -49,7 +49,7 @@ def device_memory_gb():
         return 0.0
 
 
-def _solver(rtol, atol, verbose, rcond=None):
+def _solver(rtol, atol, verbose, rcond=None, best_so_far=False):
     """LM, with a rank-revealing step when `rcond` is set.
 
     cond(J) grows by 5.65 for each unit of k, and it passes 1/eps near k = 23.
@@ -58,15 +58,20 @@ def _solver(rtol, atol, verbose, rcond=None):
     threw theta out of the region where p is positive. `lx.SVD` drops every
     direction below rcond * sigma_max instead, and those directions carry
     almost none of the residual.
+
+    `best_so_far` keeps a copy of the theta with the smallest loss. Use it with
+    rtol = atol = 0, which stops the convergence test from firing, so that the
+    fit runs to `max_steps` and the answer does not depend on that test.
     """
     linear = lx.QR() if rcond is None else lx.SVD(rcond=rcond)
     # optimistix 0.1.0 takes a bool or a callable here, and not a frozenset.
-    return optx.LevenbergMarquardt(rtol=rtol, atol=atol, verbose=verbose,
-                                   linear_solver=linear)
+    solver = optx.LevenbergMarquardt(rtol=rtol, atol=atol, verbose=verbose,
+                                     linear_solver=linear)
+    return optx.BestSoFarLeastSquares(solver) if best_so_far else solver
 
 
 def solve_memory(lay, batch, chunk, theta=None, max_steps=200, rtol=1e-15,
-                 atol=1e-32, analytic_jac=True, rcond=None):
+                 atol=1e-32, analytic_jac=True, rcond=None, best_so_far=False):
     """Peak memory of the whole LM solve, in GB, from the compiled program.
 
     One Jacobian is not the peak. The same program also holds J, the stacked
@@ -75,7 +80,7 @@ def solve_memory(lay, batch, chunk, theta=None, max_steps=200, rtol=1e-15,
     """
     theta = sections.fubini_study_theta(lay) if theta is None else theta
     residual = residual_fn(lay, batch, chunk, analytic_jac)
-    solver = _solver(rtol, atol, False, rcond)
+    solver = _solver(rtol, atol, False, rcond, best_so_far)
 
     def solve(start):
         return optx.least_squares(lambda q, args: residual(q), solver, start,
@@ -86,11 +91,18 @@ def solve_memory(lay, batch, chunk, theta=None, max_steps=200, rtol=1e-15,
 
 
 def fit(lay, batch, theta0=None, max_steps=200, rtol=1e-15, atol=1e-32,
-        chunk=2000, analytic_jac=True, verbose=False, rcond=None):
-    """Minimize the MSPE over theta. Returns the solution and its statistics."""
+        chunk=2000, analytic_jac=True, verbose=False, rcond=None,
+        best_so_far=False):
+    """Minimize the MSPE over theta. Returns the solution and its statistics.
+
+    The convergence test of optimistix measures the step in theta, so it fires
+    where the step is small and not where the residual stops falling. Two exact
+    reparametrizations therefore stop at different residuals. `best_so_far` with
+    rtol = atol = 0 removes that dependence, at the cost of every step.
+    """
     theta0 = sections.fubini_study_theta(lay) if theta0 is None else theta0
     residual = residual_fn(lay, batch, chunk, analytic_jac)
-    solver = _solver(rtol, atol, verbose, rcond)
+    solver = _solver(rtol, atol, verbose, rcond, best_so_far)
 
     start = time.perf_counter()
     sol = optx.least_squares(lambda theta, args: residual(theta), solver, theta0,
@@ -105,6 +117,9 @@ def fit(lay, batch, theta0=None, max_steps=200, rtol=1e-15, atol=1e-32,
         'chunk': chunk,
         'analytic_jac': analytic_jac,
         'rcond': rcond,
+        'best_so_far': best_so_far,
+        'rtol': rtol,
+        'atol': atol,
         'seconds': time.perf_counter() - start,
     }
 
@@ -130,7 +145,8 @@ def jacobian_memory(lay, batch, chunk=2000, theta=None, analytic_jac=True):
 
 
 def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
-             max_steps=200, tries=8, min_chunk=64, target_risk=5e-3):
+             max_steps=200, tries=8, min_chunk=64, target_risk=5e-3,
+             best_so_far=False):
     """Fit-set size and block size that keep the whole LM solve in the budget.
 
     The peak follows `a * N_fit + b * chunk + c`. The `a` term is the surprise:
@@ -149,7 +165,8 @@ def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
     def peak(n_fit, chunk):
         small = {k: v[:n_fit] for k, v in batch.items()}
         return solve_memory(lay, small, min(chunk, n_fit), max_steps=max_steps,
-                            analytic_jac=analytic_jac)
+                            analytic_jac=analytic_jac,
+                            best_so_far=best_so_far)
 
     # Two point counts at one block, and one more block, give a, b and c.
     n_lo, n_hi = min(2000, n_points), min(8000, n_points)

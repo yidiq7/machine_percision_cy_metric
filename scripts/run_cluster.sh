@@ -32,6 +32,7 @@ CHUNK=${CHUNK:-200000}
 BUDGET=${BUDGET:-}       # GB for the whole LM solve; empty means 45 percent
 K=${K:-}                 # override the degrees of the stage, for a quick check
 RISK=${RISK:-}           # excess risk n_theta/N_fit to aim for; sizes the fit set
+LIMIT=${LIMIT:-0}        # 1 = --run-to-limit: no convergence test, best so far
 WHITEN=${WHITEN:-0}      # 1 whitens the section basis in L2(X)
 
 # JAX takes 75 percent of the card by default. This gives back the rest.
@@ -58,6 +59,7 @@ esac
 KS=${K:-$KS}
 
 if [ "$WHITEN" = "1" ]; then WHITEN_FLAG="--whiten"; else WHITEN_FLAG=""; fi
+if [ "$LIMIT" = "1" ]; then RUNLIMIT="--run-to-limit"; else RUNLIMIT=""; fi
 
 # shellcheck disable=SC2086
 uv run $UV_EXTRA python -u scripts/run_fit.py \
@@ -69,6 +71,7 @@ uv run $UV_EXTRA python -u scripts/run_fit.py \
     --gram-dd "$DD" \
     ${BUDGET:+--budget-gb "$BUDGET"} \
     ${RISK:+--target-risk "$RISK"} \
+    $RUNLIMIT \
     $WHITEN_FLAG \
     --max-steps 600 \
     --seed "$SEED" \

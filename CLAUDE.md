@@ -146,10 +146,11 @@ adds no cancellation. A form such as `⟨η²⟩ − ⟨η⟩²` would cancel. D
   report a mean.
 * **Not started:** the compensated accumulator on stages 1 to 3. It is the rest
   of the work for stage 1, because stage 4 alone leaves the floor growing in k.
-* **Open:** σ at k = 28 sits on a plateau near 1.1e-13 and scatters by 1.67
-  times between runs that differ only in round-off. The rate for 24 → 28 is 1.81
-  at the plateau. The rank of `J` in FP64 is the leading explanation, because
-  `cond(J)*eps = 133` there, and `--whiten` is the test.
+* **Open:** σ at k = 28 is an upper bound. `--whiten` ruled out the rank of `J`:
+  `cond(J)·ε` went from 133 to 0.036 and σ did not improve. The surviving
+  explanation is the **relative error of `J`**, whose `W` and `K` stages are still
+  FP64. Measure it against an exact reference. See "The rank of `J` is not the
+  cause".
 
 ---
 
@@ -520,12 +521,10 @@ seen.** σ over the law of the collaborators is 0.97, 1.06, 1.26 and 4.5 at
 k = 16, 20, 24 and 28. **The deviation at k = 28 is real.** It is not the fit set,
 not the seed, and not the arithmetic floor, which sits 60 times below the plateau.
 
-The leading explanation is now the rank of `J` in FP64. `cond(J)*eps = 133` at
-k = 28, so the weakest directions of the LM solve are round-off, and the fit stops
-where the effective rank stops. That also explains the scatter, because the
-effective rank depends on round-off. **`--whiten` takes `cond(J)*eps` to
-approximately 2.3, so the whitened run at k = 28 is now the test to make.** It was
-not worth making when the fit set looked like the cause.
+The explanation was the rank of `J` in FP64, because `cond(J)*eps = 133` at
+k = 28. **`--whiten` tested it and it is wrong.** Whitening took `cond(J)*eps` to
+0.036 and σ did not improve. The error of `J`, and not its rank, is what is left.
+See "The rank of `J` is not the cause".
 
 ### The section basis is whitened in L2(X), 2026-08-31
 
@@ -623,6 +622,82 @@ possible.
 
 `Layout.fingerprint` now covers the whitening, the Gram sample and the scale, and
 not the symmetry structure alone. Every earlier θ therefore fails the check.
+
+### The rank of `J` is not the cause, 2026-08-31
+
+Two whitened runs at k = 28, both with 59,312 fit points and a hold-out of 8e6.
+The plain row is the same fit set and the same seed, from the sweep above:
+
+| basis, seed | block | steps | `cond(J)` | `cond(J)·ε` | σ |
+|---|---|---|---|---|---|
+| plain, 20260813 | 2967 | 116 | ~6e17 | 133 | **1.1228e-13** |
+| whitened, 20260813 | 2985 | 126 | 1.626e14 | **0.036** | 3.5312e-13 |
+| whitened, 20260901 | 3084 | 122 | 8.815e13 | **0.020** | 7.4173e-13 |
+
+**The rank of `J` in FP64 does not set σ at k = 28. That explanation is dead.**
+Whitening took `cond(J)·ε` from 133 to 0.036, so `J` went from numerically rank
+deficient to comfortably full rank, and σ did not improve. It stayed on the same
+plateau and the two seeds read 3.1 and 6.6 times worse. The prediction was a
+large fall, so the sign of the result settles it.
+
+**The comparison is exact, which is what makes it usable.** `W` is symmetric and
+invertible and it commutes with the stabilizer, so `H = W H_w W` reaches the same
+set of `h` with the same loss. Measured: `θ_FS` gives the same `H` to 8.9e-16 and
+the same σ to 1.1e-15, and whole fits at k = 16, 20 and 24 agree to 5 digits.
+Only at k = 28 do the two coordinate systems separate.
+
+* **Do not read the 3.1 times as a mechanism.** σ at k = 28 already scatters by
+  1.67 times at one seed and one point count, and the blocks differ here as well,
+  so 3.1 is only somewhat outside the known scatter. **The result is that
+  whitening bought nothing, and not that it did harm.**
+* **`optimistix` did not stop early.** Its test needs `|δr_i|` under a few ulps at
+  **every** point and `|δθ_i|` under `1e-15·|θ_i|` at every component, and it
+  fires only on an accepted step. The whitened runs took 126 and 122 steps against
+  116. Both iterations really stalled. An earlier note here blamed the
+  convergence test; that was wrong, and the test is tight.
+
+**The surviving explanation is the accuracy of `J`, and not its rank.** LM
+descends on `Jᵀr`. The Gram stage of `J` is dd, and the rest of it, the matrices
+`W` and the contraction with `K = R† g⁻¹ R`, is FP64. A relative error of
+approximately 1e-13 in `J` makes `Jᵀr` noise at that level, and the iteration
+then stalls where the noise starts, whatever the coordinates are. Whitening
+changes the conditioning of `J` and not its error, so it correctly predicts no
+gain.
+
+`scripts/oracle_jacobian.py` measures it. The reference is a central difference
+of `v` in mpmath at 60 digits, and **not** the analytic formula in mpmath, so the
+test covers Jacobi's formula and the contraction with `K` as well as their
+arithmetic. `H` and `dH/dθ` go in as exact input, as in `oracle_precision.py`.
+Two step sizes bound the truncation error, and it must sit far below the error
+that the test reports.
+
+Measured at `θ_FS`, in plain FP64, 2 points and 3 directions:
+
+| k | 4 | 8 | 12 |
+|---|---|---|----|
+| error of `v` | 2.2e-16 | 4.4e-16 | 5.6e-16 |
+| **error of `dv/dθ`** | 2.8e-15 | 1.9e-15 | 7.3e-16 |
+| truncation of the reference | 5.8e-23 | 3.4e-20 | 3.7e-19 |
+
+The reference is 4 to 7 orders below what it measures, so it is not the limit.
+**Scale the error by the largest `dv/dθ` of the point, and not by each
+component.** A component near zero gives a relative error of order 1 and says
+nothing about the step that LM takes: that convention alone read 2.2e-14 at
+k = 12 against the 7.3e-16 here.
+
+**The measurement that decides the k = 28 plateau is at k = 24 and k = 28, with
+`--gram-dd on`, at the θ of the fit.** The error of `J` there must come out near
+1e-13 for it to explain a plateau at 1.1e-13. At k = 12 it is 7e-16 and σ is
+2.2e-7, so nothing is visible at low k.
+
+`--run-to-limit` sets `rtol = atol = 0` and wraps LM in
+`optx.BestSoFarLeastSquares`, so the fit uses every one of `--max-steps` and keeps
+the θ of the smallest loss. It removes the termination test from the answer. Given
+how tight that test is, expect little from it; it is cheap insurance and not the
+fix.
+
+**Therefore σ at k = 28 stays an upper bound**, the plateau near 1.1e-13 stands,
+and the 24 → 28 rate stays provisional.
 
 ### The binding constraint is the arithmetic, and FP64 stops at k = 27
 
