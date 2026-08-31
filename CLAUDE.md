@@ -571,9 +571,38 @@ to 1e-15, the invariance holds to 5.6e-15, and the same `p` comes from plain and
 whitened coordinates to 5.5e-15, so the reachable set of metrics does not change.
 At k = 4 and k = 6 a whole fit gives the same σ to every digit.
 
-**The gain is not yet measured.** At k = 4 and 6 `cond(G)` is 1 to 3, so there is
-nothing to win, and the laptop cannot reach k = 16. Measure `cond(J)` and σ at
-k = 16, 20, 24 and 28 on the cluster before you trust the change.
+**Measured, 2026-08-31. It moves `cond(J)` and it does not move σ.** Paired runs
+at one seed, with 5e-3 excess risk and a block of 4096:
+
+| k | σ plain | σ whitened | `cond(J)` plain | whitened | gain |
+|---|---|---|---|---|---|
+| 16 | 3.5364e-09 | 3.5364e-09 | 2.067e10 | 6.327e08 | 33x |
+| 20 | 6.3229e-11 | 6.3229e-11 | 2.319e13 | 2.419e11 | 96x |
+| 24 | 1.2198e-12 | 1.2307e-12 | **2.880e16** | **4.998e13** | **576x** |
+
+* **σ is identical at k = 16 and k = 20, to all 5 digits**, and `rms(f)` and
+  `max abs(f)` with it. Two whole fits from different coordinates that land on the
+  same number confirm the reparametrization better than any unit test. The 0.89
+  percent at k = 24 is inside the 1 percent that k = 24 moves between fit sets.
+* **`cond(J)` at k = 24 falls from 6.4 times past `1/ε` to 0.011 times it.** `J`
+  was numerically singular in FP64 there, and it is not now. The growth for each
+  unit of k falls from 5.86 to 4.09, so k = 28 goes to approximately 1e16 against
+  1e19 plain.
+* **The gain is approximately `sqrt(cond(G))`, and not `cond(G)` or `cond(G)²`.**
+  gain over `cond(G)` is 7.6e-3, 2.8e-3 and 1.3e-3, and it falls. So most of
+  `cond(J)` was never the parametrization. The linearization of the Monge-Ampere
+  operator is the Laplacian, and the spread of its spectrum over the degree-k
+  modes is intrinsic. No change of coordinates removes it.
+
+**Therefore whitening buys headroom and not residual.** That agrees with the
+measurement on the test problem: a large condition number costs θ and not the
+residual. The defect stopped the fits of the collaborators from converging, and
+ours all converge, so we carried the defect without the symptom. One global scale
+for θ had already removed it.
+
+Keep `--whiten` off by default. It costs 20 percent more steps at k = 24 and it
+wins nothing below k = 28. Turn it on above k = 30, where plain `cond(J)` reaches
+1e19 and higher.
 
 `Layout.fingerprint` now covers the whitening, the Gram sample and the scale, and
 not the symmetry structure alone. Every earlier θ therefore fails the check.
