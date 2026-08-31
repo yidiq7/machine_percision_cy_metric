@@ -144,6 +144,11 @@ def main():
                          'measure it where the fit landed. One --k only.')
     ap.add_argument('--gram-dd', choices=['off', 'inner', 'on'], default='off')
     ap.add_argument('--seed', type=int, default=3)
+    ap.add_argument('--step', type=int, default=15,
+                    help='the central difference uses 10**-step and 10**(1-step). '
+                         'The truncation falls as the square of the step and it '
+                         'grows with k, so it reached 1.4e-17 at k = 20 with '
+                         'step 12. mpmath at 60 digits leaves ample room.')
     ap.add_argument('--whiten', action='store_true',
                     help='build the whitened layout. A theta from a whitened '
                          'fit means nothing in the plain basis, so this must '
@@ -218,7 +223,7 @@ def main():
             refs, truncs = {}, {}
             for al in alphas:
                 ders = []
-                for step in (mpf(10) ** -12, mpf(10) ** -11):
+                for step in (mpf(10) ** -args.step, mpf(10) ** (1 - args.step)):
                     plus = _v_mp(lay, _shift(mats_mp, grads[al], step), z,
                                  r_mat, omega[idx])
                     minus = _v_mp(lay, _shift(mats_mp, grads[al], -step), z,
