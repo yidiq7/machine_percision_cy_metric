@@ -781,6 +781,52 @@ fix.
 **Therefore σ at k = 28 stays an upper bound**, the plateau near 1.1e-13 stands,
 and the 24 → 28 rate stays provisional.
 
+### The k = 28 plateau is the flat valley, and only precision moves it, 2026-09-02
+
+`--run-to-limit` removes the convergence test and keeps the best θ of 600 steps.
+Two runs at seed 20260813 and the same 59,312 fit points:
+
+| block | steps | fit-set σ | hold-out σ | ratio |
+|---|---|---|---|---|
+| 2983 | 600 | 1.3606e-13 | 1.3560e-13 | 0.997 |
+| 2761 | 600 | 2.3005e-13 | 2.3148e-13 | 1.006 |
+
+**Premature termination is dead as well.** Both runs used the whole budget and
+the gap stayed at 1.69 times. Removal of the test bought 18 percent on one
+trajectory and nothing on the other. Both start at `θ_FS`, so the same start and
+the same objective, with 1e-16 of summation order between them, give end points
+1.69 times apart.
+
+**Every candidate is now excluded**: the arithmetic floor, the size of the fit
+set, the rank of `J`, the entrywise accuracy of `J`, excess risk, and the
+convergence test.
+
+**What is left is not a fault. It is the shape of the problem.** The linearized
+Monge-Ampere operator is the Laplacian, and its spectrum over the degree-k modes
+spans a wide range. That makes an intrinsically flat valley, and no
+reparametrization removes it, which is why `--whiten` changed `cond(J)` by 4,000
+times and did not move σ. LM descends until the computed gradient is round-off,
+and in a flat valley that happens at a **range** of heights, not at one height.
+The height it reaches depends on the noise, so σ scatters.
+
+`scripts/oracle_gradient.py` measures the noise of `g = Jᵀr` from two block
+sizes, with no exact reference. **A noisy gradient at a converged θ is normal and
+diagnoses nothing.** The exact gradient is zero at a minimum, so a computed one
+there is pure error. Measured at a converged θ on 4,000 points, the relative
+error of `g` is 5.8e-2, 2.1e-1 and 1.0 at k = 4, 6 and 8, where σ reproduces
+exactly. Use the script part way through a fit, or at equal σ across k.
+
+**Therefore the only lever left is precision.** The noise floor of `g` falls with
+the error of `r` and `J`, so the height at which LM stalls falls with it. The
+oracle puts `rel err(v)` at the fitted θ at 2.0e-15 with the Gram stage in dd, and
+dd on stages 1 to 4 takes the error of φ to 5e-16 and flat in k. **That predicts
+the plateau falls by approximately an order of magnitude, to near 1e-14.** It is a
+prediction and not a measurement; the accumulator on stages 1 to 3 tests it.
+
+**Report σ at k = 28 as a range, and not as a number.** Every plain run with at
+least 60,000 fit points spans 1.36e-13 to 2.93e-13. Quote the range, and quote
+k = 24 at 1.2198e-12, which reproduces to 1 percent.
+
 ### The binding constraint is the arithmetic, and FP64 stops at k = 27
 
 `scripts/oracle_precision.py` measures the FP64 error of the evaluation against
