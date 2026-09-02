@@ -304,6 +304,25 @@ def _inner_dd(u, v, axes):
     return acc
 
 
+def _section_vectors(lay, z):
+    """`sig` and `dsig` for the Gram stage, and FP64 copies for the centered form.
+
+    Every caller of `_gram_parts` must come through here. `_gram_parts` branches
+    on `SECTION_DD`, so a caller that picks the section vectors itself can pair
+    an FP64 array with the double-double branch. That happened: the Jacobian
+    path called `section_vectors` directly and the fit died inside `plan_fit`
+    with `Too many indices`, because `s[0]` took a row of an array where it
+    meant the high part of a pair.
+    """
+    if SECTION_DD:
+        sig, dsig = section_vectors_dd(lay, z)
+        return (sig, dsig,
+                tuple(dd.cto_fp(a) for a in sig),
+                tuple(dd.cto_fp(a) for a in dsig))
+    sig, dsig = section_vectors(lay, z)
+    return sig, dsig, sig, dsig
+
+
 def _gram_parts(lay, mats, sig, dsig):
     """p, dp and ddbar-p, from the Gram sums over every block.
 
@@ -401,13 +420,7 @@ def phi_analytic(lay, mats, z):
     centered vectors b_i = dsigma_i - (p_i/p) sigma make the result a Gram
     matrix, so the cancellation goes into a vector subtraction instead.
     """
-    if SECTION_DD:
-        sig, dsig = section_vectors_dd(lay, z)
-        sig_fp = tuple(dd.cto_fp(a) for a in sig)
-        dsig_fp = tuple(dd.cto_fp(a) for a in dsig)
-    else:
-        sig, dsig = section_vectors(lay, z)
-        sig_fp, dsig_fp = sig, dsig
+    sig, dsig, sig_fp, dsig_fp = _section_vectors(lay, z)
     p, p_i, _, store = _gram_parts(lay, mats, sig, dsig)
 
     phi = jnp.zeros((4, 4), jnp.complex128)
@@ -461,11 +474,11 @@ def volume_and_weights(lay, mats, z, restriction, omega):
     where dH_r is the block matrix of the tangent direction. So one direction
     costs one Frobenius product for each block, and nothing more.
     """
-    sig, dsig = section_vectors(lay, z)
+    sig, dsig, sig_fp, dsig_fp = _section_vectors(lay, z)
     p, p_i, p_ij, store = _gram_parts(lay, mats, sig, dsig)
 
     phi = jnp.zeros((4, 4), jnp.complex128)
-    for (h_s, h_d), s, ds in zip(store, sig, dsig):
+    for (h_s, h_d), s, ds in zip(store, sig_fp, dsig_fp):
         b = ds - jnp.einsum('bi,k->bik', s, p_i / p)
         h_b = h_d - jnp.einsum('bi,k->bik', h_s, p_i / p)
         phi = phi + jnp.einsum('bil,bik->kl', jnp.conj(b), h_b)
@@ -483,7 +496,7 @@ def volume_and_weights(lay, mats, z, restriction, omega):
     right = jnp.einsum('kl,l->k', k_mat, p_i)              # (K p)
 
     weights = []
-    for s, ds in zip(sig, dsig):
+    for s, ds in zip(sig_fp, dsig_fp):
         w = coeff * jnp.einsum('bi,bj->bij', s, jnp.conj(s))
         w = w + jnp.einsum('bik,lk,bjl->bij', ds, k_mat, jnp.conj(ds)) / p
         w = w - jnp.einsum('bik,k,bj->bij', ds, left, jnp.conj(s)) / p ** 2

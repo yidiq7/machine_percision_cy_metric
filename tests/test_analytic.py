@@ -148,6 +148,41 @@ def test_section_dd_matches_the_fp64_path():
     print(f"  sig {worst_s:.2e}, dsig {worst_d:.2e}, phi {worst_phi:.2e}")
 
 
+def test_section_dd_reaches_the_jacobian_path():
+    """`SECTION_DD` must reach every caller of the Gram stage, not only phi.
+
+    The first version wired it into `phi_analytic` alone. `volume_and_weights`,
+    which the Jacobian goes through, still called `section_vectors` itself, so
+    `_gram_parts` took the double-double branch on FP64 arrays and the fit died
+    inside `plan_fit` with `Too many indices`. A test of phi cannot see that.
+    """
+    batch = data.make(20, 7)
+    z = batch['points'][0]
+    rest = batch['restriction'][0]
+    omega = batch['Omega_Omegabar'][0]
+    # k = 4 only. The fault is a shape mismatch and does not depend on k, and
+    # the Gram stage in dd compiles slowly.
+    worst_v = worst_dv = 0.0
+    for k in (4,):
+        lay = sections.layout(k)
+        theta = perturbed_theta(lay, k)
+        got = {}
+        try:
+            for tag, sec in (('plain', False), ('dd', True)):
+                analytic.GRAM_DD, analytic.SECTION_DD = True, sec
+                got[tag] = jax.jit(
+                    lambda t: analytic.volume_jacobian(lay, t, z, rest, omega))(theta)
+        finally:
+            analytic.GRAM_DD, analytic.SECTION_DD = True, False
+        v_a, dv_a = got['plain']
+        v_b, dv_b = got['dd']
+        worst_v = max(worst_v, float(jnp.abs(v_a - v_b) / jnp.abs(v_a)))
+        worst_dv = max(worst_dv, float(jnp.abs(dv_a - dv_b).max()
+                                       / jnp.abs(dv_a).max()))
+    assert worst_v < 1e-13 and worst_dv < 1e-13, (worst_v, worst_dv)
+    print(f"  v {worst_v:.2e}, dv/dtheta {worst_dv:.2e}")
+
+
 def test_fit_matches_between_the_two_paths():
     """The same optimistix solver must land on the same sigma either way."""
     from quartic import data as qdata, fit as qfit
@@ -215,6 +250,7 @@ if __name__ == "__main__":
                test_chunking_does_not_change_the_result,
                test_custom_jvp_matches_autodiff,
                test_section_dd_matches_the_fp64_path,
+               test_section_dd_reaches_the_jacobian_path,
                test_fit_matches_between_the_two_paths,
                test_jacobian_matches_jacfwd_when_whitened,
                test_run_to_limit_never_loses_to_the_default_stop):

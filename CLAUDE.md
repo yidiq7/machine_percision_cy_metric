@@ -1011,6 +1011,16 @@ out the same to every digit either way. Compile of `section_vectors_dd`: 2.6 s,
 6.4 s and 9.3 s at k = 4, 8 and 12, against 28 s, 41 s and 71 s with the exact
 `mul`.
 
+**Every caller of `_gram_parts` must go through `_section_vectors`.**
+`_gram_parts` branches on `SECTION_DD`, so a caller that picks the section
+vectors itself can hand an FP64 array to the double-double branch. The first
+version wired the flag into `phi_analytic` only, and `volume_and_weights`, which
+the Jacobian goes through, still called `section_vectors`. The fit then died
+inside `plan_fit` with `IndexError: Too many indices`, because `s[0]` took a row
+of an array where it meant the high part of a pair. `_section_vectors` returns
+both forms and no caller chooses. `tests/test_analytic.py` now compares
+`volume_jacobian` across the flag, which a test of φ alone cannot do.
+
 **The time and the memory of a fit with `--section-dd` are not measured.** The
 laptop has no GPU, and `lax.map` over a dd body compiles slowly enough there that
 even k = 6 did not finish, while `phi_analytic` on its own compiled in 2.8 s. So
