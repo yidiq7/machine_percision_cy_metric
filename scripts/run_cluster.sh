@@ -51,12 +51,17 @@ else
 fi
 
 case "$STAGE" in
-  task1) KS="12 16 20"; DD=off;  STAGE_FLAGS="" ;;
-  high)  KS="24 28";    DD=on;   STAGE_FLAGS="" ;;
-  dry)   KS="24 28";    DD=on;   STAGE_FLAGS="--dry-run" ;;
+  task1) KS="12 16 20"; DD=off;  STAGE_DEF="" ;;
+  high)  KS="24 28";    DD=on;   STAGE_DEF="" ;;
+  dry)   KS="24 28";    DD=on;   STAGE_DEF="--dry-run" ;;
   *) echo "unknown STAGE '$STAGE'; use task1, high or dry" >&2; exit 2 ;;
 esac
 KS=${K:-$KS}
+
+# The stage gives the default flags, and FLAGS adds to them. An earlier version
+# set STAGE_FLAGS inside the case, so a value from the environment was lost and
+# the run silently used the default.
+STAGE_FLAGS="$STAGE_DEF ${FLAGS:-}"
 
 if [ "$WHITEN" = "1" ]; then WHITEN_FLAG="--whiten"; else WHITEN_FLAG=""; fi
 if [ "$LIMIT" = "1" ]; then RUNLIMIT="--run-to-limit"; else RUNLIMIT=""; fi

@@ -656,13 +656,18 @@ Only at k = 28 do the two coordinate systems separate.
   116. Both iterations really stalled. An earlier note here blamed the
   convergence test; that was wrong, and the test is tight.
 
-**The surviving explanation is the accuracy of `J`, and not its rank.** LM
-descends on `Jᵀr`. The Gram stage of `J` is dd, and the rest of it, the matrices
-`W` and the contraction with `K = R† g⁻¹ R`, is FP64. A relative error of
-approximately 1e-13 in `J` makes `Jᵀr` noise at that level, and the iteration
-then stalls where the noise starts, whatever the coordinates are. Whitening
-changes the conditioning of `J` and not its error, so it correctly predicts no
-gain.
+**The accuracy of `J` is not the cause either. That explanation is also dead.**
+The oracle at the θ of the fit, with the Gram stage in dd, gives:
+
+| k | rel err of `v` | **rel err of `dv/dθ`** | truncation |
+|---|---|---|---|
+| 24 | 4.441e-16 | **1.050e-15** | 1.366e-23 |
+| 28 | 1.998e-15 | **4.042e-15** | 3.635e-22 |
+
+The prediction was approximately 1e-13, and the measurement is 4e-15, which is
+26 times below the plateau of 1.1e-13. So `Jᵀr` is not noise at the level where
+the fit stalls. The truncation of the reference sits 7 orders below what it
+measures, so the reference is not the limit.
 
 `scripts/oracle_jacobian.py` measures it. The reference is a central difference
 of `v` in mpmath at 60 digits, and **not** the analytic formula in mpmath, so the
@@ -698,10 +703,48 @@ path gives 2.1e-15 whitened and 1.2e-15 plain. Only `volume_jacobian`, which
 `bench_analytic.py` and the oracle call, was wrong. `tests/test_analytic.py` now
 tests the whitened layout as well.
 
-**The measurement that decides the k = 28 plateau is at k = 24 and k = 28, with
-`--gram-dd on`, at the θ of the fit.** The error of `J` there must come out near
-1e-13 for it to explain a plateau at 1.1e-13. At k = 12 it is 7e-16 and σ is
-2.2e-7, so nothing is visible at low k.
+### Every explanation of the k = 28 plateau is now dead, 2026-09-01
+
+Four candidates, and the measurements exclude all four:
+
+| candidate | test | result |
+|---|---|---|
+| the arithmetic floor | oracle at the fitted θ | 1.899e-15, 60 times below σ |
+| the size of the fit set | sweep from 19,000 to 86,000 | σ saturates above 60,000 |
+| the rank of `J` | `--whiten`, `cond·ε` 133 to 0.036 | σ did not improve |
+| the accuracy of `J` | oracle on `dv/dθ` at the fitted θ | 4.0e-15, 26 times below σ |
+
+**What is left is the reproducibility of σ itself.** Two runs with the same seed,
+the same 59,312 fit points and a block of 2967 against 2970:
+
+| block | steps | σ |
+|---|---|---|
+| 2967 | 116 | **1.1228e-13** |
+| 2970 | 107 | **2.9333e-13** |
+
+**A factor of 2.6 from a change of 3 in the block.** The block only sets the
+order of the summation inside `lax.map`, which moves the residual by 1.3e-16. So
+a perturbation of 1e-16 moves the σ that the fit reaches by 2.6 times. Over every
+plain run at k = 28 with at least 60,000 fit points, σ spans 6.9e-14 to 2.9e-13,
+a factor of 4.2.
+
+**Therefore σ at k = 28 is not a measurement, and no single number should be
+quoted for it.** The 6.8949e-14 of 2026-08-30 is the best of about ten draws from
+that spread, and it is not the value to report.
+
+The mechanism that fits the evidence is **overfitting along the flat directions
+of the fit-set loss**. `cond(J) = 6e17`, so many directions of θ are almost
+undetermined by 59,312 points. The fit-set loss cannot tell them apart, the
+hold-out loss can, and LM lands on a different point of that valley for each
+perturbation of 1e-16. The classical excess risk `n_θ/N_fit` does not see this,
+because the number of directions that the data determines is far below `n_θ`.
+
+**The test is to report σ on the fit set beside σ on the hold-out set.**
+`run_fit.py` now prints both and saves `mape_fit`. If the two runs above have the
+same fit-set σ and hold-out σ that differ by 2.6 times, the mechanism is
+confirmed and the cure is more fit points or a penalty on the flat directions. If
+the fit-set σ differs as well, the optimizer really stalls at different depths
+and the cause is inside LM.
 
 `--run-to-limit` sets `rtol = atol = 0` and wraps LM in
 `optx.BestSoFarLeastSquares`, so the fit uses every one of `--max-steps` and keeps

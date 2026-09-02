@@ -204,6 +204,10 @@ def main():
                                rcond=args.rcond,
                                best_so_far=args.run_to_limit, **tols)
         rep = metric.report(lay, theta, hold, chunk=args.chunk)
+        # sigma on the fit set as well. The two together separate a fit that
+        # stalls from a fit that lands on a different point of a flat valley:
+        # the second one keeps the fit-set value and moves the hold-out value.
+        rep_fit = metric.report(lay, theta, fit_set, chunk=args.chunk)
         known = KNOWN_SIGMA.get(k)
         ratio = f"{rep['mape'] / known:.2f}" if known else ''
         # --run-to-limit means to use every step, so the step limit is the
@@ -220,6 +224,8 @@ def main():
               f"{known if known else '':>10} {ratio:>7} "
               f"{rep['rms']:>11.3e} {rep['max_abs']:>11.3e} "
               f"{rep['min_eig']:>11.3e} {rep['min_p']:>10.3e}{flag}")
+        print(f"    fit-set mean abs(f) = {rep_fit['mape']:.4e}, "
+              f"hold-out over fit set = {rep['mape'] / rep_fit['mape']:.3f}")
 
         record = {'k': k, 'n_theta': lay.n_theta, 'seed': args.seed,
                   'n_train': int(fit_set['points'].shape[0]),
@@ -232,6 +238,8 @@ def main():
                   'gram_id': lay.gram_id,
                   'max_abs_note': 'a lower bound on sup abs(f); a sample cannot '
                                   'bound a supremum',
+                  'mape_fit': rep_fit['mape'],
+                  'rms_fit': rep_fit['rms'],
                   **stats, **rep}
         if args.cond:
             record['cond'] = fit.condition_number(lay, theta, fit_set,
