@@ -1021,20 +1021,27 @@ of an array where it meant the high part of a pair. `_section_vectors` returns
 both forms and no caller chooses. `tests/test_analytic.py` now compares
 `volume_jacobian` across the flag, which a test of φ alone cannot do.
 
-**The time and the memory of a fit with `--section-dd` are not measured.** The
-laptop has no GPU, and `lax.map` over a dd body compiles slowly enough there that
-even k = 6 did not finish, while `phi_analytic` on its own compiled in 2.8 s. So
-the whole-fit cost is a cluster measurement:
+**Measured at k = 24, 2026-09-02. The control passes and the cost is small.**
+33,875 fit points, `RISK` 1.6e-2, block 4096, hold-out of 8e6:
 
-```
-SECDD=1 K=24 BUDGET=100 RISK=1.6e-2 STAGE=high ./scripts/run_cluster.sh
-```
+| | σ | rms(f) | `min λ(φ)` | kB for each point | ns for each point and step |
+|---|---|---|---|---|---|
+| dd on stage 4 | 1.2198e-12 | 2.800e-12 | 2.997 | 559 | 75,500 |
+| dd on stages 1 to 4 | **1.2207e-12** | 2.825e-12 | 2.997 | **521** | **110,100** |
 
-Two numbers decide whether it is usable: the kB for each fit point, which
-`plan_fit` prints, and the seconds for each step. Stage 4 alone costs 41 times
-the time and 1.1 MB for each fit point at k = 28. Stages 1 to 3 act on vectors of
-length approximately 120 and 45, against the `d` by `d` matrices of stage 4, so
-the extra should be small, **but that is an estimate and not a measurement.**
+* **σ does not move: 0.07 percent.** That is the control. σ at k = 24 sits
+  approximately 2,800 times above the new floor, so more precision must change
+  nothing there, and it does not. The arithmetic is right.
+* **The time cost is 1.46 times, and not another 41 times.** Stages 1 to 3 act
+  on vectors of length approximately 120 and 45, against the `d` by `d` matrices
+  of stage 4.
+* **The memory cost is nothing.** 521 kB for each point sits inside the 521 to
+  627 kB that stage 4 alone spans across runs.
+* **The fit no longer stops by itself.** It used all 600 steps where stage 4
+  alone converged in 115. σ is the same, so it is not lost; a more accurate
+  gradient keeps producing steps that the tight convergence test does not accept
+  as final. Expect to set `--max-steps` by the budget from here on, and note that
+  600 steps at k = 24 cost 2,238 s.
 
 `dd.mul`, `dd.reciprocal` and the complex layer `cmul`, `creciprocal`, `cadd`
 are new, because stages 1 to 3 multiply values that are already dd, and the
