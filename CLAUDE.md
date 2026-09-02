@@ -147,7 +147,8 @@ adds no cancellation. A form such as `⟨η²⟩ − ⟨η⟩²` would cancel. D
 * **Complete:** the compensated accumulator on stages 1 to 3, behind
   `--section-dd`. The relative error of φ is 4.4e-16, 5.9e-16 and 8.9e-16 at
   k = 24, 28 and 32, so the floor on `abs(f)` is approximately 2.5e-15 and flat
-  in k. See "Stages 1 to 3 are done".
+  in k. See "Stages 1 to 3 are done". **The cost of a whole fit with it is not
+  measured, and the first cluster run must report it.**
 * **Closed:** the cause of the k = 28 plateau. Six candidates are excluded by
   measurement: the arithmetic floor, the size of the fit set, the rank of `J`,
   the entrywise accuracy of `J`, excess risk, and the convergence test. What is
@@ -1009,6 +1010,21 @@ approximately 24 digits:
 out the same to every digit either way. Compile of `section_vectors_dd`: 2.6 s,
 6.4 s and 9.3 s at k = 4, 8 and 12, against 28 s, 41 s and 71 s with the exact
 `mul`.
+
+**The time and the memory of a fit with `--section-dd` are not measured.** The
+laptop has no GPU, and `lax.map` over a dd body compiles slowly enough there that
+even k = 6 did not finish, while `phi_analytic` on its own compiled in 2.8 s. So
+the whole-fit cost is a cluster measurement:
+
+```
+SECDD=1 K=24 BUDGET=100 RISK=1.6e-2 STAGE=high ./scripts/run_cluster.sh
+```
+
+Two numbers decide whether it is usable: the kB for each fit point, which
+`plan_fit` prints, and the seconds for each step. Stage 4 alone costs 41 times
+the time and 1.1 MB for each fit point at k = 28. Stages 1 to 3 act on vectors of
+length approximately 120 and 45, against the `d` by `d` matrices of stage 4, so
+the extra should be small, **but that is an estimate and not a measurement.**
 
 `dd.mul`, `dd.reciprocal` and the complex layer `cmul`, `creciprocal`, `cadd`
 are new, because stages 1 to 3 multiply values that are already dd, and the
