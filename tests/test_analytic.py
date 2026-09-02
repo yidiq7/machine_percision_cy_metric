@@ -107,6 +107,47 @@ def test_custom_jvp_matches_autodiff():
     print(f"  jacfwd through the custom rule differs by {worst:.2e}")
 
 
+def test_section_dd_matches_the_fp64_path():
+    """Stages 1 to 3 in double-double must not change the model.
+
+    `section_vectors_dd` is `section_vectors_closed` with every operation in
+    extended precision, so the two must agree to the error of the FP64 one.
+    """
+    from quartic import dd as qdd
+    worst_s = worst_d = worst_phi = 0.0
+    for k in (4, 8, 12):
+        lay = sections.layout(k)
+        theta = perturbed_theta(lay, k)
+        mats = sections.prepare(lay, theta)
+        z = BATCH['points'][0]
+
+        s_fp, d_fp = analytic.section_vectors_closed(lay, z)
+        s_dd, d_dd = jax.jit(lambda w: analytic.section_vectors_dd(lay, w))(z)
+        for a, b in zip(s_dd, s_fp):
+            worst_s = max(worst_s, float(jnp.abs(qdd.cto_fp(a) - b).max()
+                                         / jnp.abs(b).max()))
+        for a, b in zip(d_dd, d_fp):
+            worst_d = max(worst_d, float(jnp.abs(qdd.cto_fp(a) - b).max()
+                                         / jnp.abs(b).max()))
+
+        if k > 4:
+            continue
+        # phi at k = 4 only. The Gram stage in dd compiles slowly, and what the
+        # comparison tests does not depend on k.
+        try:
+            analytic.SECTION_DD = False
+            plain, _ = jax.jit(lambda w: analytic.phi_analytic(lay, mats, w))(z)
+            analytic.SECTION_DD = True
+            extra, _ = jax.jit(lambda w: analytic.phi_analytic(lay, mats, w))(z)
+        finally:
+            analytic.SECTION_DD = False
+        worst_phi = max(worst_phi, float(jnp.abs(plain - extra).max()
+                                         / jnp.abs(plain).max()))
+    assert worst_s < 1e-14 and worst_d < 1e-14, (worst_s, worst_d)
+    assert worst_phi < 1e-13, worst_phi
+    print(f"  sig {worst_s:.2e}, dsig {worst_d:.2e}, phi {worst_phi:.2e}")
+
+
 def test_fit_matches_between_the_two_paths():
     """The same optimistix solver must land on the same sigma either way."""
     from quartic import data as qdata, fit as qfit
@@ -173,6 +214,7 @@ if __name__ == "__main__":
                test_jacobian_matches_jacfwd,
                test_chunking_does_not_change_the_result,
                test_custom_jvp_matches_autodiff,
+               test_section_dd_matches_the_fp64_path,
                test_fit_matches_between_the_two_paths,
                test_jacobian_matches_jacfwd_when_whitened,
                test_run_to_limit_never_loses_to_the_default_stop):

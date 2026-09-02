@@ -34,6 +34,7 @@ K=${K:-}                 # override the degrees of the stage, for a quick check
 RISK=${RISK:-}           # excess risk n_theta/N_fit to aim for; sizes the fit set
 LIMIT=${LIMIT:-0}        # 1 = --run-to-limit: no convergence test, best so far
 WHITEN=${WHITEN:-0}      # 1 whitens the section basis in L2(X)
+SECDD=${SECDD:-0}        # 1 = --section-dd: stages 1 to 3 in double-double
 
 # JAX takes 75 percent of the card by default. This gives back the rest.
 export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.95}
@@ -65,6 +66,7 @@ STAGE_FLAGS="$STAGE_DEF ${FLAGS:-}"
 
 if [ "$WHITEN" = "1" ]; then WHITEN_FLAG="--whiten"; else WHITEN_FLAG=""; fi
 if [ "$LIMIT" = "1" ]; then RUNLIMIT="--run-to-limit"; else RUNLIMIT=""; fi
+if [ "$SECDD" = "1" ]; then SECDD_FLAG="--section-dd"; else SECDD_FLAG=""; fi
 
 # shellcheck disable=SC2086
 uv run $UV_EXTRA python -u scripts/run_fit.py \
@@ -78,6 +80,7 @@ uv run $UV_EXTRA python -u scripts/run_fit.py \
     ${RISK:+--target-risk "$RISK"} \
     $RUNLIMIT \
     $WHITEN_FLAG \
+    $SECDD_FLAG \
     --max-steps 600 \
     --seed "$SEED" \
     --cond \

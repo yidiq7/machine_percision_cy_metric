@@ -99,8 +99,14 @@ def main():
                     help='a saved theta, so the floor is measured where the fit '
                          'landed. One --k only.')
     ap.add_argument('--gram-dd', choices=['off', 'inner', 'on'], default='off')
+    ap.add_argument('--section-dd', action='store_true',
+                    help='stages 1 to 3 in double-double as well: the monomials '
+                         'of u, the frame of the sections, and sigma with its 4 '
+                         'derivatives. Stage 4 alone leaves a floor that grows '
+                         'by 1.28 for each unit of k.')
     args = ap.parse_args()
     analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[args.gram_dd]
+    analytic.SECTION_DD = args.section_dd
     if args.theta is not None and len(args.k) != 1:
         ap.error('--theta needs exactly one --k')
     mp.dps = args.dps

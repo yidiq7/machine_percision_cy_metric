@@ -94,9 +94,92 @@ def test_sum_dd_matches_mpmath():
     print(f"  sum of {n} terms: FP64 {plain:.2e}, dd {err:.2e}")
 
 
+def test_mul_and_reciprocal_under_jit():
+    """dd times dd, and 1/dd, must reach the precision of the pair.
+
+    Stages 1 to 3 of the evaluation need these, because the monomials of u and
+    the powers of z multiply values that are already double-double.
+    """
+    rng = gen(5)
+    worst_mul = worst_rec = 0.0
+    mul = jax.jit(lambda a, b: dd.mul(dd.to_dd(a), dd.to_dd(b)))
+    rec = jax.jit(lambda a: dd.reciprocal(dd.to_dd(a)))
+    for _ in range(12):
+        a, b = rng.normal() * 10.0 ** rng.integers(-6, 6), rng.normal()
+        pair = mul(jnp.float64(a), jnp.float64(b))
+        ref = exact(a) * exact(b)
+        got = exact(pair[0]) + exact(pair[1])
+        worst_mul = max(worst_mul, float(abs((got - ref) / ref)))
+
+        pair = rec(jnp.float64(a))
+        ref = 1 / exact(a)
+        got = exact(pair[0]) + exact(pair[1])
+        worst_rec = max(worst_rec, float(abs((got - ref) / ref)))
+    assert worst_mul < 1e-30, worst_mul
+    assert worst_rec < 1e-30, worst_rec
+    print(f"  mul {worst_mul:.2e}, reciprocal {worst_rec:.2e}")
+
+
+def test_mul_fast_is_enough_for_the_sections():
+    """`mul_fast` must reach about 2^-79, which stages 1 to 3 need.
+
+    The exact `mul` costs 20 barriers against 2, and the number of barriers sets
+    the compile time. The target for stages 1 to 3 is a floor of 2.5e-15 on
+    abs(f), so about 20 digits, and this form gives 24.
+    """
+    rng = gen(7)
+    fast = jax.jit(lambda w: dd.cmul_fast(
+        dd.cmul_fast(dd.cto_dd(w), dd.cto_dd(w)),
+        dd.cmul_fast(dd.cto_dd(w), dd.cto_dd(w))))
+    worst = plain = 0.0
+    for _ in range(8):
+        za = complex(rng.normal(), rng.normal())
+        pair = fast(jnp.complex128(za))
+        got = mp.mpc(exact(pair[0][0]) + exact(pair[0][1]),
+                     exact(pair[1][0]) + exact(pair[1][1]))
+        ref = mp.mpc(za) ** 4
+        worst = max(worst, float(abs((got - ref) / ref)))
+        plain = max(plain, float(abs(
+            (mp.mpc(complex(np.complex128(za) ** 4)) - ref) / ref)))
+    assert worst < 1e-22, worst
+    print(f"  z**4 fast {worst:.2e} against FP64 {plain:.2e}")
+
+
+def test_complex_layer_under_jit():
+    """The complex wrappers must keep the precision of the real ones."""
+    rng = gen(6)
+    cmul = jax.jit(lambda a, b: dd.cmul(dd.cto_dd(a), dd.cto_dd(b)))
+    crec = jax.jit(lambda a: dd.creciprocal(dd.cto_dd(a)))
+    pow4 = jax.jit(lambda w: dd.cmul(dd.cmul(dd.cto_dd(w), dd.cto_dd(w)),
+                                     dd.cmul(dd.cto_dd(w), dd.cto_dd(w))))
+    worst = [0.0, 0.0, 0.0]
+    plain4 = 0.0
+    for _ in range(12):
+        za = complex(rng.normal(), rng.normal())
+        zb = complex(rng.normal(), rng.normal())
+        for i, (fn, ref) in enumerate((
+                (lambda: cmul(jnp.complex128(za), jnp.complex128(zb)),
+                 mp.mpc(za) * mp.mpc(zb)),
+                (lambda: crec(jnp.complex128(za)), 1 / mp.mpc(za)),
+                (lambda: pow4(jnp.complex128(za)), mp.mpc(za) ** 4))):
+            pair = fn()
+            got = mp.mpc(exact(pair[0][0]) + exact(pair[0][1]),
+                         exact(pair[1][0]) + exact(pair[1][1]))
+            worst[i] = max(worst[i], float(abs((got - ref) / ref)))
+        ref = mp.mpc(za) ** 4
+        plain4 = max(plain4, float(abs(
+            (mp.mpc(complex(np.complex128(za) ** 4)) - ref) / ref)))
+    for w in worst:
+        assert w < 1e-30, worst
+    print(f"  cmul {worst[0]:.2e}, creciprocal {worst[1]:.2e}, "
+          f"z**4 {worst[2]:.2e} against FP64 {plain4:.2e}")
+
+
 if __name__ == "__main__":
     for fn in (test_two_sum_is_exact_under_jit, test_split_is_exact_and_masked,
-               test_dot_beats_fp64_on_a_cancelling_sum, test_sum_dd_matches_mpmath):
+               test_dot_beats_fp64_on_a_cancelling_sum, test_sum_dd_matches_mpmath,
+               test_mul_and_reciprocal_under_jit, test_complex_layer_under_jit,
+               test_mul_fast_is_enough_for_the_sections):
         print(fn.__name__)
         fn()
     print("\nall dd tests pass")

@@ -144,8 +144,10 @@ adds no cancellation. A form such as `⟨η²⟩ − ⟨η⟩²` would cancel. D
   are in the table. **This is the input that the perturbation argument of the
   collaborators needs**, because its requirement is stated in `‖f‖_{H¹}` and we
   report a mean.
-* **Not started:** the compensated accumulator on stages 1 to 3. It is the rest
-  of the work for stage 1, because stage 4 alone leaves the floor growing in k.
+* **Complete:** the compensated accumulator on stages 1 to 3, behind
+  `--section-dd`. The relative error of φ is 4.4e-16, 5.9e-16 and 8.9e-16 at
+  k = 24, 28 and 32, so the floor on `abs(f)` is approximately 2.5e-15 and flat
+  in k. See "Stages 1 to 3 are done".
 * **Closed:** the cause of the k = 28 plateau. Six candidates are excluded by
   measurement: the arithmetic floor, the size of the fit set, the rank of `J`,
   the entrywise accuracy of `J`, excess risk, and the convergence test. What is
@@ -949,6 +951,70 @@ dynamic range. Trust the oracle and not the count.
 
 `cond(J)` grows by 5.65 for each unit of k. It passes `1/ε = 4.5e15` at
 **k = 23**, so `J` is numerically singular in FP64 from k = 24.
+
+### Stages 1 to 3 are done, and the floor is flat in k, 2026-09-02
+
+`analytic.SECTION_DD` puts the monomials of `u`, the frame of the sections, and
+`sigma` with its 4 derivatives in dd. `--section-dd` selects it, and it needs
+`--gram-dd on`, because stage 4 carries almost all of the error.
+
+Relative error of φ against mpmath at 50 digits, at `θ_FS`, 2 points:
+
+| k | 24 | 28 | 32 | growth for each unit of k |
+|---|----|----|----|---|
+| dd on stage 4 | 8.79e-16 | 3.24e-15 | 1.04e-14 | 1.362 |
+| **dd on stages 1 to 4** | **4.391e-16** | **5.920e-16** | **8.912e-16** | **1.093** |
+| gain | 2.0x | 5.5x | 11.7x | |
+
+**The floor is now flat in k**, which was the whole point. The implied floor on
+`abs(f)` is approximately 2.2e-15, 2.9e-15 and 2.6e-15 at k = 24, 28 and 32,
+against 4.33e-15, 1.61e-14 and 3.03e-14 with stage 4 alone. The staged oracle
+predicted 4.4e-16 at k = 24 for dd on stages 1 to 4, and the measurement is
+4.391e-16.
+
+`section_vectors_dd` uses the closed form of the derivatives and not autodiff,
+because `dd.split` is a bitcast and carries no derivative. `d_i (z^r u^C)` is
+`(z^r / z_i)(r_i + 4 C_i) u^C`, so one reciprocal of z serves every block.
+
+**Two traps, and both cost more than the arithmetic.**
+
+* **Share every product across the groups.** The power tables of `u` and of `z`
+  do not depend on the group. A first version rebuilt them for each group, and
+  XLA did not finish the compile of k = 6. One gather and one product chain over
+  the concatenated exponents give 28 s at k = 4, 41 s at k = 8 and 71 s at
+  k = 12. This is the same fault that the note in `_matvec_dd` records.
+* **`mul` must not use the classic `two_prod`.** That form builds the error of
+  the high product as `a_hi*b_hi - a*b`, and the XLA simplifier rewrites it:
+  measured, `z**4` from two nested products gave 2.2e-17 inside one `jax.jit`
+  and the exact answer outside it. The cure is the same as for `split`: leave no
+  subtraction that is an identity. `dd.mul` sums the 7 partial products with
+  `two_sum`, which does survive `jax.jit`. **A test of one operation cannot see
+  this. `tests/test_dd.py` tests `z**4` as a composite under one `jit`, and that
+  is what caught it.**
+
+**The barrier count sets the compile time, so stages 1 to 3 use
+`dd.mul_fast`.** `jax.lax.optimization_barrier` stops XLA from fusing across it,
+and the exact `mul` needs 20 of them against 2. With the exact `mul` the compile
+of the residual at k = 8 did not finish in 600 s. `mul_fast` keeps the exact
+high-part product and sums the smaller terms in FP64, which gives 2^-79, or
+approximately 24 digits:
+
+| | `z**4` relative error | barriers for each product |
+|---|---|---|
+| FP64 | 1.4e-16 | 0 |
+| **`mul_fast`** | **5.5e-24** | **2** |
+| `mul`, exact | 3.1e-32 | 20 |
+
+24 digits is far above the 20 that a floor of 2.5e-15 needs, and the floor comes
+out the same to every digit either way. Compile of `section_vectors_dd`: 2.6 s,
+6.4 s and 9.3 s at k = 4, 8 and 12, against 28 s, 41 s and 71 s with the exact
+`mul`.
+
+`dd.mul`, `dd.reciprocal` and the complex layer `cmul`, `creciprocal`, `cadd`
+are new, because stages 1 to 3 multiply values that are already dd, and the
+earlier module had only dd against FP64. Measured against mpmath at 60 digits:
+`mul` is exact, `reciprocal` 6.8e-33, `cmul` 2.6e-32, `creciprocal` 2.2e-32, and
+`z**4` 3.1e-32 against 2.1e-16 in FP64.
 
 ### The parametrization must be scaled
 

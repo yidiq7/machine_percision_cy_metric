@@ -23,9 +23,12 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
+import jax.tree_util as jtu
+
 from . import dd, sections
 
-__all__ = ['section_vectors', 'section_vectors_closed', 'phi_analytic',
+__all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
+           'phi_analytic',
            'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
            'volume_and_weights', 'volume_tangent', 'volume_jacobian',
@@ -44,6 +47,15 @@ __all__ = ['section_vectors', 'section_vectors_closed', 'phi_analytic',
 # Jacobian 91 times slower at k = 20. The inner products run over (blocks, d)
 # and not (blocks, d, d), so they cost far less.
 GRAM_DD = True
+
+# Stages 1 to 3 in double-double: the monomials of u, the frame of the sections,
+# and sigma with its 4 derivatives. Stage 4 alone leaves a floor that grows by
+# 1.28 for each unit of k, and the oracle puts dd on stages 1 to 4 at a relative
+# error of 5e-16 for phi that is flat in k. This flag turns on the rest.
+#
+# It needs `section_vectors_closed`, because `dd.split` uses a bitcast, which
+# carries no derivative, so `jax.jacfwd` cannot pass through it.
+SECTION_DD = False
 
 
 def section_vectors(lay, z):
@@ -111,6 +123,136 @@ def section_vectors_closed(lay, z):
     return tuple(sig), tuple(dsig)
 
 
+def _cstack(vals, axis=0):
+    """Stack a list of complex double-double values along a new axis."""
+    return jtu.tree_map(lambda *xs: jnp.stack(xs, axis=axis), *vals)
+
+
+def _cindex(val, *idx):
+    """Index every leaf of a complex double-double value."""
+    return jtu.tree_map(lambda a: a[idx], val)
+
+
+def _cscale(val, factor):
+    """A complex double-double value times an FP64 real array."""
+    return (dd.mul_dd_fp(val[0], factor), dd.mul_dd_fp(val[1], factor))
+
+
+def _integer_powers_dd(x, top):
+    """x**0 .. x**top in double-double, by repeated multiplication.
+
+    Repeated multiplication keeps every exponent an exact integer. A float
+    exponent would send the value through `exp` and `log`, which costs 15
+    digits at k = 32.
+    """
+    one = (dd.to_dd(jnp.ones_like(x[0][0])), dd.to_dd(jnp.zeros_like(x[0][0])))
+    out = [one]
+    for _ in range(top):
+        out.append(dd.cmul_fast(out[-1], x))
+    return _cstack(out, axis=0)
+
+
+def _monomials_dd(u, exps, m):
+    """Every monomial u^E for the rows E of `exps`, in double-double."""
+    table = _integer_powers_dd(u, m)                     # (m+1, 4)
+    cols = _cindex(table, exps, jnp.arange(4))           # (n_monomials, 4)
+    out = _cindex(cols, slice(None), 0)
+    for a in range(1, 4):
+        out = dd.cmul_fast(out, _cindex(cols, slice(None), a))
+    return out                                            # (n_monomials,)
+
+
+def _project_dd(weighted_frame, val, extra_axes=0):
+    """sum over the monomials of `weighted_frame` against a complex dd `val`.
+
+    `val` carries the monomial axis first, and `weighted_frame` carries it first
+    as well, so the contraction is one reduction over axis 0. `extra_axes` says
+    how many axes `weighted_frame` has after the monomial and output axes, so
+    that `val` broadcasts against it.
+    """
+    shape = (slice(None),) + (None,) * (1 + extra_axes)
+    def one(part):
+        return dd.dot_dd_fp((part[0][shape], part[1][shape]),
+                            weighted_frame, axis=0)
+    return one(val[0]), one(val[1])
+
+
+def section_vectors_dd(lay, z):
+    """`sig` and `dsig` in double-double: stages 1 to 3 of the evaluation.
+
+    This is `section_vectors_closed` with every operation in extended
+    precision. The derivatives use the closed form
+
+        d_i (z^r u^C) = (z^r / z_i) (r_i + 4 C_i) u^C,
+
+    so one reciprocal of z serves every block, and no autodiff has to pass
+    through the bitcast inside `dd.split`.
+
+    **Every product is shared across the groups.** The power tables of u and of
+    z do not depend on the group, and the monomials and the block weights are
+    one gather and one product chain over the concatenated exponents. A version
+    that repeated them for each group made the compiled program large enough
+    that XLA did not finish k = 6, which is the same fault that the note in
+    `_matvec_dd` records.
+    """
+    zc = dd.cto_dd(z)
+    z2 = dd.cmul_fast(zc, zc)
+    u = dd.cmul_fast(z2, z2)                                   # u_a = z_a^4, exact
+    inv_z = dd.creciprocal(zc)
+
+    # One product chain over every group's monomials at once.
+    top = max(g.m for g in lay.groups)
+    u_powers = _integer_powers_dd(u, top)
+    all_exps = jnp.concatenate([jnp.asarray(g.exps) for g in lay.groups], axis=0)
+    cols = _cindex(u_powers, all_exps, jnp.arange(4))
+    mono_all = _cindex(cols, slice(None), 0)
+    for a in range(1, 4):
+        mono_all = dd.cmul_fast(mono_all, _cindex(cols, slice(None), a))
+
+    # And one over every block weight z^r. r_a is 0 to 3.
+    z_powers = _integer_powers_dd(zc, 3)
+    all_res = jnp.concatenate([jnp.asarray(g.residues) for g in lay.groups],
+                              axis=0)
+    cols = _cindex(z_powers, all_res, jnp.arange(4))
+    weight_all = _cindex(cols, slice(None), 0)
+    for a in range(1, 4):
+        weight_all = dd.cmul_fast(weight_all, _cindex(cols, slice(None), a))
+    # z^r / z_i, for every block and direction.
+    wz_all = dd.cmul_fast(_cindex(weight_all, slice(None), None),
+                     _cindex(inv_z, None, slice(None)))
+
+    sig, dsig = [], []
+    m_at = r_at = 0
+    for g in lay.groups:
+        exps = jnp.asarray(g.exps)
+        frame = jnp.asarray(g.frame)
+        res = jnp.asarray(g.residues)
+        n_mono, n_blocks = exps.shape[0], res.shape[0]
+        mono = _cindex(mono_all, slice(m_at, m_at + n_mono))
+        weight = _cindex(weight_all, slice(r_at, r_at + n_blocks))
+        wz = _cindex(wz_all, slice(r_at, r_at + n_blocks))
+        m_at += n_mono
+        r_at += n_blocks
+
+        psi = _project_dd(frame, mono)                    # (d,)
+        # The C_i weighted projection, for each of the 4 directions.
+        psi_i = _project_dd(frame[:, :, None] * exps.astype(frame.dtype)[:, None, :],
+                            mono, extra_axes=1)           # (d, 4)
+
+        sig.append(dd.cmul_fast(_cindex(weight, slice(None), None),
+                           _cindex(psi, None, slice(None))))
+
+        # (r_i psi + 4 psi_i), then times z^r / z_i.
+        term_r = _cscale(_cindex(psi, None, slice(None), None),
+                         res[:, None, :].astype(frame.dtype))
+        term_c = _cscale(_cindex(psi_i, None, slice(None), slice(None)),
+                         jnp.asarray(4.0))
+        inner = dd.cadd(term_r, term_c)                   # (n_blocks, d, 4)
+        dsig.append(dd.cmul_fast(inner, _cindex(wz, slice(None), None, slice(None))))
+
+    return tuple(sig), tuple(dsig)
+
+
 def _matvec_dd(mat, vecs):
     """H @ vecs, in double-double, for every column of `vecs` at once.
 
@@ -123,6 +265,14 @@ def _matvec_dd(mat, vecs):
     48 times the FP64 one, and XLA then took 79 s to compile k = 6 and 339 s to
     compile k = 8, against 0.5 s and 0.7 s for FP64.
     """
+    if isinstance(vecs, tuple):
+        # A double-double vector from stages 1 to 3. The low part is 2^-53 of
+        # the high part, so its product with `mat` needs FP64 only, and that
+        # saves a second dd reduction over the largest array of the step.
+        main = _matvec_dd(mat, vecs[0])
+        low = jnp.einsum('bij,bjc->bic', mat, vecs[1])
+        return dd.add(main, dd.to_dd(low))
+
     a_hi, a_lo = dd.split(mat[..., None])            # (blocks, d, d, 1)
     v_hi, v_lo = dd.split(vecs[:, None, :, :])       # (blocks, 1, d, c)
     acc = None
@@ -135,9 +285,17 @@ def _matvec_dd(mat, vecs):
 def _inner_dd(u, v, axes):
     """sum of u * v over `axes`, in double-double, for every column at once.
 
-    u is FP64 and v is double-double, which is the case that the Gram sums need.
-    One tree serves every column, for the same reason as in `_matvec_dd`.
+    v is double-double. u is FP64, or a double-double pair when stages 1 to 3
+    run in extended precision; the low part of u then enters in FP64, because it
+    is 2^-53 of the high part. One tree serves every column, for the same reason
+    as in `_matvec_dd`.
     """
+    if isinstance(u, tuple):
+        main = _inner_dd(u[0], v, axes)
+        term = dd.to_fp(v) * u[1]
+        flat = jnp.reshape(term, (-1,) + term.shape[len(axes):])
+        return dd.add(main, dd.sum_fp(flat, axis=0))
+
     acc = None
     for term in dd._partials(v[0], u) + (v[1] * u,):
         flat = jnp.reshape(term, (-1,) + term.shape[len(axes):])
@@ -168,20 +326,36 @@ def _gram_parts(lay, mats, sig, dsig):
     store = []
 
     for mat, s, ds in zip(mats, sig, dsig):
-        # sigma and its 4 derivatives, real and imaginary, as 10 columns.
-        cols = jnp.concatenate([s[..., None], ds], axis=-1)          # (b, d, 5)
-        stack = jnp.concatenate([jnp.real(cols), jnp.imag(cols)], axis=-1)
+        if SECTION_DD:
+            # sig and dsig arrive as complex double-double from stages 1 to 3.
+            # Lay the real and imaginary parts out as the same 10 columns, and
+            # keep both halves of each pair.
+            def cat(part, sel):
+                return jnp.concatenate(
+                    [part[0][sel][..., None], part[1][sel]], axis=-1)
+            stack = tuple(
+                jnp.concatenate([cat((s[0], ds[0]), h), cat((s[1], ds[1]), h)],
+                                axis=-1) for h in (0, 1))
+            s_re = (s[0][0][..., None], s[0][1][..., None])
+            s_im = (s[1][0][..., None], s[1][1][..., None])
+        else:
+            # sigma and its 4 derivatives, real and imaginary, as 10 columns.
+            cols = jnp.concatenate([s[..., None], ds], axis=-1)      # (b, d, 5)
+            stack = jnp.concatenate([jnp.real(cols), jnp.imag(cols)], axis=-1)
+            s_re = jnp.real(s)[..., None]
+            s_im = jnp.imag(s)[..., None]
+
         if matvec_dd:
             out = _matvec_dd(mat, stack)                               # (b, d, 10)
         else:
-            plain = jnp.einsum('bij,bjc->bic', mat, stack)
+            plain = jnp.einsum(
+                'bij,bjc->bic', mat,
+                stack[0] + stack[1] if SECTION_DD else stack)
             out = dd.to_dd(plain)
         h_re = (out[0][..., :5], out[1][..., :5])
         h_im = (out[0][..., 5:], out[1][..., 5:])
 
         # conj(sigma) against each column, so p is column 0 and dp is 1 to 4.
-        s_re = jnp.real(s)[..., None]
-        s_im = jnp.imag(s)[..., None]
         rr = _inner_dd(s_re, h_re, (0, 1))
         ii = _inner_dd(s_im, h_im, (0, 1))
         ri = _inner_dd(s_re, h_im, (0, 1))
@@ -196,7 +370,8 @@ def _gram_parts(lay, mats, sig, dsig):
         h_s = dd.to_fp(h_re)[..., 0] + 1j * dd.to_fp(h_im)[..., 0]
         h_d_fp = dd.to_fp(h_re)[..., 1:] + 1j * dd.to_fp(h_im)[..., 1:]
         # Entry [i, j] is d_i d_jbar p, so the conjugated index comes second.
-        p_ij = p_ij + jnp.einsum('bil,bik->kl', jnp.conj(ds), h_d_fp)
+        ds_fp = dd.cto_fp(ds) if SECTION_DD else ds
+        p_ij = p_ij + jnp.einsum('bil,bik->kl', jnp.conj(ds_fp), h_d_fp)
         store.append((h_s, h_d_fp))
 
     return (dd.to_fp(p), dd.to_fp(p_i_re) + 1j * dd.to_fp(p_i_im), p_ij, store)
@@ -226,11 +401,17 @@ def phi_analytic(lay, mats, z):
     centered vectors b_i = dsigma_i - (p_i/p) sigma make the result a Gram
     matrix, so the cancellation goes into a vector subtraction instead.
     """
-    sig, dsig = section_vectors(lay, z)
+    if SECTION_DD:
+        sig, dsig = section_vectors_dd(lay, z)
+        sig_fp = tuple(dd.cto_fp(a) for a in sig)
+        dsig_fp = tuple(dd.cto_fp(a) for a in dsig)
+    else:
+        sig, dsig = section_vectors(lay, z)
+        sig_fp, dsig_fp = sig, dsig
     p, p_i, _, store = _gram_parts(lay, mats, sig, dsig)
 
     phi = jnp.zeros((4, 4), jnp.complex128)
-    for (h_s, h_d), s, ds in zip(store, sig, dsig):
+    for (h_s, h_d), s, ds in zip(store, sig_fp, dsig_fp):
         # b_i = dsigma_i - (p_i/p) sigma, and H b_i reuses the products above.
         b = ds - jnp.einsum('bi,k->bik', s, p_i / p)
         h_b = h_d - jnp.einsum('bi,k->bik', h_s, p_i / p)

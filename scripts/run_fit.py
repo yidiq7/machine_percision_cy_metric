@@ -72,6 +72,12 @@ def main():
                          'vector products and the inner products in double-'
                          'double, which lowers the floor on abs(f) from 3.97e-13'
                          ' to 1.61e-14 at k = 28 and costs 41 times the time.')
+    ap.add_argument('--section-dd', action='store_true',
+                    help='stages 1 to 3 in double-double as well: the monomials '
+                         'of u, the frame of the sections, and sigma with its 4 '
+                         'derivatives. The Gram stage alone leaves a floor on '
+                         'abs(f) that grows by 1.28 for each unit of k; with '
+                         'these it is approximately 2.5e-15 and flat in k.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -123,6 +129,11 @@ def main():
             f"`./scripts/setup.sh` and then `./scripts/run_cluster.sh`.")
 
     analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[args.gram_dd]
+    analytic.SECTION_DD = args.section_dd
+    if args.section_dd and not args.gram_dd == 'on':
+        raise SystemExit('--section-dd needs --gram-dd on. Stages 1 to 3 in '
+                         'extended precision buy nothing while stage 4, which '
+                         'carries almost all of the error, stays in FP64.')
     print(f"Gram stage: {args.gram_dd}"
           + ("  (floor on abs(f) is approximately 1.6e-14 at k = 28)"
              if args.gram_dd == 'on' else
@@ -232,6 +243,7 @@ def main():
                   'normalization': 'sampled mean of v over the hold-out set',
                   'loss': 'MSPE, LM from optimistix',
                   'gram_dd': args.gram_dd,
+                  'section_dd': bool(args.section_dd),
                   'theta_init': args.theta_init,
                   'basis_fingerprint': basis_id,
                   'whiten': bool(args.whiten),
