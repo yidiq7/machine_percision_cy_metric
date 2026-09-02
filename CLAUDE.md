@@ -146,11 +146,15 @@ adds no cancellation. A form such as `⟨η²⟩ − ⟨η⟩²` would cancel. D
   report a mean.
 * **Not started:** the compensated accumulator on stages 1 to 3. It is the rest
   of the work for stage 1, because stage 4 alone leaves the floor growing in k.
-* **Open:** σ at k = 28 is an upper bound. `--whiten` ruled out the rank of `J`:
-  `cond(J)·ε` went from 133 to 0.036 and σ did not improve. The surviving
-  explanation is the **relative error of `J`**, whose `W` and `K` stages are still
-  FP64. Measure it against an exact reference. See "The rank of `J` is not the
-  cause".
+* **Closed:** the cause of the k = 28 plateau. Six candidates are excluded by
+  measurement: the arithmetic floor, the size of the fit set, the rank of `J`,
+  the entrywise accuracy of `J`, excess risk, and the convergence test. What is
+  left is the intrinsically flat valley of the linearized Monge-Ampere operator.
+  LM stalls where the computed gradient becomes round-off, and in a flat valley
+  that is a range of heights. **Precision is the only lever.** See "The k = 28
+  plateau is the flat valley".
+* **Report σ at k = 28 as the range 1.4e-13 to 2.9e-13.** A single number there
+  does not reproduce: 1e-16 of summation order moves it by 1.7 times.
 
 ---
 
