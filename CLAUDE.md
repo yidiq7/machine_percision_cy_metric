@@ -739,12 +739,38 @@ hold-out loss can, and LM lands on a different point of that valley for each
 perturbation of 1e-16. The classical excess risk `n_θ/N_fit` does not see this,
 because the number of directions that the data determines is far below `n_θ`.
 
-**The test is to report σ on the fit set beside σ on the hold-out set.**
-`run_fit.py` now prints both and saves `mape_fit`. If the two runs above have the
-same fit-set σ and hold-out σ that differ by 2.6 times, the mechanism is
-confirmed and the cure is more fit points or a penalty on the flat directions. If
-the fit-set σ differs as well, the optimizer really stalls at different depths
-and the cause is inside LM.
+**Measured on 2026-09-01, and overfitting is dead as well.** Two runs at seed
+20260813, the same 59,312 fit points, and the block at 2846 against 3098:
+
+| block | steps | fit-set σ | hold-out σ | ratio |
+|---|---|---|---|---|
+| 2846 | 114 | 1.6633e-13 | 1.6464e-13 | **0.990** |
+| 3098 | 113 | 2.1684e-13 | 2.1729e-13 | **1.002** |
+
+* **The hold-out σ tracks the fit-set σ to 1 percent.** There is no excess risk
+  at 59,312 points, so the flat-direction story is wrong. `n_θ/N_fit` of 1.6e-2
+  overstates it, and the truth is nearer zero.
+* **The two runs converge at different depths of the same objective.** The fit
+  set is identical, so the objective is identical, and the fit-set σ differs by
+  1.30 times, which is 1.70 times in the loss. Both report convergence.
+  **Therefore at least one of them is not at the minimum.**
+
+**So the cause is inside the LM iteration.** Either the convergence test fires
+before the minimum, or the surface has separate local minima 30 percent apart.
+An earlier note here said the test is tight and does not fire early. **That note
+is now contradicted by direct evidence**, because one objective cannot have two
+converged values.
+
+`LIMIT=1` sets `--run-to-limit`, which removes the test and keeps the best θ of
+600 steps. That separates the two cases, and it is the next measurement. A run
+that reaches 1.66e-13 or lower from both blocks means the test fired early. Two
+runs that hold at 1.66e-13 and 2.17e-13 through 600 steps mean separate minima.
+
+**A small margin over the arithmetic floor is not the cause by itself.** At the
+fitted θ the oracle gives `rel err(v)` of 4.44e-16 at k = 24 and 2.00e-15 at
+k = 28, so σ sits 1,373 and 42 times above the floor. But k = 24 in plain FP64
+sat only 21 times above its floor and still reproduced dd to 0.3 percent. So the
+margin alone does not predict which k scatters.
 
 `--run-to-limit` sets `rtol = atol = 0` and wraps LM in
 `optx.BestSoFarLeastSquares`, so the fit uses every one of `--max-steps` and keeps
