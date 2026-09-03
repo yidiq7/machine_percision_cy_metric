@@ -10,6 +10,9 @@ runs/
 *.npy
 *.npz
 
+# Local working notes, not for the remote.
+CLAUDE.md
+
 # Repositories that this project uses but does not contain.
 # MLGeometry comes from PyPI as MLGeometry-JAX. See scripts/setup.sh.
 MLGeometry/
