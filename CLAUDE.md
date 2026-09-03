@@ -149,13 +149,12 @@ adds no cancellation. A form such as `⟨η²⟩ − ⟨η⟩²` would cancel. D
   k = 24, 28 and 32, so the floor on `abs(f)` is approximately 2.5e-15 and flat
   in k. See "Stages 1 to 3 are done". **The cost of a whole fit with it is not
   measured, and the first cluster run must report it.**
-* **Closed:** the cause of the k = 28 plateau. Six candidates are excluded by
-  measurement: the arithmetic floor, the size of the fit set, the rank of `J`,
-  the entrywise accuracy of `J`, excess risk, and the convergence test. What is
-  left is the intrinsically flat valley of the linearized Monge-Ampere operator.
-  LM stalls where the computed gradient becomes round-off, and in a flat valley
-  that is a range of heights. **Precision is the only lever.** See "The k = 28
-  plateau is the flat valley".
+* **Open:** the cause of the k = 28 plateau. Seven candidates are excluded by
+  measurement, and the last one is the precision of the evaluation: dd on stages
+  1 to 4 left σ inside the plateau. Either σ = 1.9e-13 is the minimum of the
+  ansatz, or the LM linear solve cannot reach it. **A warm restart from the best
+  and the worst θ separates the two, and it costs one fit.** See "Precision is
+  not the cause either".
 * **Report σ at k = 28 as the range 1.4e-13 to 2.9e-13.** A single number there
   does not reproduce: 1e-16 of summation order moves it by 1.7 times.
 
@@ -833,6 +832,60 @@ prediction and not a measurement; the accumulator on stages 1 to 3 tests it.
 **Report σ at k = 28 as a range, and not as a number.** Every plain run with at
 least 60,000 fit points spans 1.36e-13 to 2.93e-13. Quote the range, and quote
 k = 24 at 1.2198e-12, which reproduces to 1 percent.
+
+### Precision is not the cause either, 2026-09-03
+
+Two fits at k = 28 with stages 1 to 4 in dd, 59,312 fit points, hold-out of 8e6:
+
+| seed | block | steps | fit-set σ | hold-out σ |
+|---|---|---|---|---|
+| 20260813 | 830 | 122 | 2.0869e-13 | **2.1259e-13** |
+| 20260901 | 2645 | 128 | 1.4292e-13 | **1.4356e-13** |
+
+**Both sit inside the plateau that the Gram stage alone gives**, which spans
+1.1228e-13 to 2.9333e-13 over 6 draws with a median of 1.9100e-13. The mean of
+the two new ones is 1.78e-13. **The prediction was a fall to approximately
+2e-14, and σ did not move.**
+
+**The prediction should not have been made.** The floor at the *fitted* θ with
+stage 4 alone was already measured at 1.899e-15, which is 94 times below σ, so
+the arithmetic was already excluded. The prediction rested on the floor at
+`θ_FS`, which is 8.5 times worse and not the quantity that matters. Read the
+fitted-θ number and not the `θ_FS` number.
+
+**Seven candidates are now excluded by measurement:**
+
+| candidate | test | result |
+|---|---|---|
+| the arithmetic floor | oracle at the fitted θ | 1.9e-15, 94 times below σ |
+| the size of the fit set | sweep 19,000 to 86,000 | saturates above 60,000 |
+| the rank of `J` | `--whiten`, `cond·ε` 133 to 0.036 | σ did not improve |
+| the entrywise accuracy of `J` | oracle on `dv/dθ` | 4.0e-15 |
+| excess risk | fit-set σ against hold-out σ | ratio 1.004 to 1.031 |
+| the convergence test | `--run-to-limit`, 600 steps | the gap held |
+| **the precision of the evaluation** | **dd on stages 1 to 4** | **σ did not move** |
+
+The cost of stages 1 to 3 at k = 28 is 956 kB for each point, against 1,100 for
+stage 4 alone, and 12 to 14 s for each step.
+
+**Two possibilities are left, and one cheap test separates them.**
+
+1. σ ≈ 1.9e-13 is the minimum of the ansatz at k = 28, and the 24 → 28 rate of
+   1.8 is real. Then the scatter of 2.6 times needs its own explanation, because
+   a least-squares minimum on a fixed fit set is unique up to the gauge.
+2. The LM linear solve cannot reach the minimum. `cond(J)·ε = 144`, so
+   `(JᵀJ + λI)δ = −Jᵀr` in FP64 gives a δ with a large error whatever the
+   coordinates are. Whitening changed the conditioning of `J` and not of the map
+   back to `h`, so it correctly predicted no gain here as well.
+
+**The test is a warm restart.** `--theta-init` from the best θ found, and from
+the worst. If the worst descends toward the best, the runs stall and explanation
+2 holds. If it stays, the two are separate minima and explanation 1 holds. That
+costs one fit and needs no new code.
+
+If explanation 2 survives, the fix is extended precision in the LM linear solve,
+which is `lineax` QR in dd and a much larger piece of work than the evaluation.
+Collaborators reach the same conclusion for k above 26.
 
 ### The binding constraint is the arithmetic, and FP64 stops at k = 27
 
