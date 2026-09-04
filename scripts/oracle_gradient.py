@@ -64,12 +64,17 @@ def main():
                     help='two lax.map block sizes. They change only the order '
                          'of the summation.')
     ap.add_argument('--gram-dd', choices=['off', 'inner', 'on'], default='on')
+    ap.add_argument('--section-dd', action='store_true',
+                    help='stages 1 to 3 in double-double as well. Match the run '
+                         'that saved --theta, so the gradient is the one that '
+                         'LM saw.')
     ap.add_argument('--whiten', action='store_true')
     ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
     ap.add_argument('--gram-seed', type=int, default=whiten.GRAM_SEED)
     args = ap.parse_args()
 
     analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[args.gram_dd]
+    analytic.SECTION_DD = args.section_dd
 
     lay = (whiten.whitened_layout(args.k, n_pairs=args.gram_pairs,
                                   seed=args.gram_seed)
@@ -114,14 +119,17 @@ def main():
     print(f"{'relative error of g, 2 norm':>34}   {rel_two:.4e}")
     print()
     if rel_two > 0.3:
-        print('The gradient is noise, so LM cannot descend from here. At a')
-        print('converged theta that is expected and it is not a fault: the exact')
-        print('gradient is zero there. It matters only part way through a fit.')
+        print('The gradient is noise. LM has no direction it can trust here.')
+        print('At a true minimum the exact gradient is zero, so this is what a')
+        print('minimum looks like as well: the test cannot tell the two apart.')
     elif rel_two > 1e-3:
-        print('The gradient carries only a few digits, so the last digits of')
-        print('theta are not determined.')
+        print('**The gradient is real and LM stopped anyway.** The exact')
+        print('gradient is zero at a minimum, so a gradient this far above its')
+        print('own noise says the point is not one. The step, and not the')
+        print('gradient, is what failed.')
     else:
-        print('The gradient is well resolved.')
+        print('The gradient is well resolved and far from zero, so the point is')
+        print('not a minimum at all.')
 
 
 if __name__ == '__main__':
