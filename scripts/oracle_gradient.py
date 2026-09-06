@@ -58,7 +58,13 @@ def main():
                     help='a saved theta. The default is Fubini-Study, where the '
                          'gradient is large and nothing is visible.')
     ap.add_argument('--n-fit', type=int, default=59_312,
-                    help='fit points. Use the value of the run that saved theta.')
+                    help='fit points. Use the value that the run reported.')
+    ap.add_argument('--n-train', type=int, default=200_000,
+                    help='the --n-train of the run that saved theta. The fit set '
+                         'is the first --n-fit points of that sample, and a '
+                         'different --n-train gives different points at the same '
+                         'seed, so the gradient would be measured on a set the '
+                         'fit never saw.')
     ap.add_argument('--seed', type=int, default=20260813)
     ap.add_argument('--blocks', type=int, nargs=2, default=(2761, 2983),
                     help='two lax.map block sizes. They change only the order '
@@ -94,10 +100,14 @@ def main():
                              '--whiten to the run that made it.')
         where = args.theta
 
-    batch = data.make(int(np.ceil(args.n_fit / 4)), args.seed)
+    if args.n_train < args.n_fit:
+        raise SystemExit('--n-train must be at least --n-fit')
+    # Reproduce the sample of the fit exactly: the same --n-train, then the
+    # first --n-fit points of it.
+    batch = data.make(int(np.ceil(args.n_train / 4)), args.seed)
     batch = {key: val[:args.n_fit] for key, val in batch.items()}
 
-    print(f'k = {args.k}, {args.n_fit} fit points, at {where}, '
+    print(f'k = {args.k}, {args.n_fit} of {args.n_train} points, at {where}, '
           f'Gram stage {args.gram_dd}, '
           f'basis {"whitened" if args.whiten else "plain"}')
     print(f'two lax.map blocks: {args.blocks[0]} and {args.blocks[1]}\n')
@@ -118,18 +128,18 @@ def main():
     print(f"{'relative error of g, max norm':>34}   {rel_inf:.4e}")
     print(f"{'relative error of g, 2 norm':>34}   {rel_two:.4e}")
     print()
-    if rel_two > 0.3:
-        print('The gradient is noise. LM has no direction it can trust here.')
-        print('At a true minimum the exact gradient is zero, so this is what a')
-        print('minimum looks like as well: the test cannot tell the two apart.')
-    elif rel_two > 1e-3:
-        print('**The gradient is real and LM stopped anyway.** The exact')
-        print('gradient is zero at a minimum, so a gradient this far above its')
-        print('own noise says the point is not one. The step, and not the')
-        print('gradient, is what failed.')
-    else:
-        print('The gradient is well resolved and far from zero, so the point is')
-        print('not a minimum at all.')
+    print(f"{'norm of g over its noise':>34}   {1 / max(rel_two, 1e-300):.2e}")
+    print()
+    print('**`norm of g` over its noise is the number to read, and it needs a')
+    print('control.** A converged fit does not give 1. Measured on 3,000 points')
+    print('at a converged theta, with the same points as the fit, it is 21 at')
+    print('k = 6 and 19 at k = 8, where sigma reproduces exactly. So compare one')
+    print('k against another, and not against 1.')
+    print()
+    print('**The points must be the ones the fit used.** Pass the --n-train of')
+    print('that run. A sample of --n-fit points drawn on its own has the same')
+    print('seed and different points, and the gradient on it is not small: at a')
+    print('converged theta it read 1.4e-5 against the 7.1e-17 of the right set.')
 
 
 if __name__ == '__main__':
