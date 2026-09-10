@@ -30,8 +30,13 @@ import jax.numpy as jnp                                     # noqa: E402
 from quartic import analytic, data, sections                # noqa: E402
 
 
-def phi_exact(lay, mats, z):
-    """phi at one point, in mpmath, from the same H_r that FP64 uses."""
+def phi_exact(lay, mats, z, keep=False):
+    """phi at one point, in mpmath, from the same H_r that FP64 uses.
+
+    `keep` returns the mpmath values instead of FP64 ones. Use it to compare two
+    precisions against each other, because the FP64 return rounds away
+    everything that such a comparison measures.
+    """
     zz = [mpc(complex(c)) for c in z]
     u = [c ** 4 for c in zz]
 
@@ -87,6 +92,8 @@ def phi_exact(lay, mats, z):
             for j in range(4):
                 phi[i][j] += sum((b[a][j].conjugate() * hb[a][i] for a in range(d)),
                                  mpc(0))
+    if keep:
+        return [[phi[i][j] / p for j in range(4)] for i in range(4)], p
     return np.array([[complex(phi[i][j] / p) for j in range(4)] for i in range(4)]), float(p)
 
 
