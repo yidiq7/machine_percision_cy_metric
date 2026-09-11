@@ -28,7 +28,7 @@ import jax.tree_util as jtu
 from . import dd, sections
 
 __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
-           'phi_analytic',
+           'phi_analytic', 'EXACT_MUL',
            'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
            'volume_and_weights', 'volume_tangent', 'volume_jacobian',
@@ -56,6 +56,22 @@ GRAM_DD = True
 # It needs `section_vectors_closed`, because `dd.split` uses a bitcast, which
 # carries no derivative, so `jax.jacfwd` cannot pass through it.
 SECTION_DD = False
+
+# `dd.mul_fast` against the exact `dd.mul` inside stages 1 to 3. `mul_fast`
+# keeps the exact high-part product and sums the rest in FP64, which gives
+# 2^-79, or about 24 digits, for 2 barriers against 20.
+#
+# Measured end to end, the relative error of phi is 1.61e-24 with `mul_fast` and
+# 3.89e-32 with `mul`. So `mul_fast` holds a floor on abs(f) of approximately
+# 3e-24, which is enough for stage 1 at 1e-15 and **30 times too high for stage
+# 2 at 1e-25**. The exact form costs compile time: XLA cannot fuse across a
+# barrier, and the residual at k = 8 did not compile in 600 s with it.
+EXACT_MUL = False
+
+
+def _cmul(a, b):
+    """Complex double-double product, exact or fast by `EXACT_MUL`."""
+    return dd.cmul(a, b) if EXACT_MUL else dd.cmul_fast(a, b)
 
 
 def section_vectors(lay, z):
@@ -148,7 +164,7 @@ def _integer_powers_dd(x, top):
     one = (dd.to_dd(jnp.ones_like(x[0][0])), dd.to_dd(jnp.zeros_like(x[0][0])))
     out = [one]
     for _ in range(top):
-        out.append(dd.cmul_fast(out[-1], x))
+        out.append(_cmul(out[-1], x))
     return _cstack(out, axis=0)
 
 
@@ -158,7 +174,7 @@ def _monomials_dd(u, exps, m):
     cols = _cindex(table, exps, jnp.arange(4))           # (n_monomials, 4)
     out = _cindex(cols, slice(None), 0)
     for a in range(1, 4):
-        out = dd.cmul_fast(out, _cindex(cols, slice(None), a))
+        out = _cmul(out, _cindex(cols, slice(None), a))
     return out                                            # (n_monomials,)
 
 
@@ -177,8 +193,12 @@ def _project_dd(weighted_frame, val, extra_axes=0):
     return one(val[0]), one(val[1])
 
 
-def section_vectors_dd(lay, z):
+def section_vectors_dd(lay, z, z_dd=None):
     """`sig` and `dsig` in double-double: stages 1 to 3 of the evaluation.
+
+    `z_dd` takes the point itself as a complex double-double value, which the
+    end-to-end path needs: an FP64 z holds `abs(P)/scale` at 1e-16 at best, and
+    that error enters `v` with an amplification of up to 6.6.
 
     This is `section_vectors_closed` with every operation in extended
     precision. The derivatives use the closed form
@@ -195,9 +215,9 @@ def section_vectors_dd(lay, z):
     that XLA did not finish k = 6, which is the same fault that the note in
     `_matvec_dd` records.
     """
-    zc = dd.cto_dd(z)
-    z2 = dd.cmul_fast(zc, zc)
-    u = dd.cmul_fast(z2, z2)                                   # u_a = z_a^4, exact
+    zc = dd.cto_dd(z) if z_dd is None else z_dd
+    z2 = _cmul(zc, zc)
+    u = _cmul(z2, z2)                                   # u_a = z_a^4, exact
     inv_z = dd.creciprocal(zc)
 
     # One product chain over every group's monomials at once.
@@ -207,7 +227,7 @@ def section_vectors_dd(lay, z):
     cols = _cindex(u_powers, all_exps, jnp.arange(4))
     mono_all = _cindex(cols, slice(None), 0)
     for a in range(1, 4):
-        mono_all = dd.cmul_fast(mono_all, _cindex(cols, slice(None), a))
+        mono_all = _cmul(mono_all, _cindex(cols, slice(None), a))
 
     # And one over every block weight z^r. r_a is 0 to 3.
     z_powers = _integer_powers_dd(zc, 3)
@@ -216,9 +236,9 @@ def section_vectors_dd(lay, z):
     cols = _cindex(z_powers, all_res, jnp.arange(4))
     weight_all = _cindex(cols, slice(None), 0)
     for a in range(1, 4):
-        weight_all = dd.cmul_fast(weight_all, _cindex(cols, slice(None), a))
+        weight_all = _cmul(weight_all, _cindex(cols, slice(None), a))
     # z^r / z_i, for every block and direction.
-    wz_all = dd.cmul_fast(_cindex(weight_all, slice(None), None),
+    wz_all = _cmul(_cindex(weight_all, slice(None), None),
                      _cindex(inv_z, None, slice(None)))
 
     sig, dsig = [], []
@@ -239,7 +259,7 @@ def section_vectors_dd(lay, z):
         psi_i = _project_dd(frame[:, :, None] * exps.astype(frame.dtype)[:, None, :],
                             mono, extra_axes=1)           # (d, 4)
 
-        sig.append(dd.cmul_fast(_cindex(weight, slice(None), None),
+        sig.append(_cmul(_cindex(weight, slice(None), None),
                            _cindex(psi, None, slice(None))))
 
         # (r_i psi + 4 psi_i), then times z^r / z_i.
@@ -248,7 +268,7 @@ def section_vectors_dd(lay, z):
         term_c = _cscale(_cindex(psi_i, None, slice(None), slice(None)),
                          jnp.asarray(4.0))
         inner = dd.cadd(term_r, term_c)                   # (n_blocks, d, 4)
-        dsig.append(dd.cmul_fast(inner, _cindex(wz, slice(None), None, slice(None))))
+        dsig.append(_cmul(inner, _cindex(wz, slice(None), None, slice(None))))
 
     return tuple(sig), tuple(dsig)
 

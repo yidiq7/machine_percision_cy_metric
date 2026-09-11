@@ -37,7 +37,10 @@ def phi_exact(lay, mats, z, keep=False):
     precisions against each other, because the FP64 return rounds away
     everything that such a comparison measures.
     """
-    zz = [mpc(complex(c)) for c in z]
+    # `z` may already hold mpmath values. `complex(c)` would round them to FP64,
+    # and a reference at a point 1e-17 away is not a reference: the error
+    # propagates into p with the degree k as the amplification.
+    zz = [c if isinstance(c, mpc) else mpc(complex(c)) for c in z]
     u = [c ** 4 for c in zz]
 
     sig, dsig, hs, hd = [], [], [], []
