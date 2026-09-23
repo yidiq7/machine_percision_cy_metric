@@ -84,10 +84,11 @@ def main():
                          'near a tenth of the sigma you expect, because the '
                          'sigma reached is approximately rcond.')
     ap.add_argument('--theta-init', type=str, default=None,
-                    help='start from a saved theta instead of Fubini-Study. A '
-                         'restart that lowers sigma means the earlier fit '
-                         'stopped early, and one that does not means it '
-                         'converged. One --k only.')
+                    help='start from a saved theta instead of Fubini-Study. '
+                         'This is not a test of convergence: LM starts again at '
+                         'lambda = 1, and at k = 24 and k = 28 it then stopped '
+                         'with no gain where steps that remove most of the '
+                         'loss existed. One --k only.')
     ap.add_argument('--whiten', action='store_true',
                     help='whiten the section basis in L2(X). The monomial frame '
                          'is orthonormal in the coefficients and not on X, so '
