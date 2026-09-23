@@ -35,7 +35,7 @@ mlg.set_precision(64)
 import jax                                                  # noqa: E402
 import jax.numpy as jnp                                     # noqa: E402
 
-from quartic import analytic, data, dd, fit, sections       # noqa: E402
+from quartic import analytic, data, fit, sections           # noqa: E402
 
 T0 = time.perf_counter()
 
@@ -47,49 +47,16 @@ def say(text):
 def prepare_dd(lay, theta):
     """The block matrices of `sections.prepare`, formed in dd and rounded once.
 
-    theta * scale is exact as a dd product. The sum over the basis and both
-    products with rot run in dd, so the only error left in each entry of H_r is
-    the final rounding to FP64.
+    This is the production form that `sections.PREPARE_DD` selects.
     """
-    if lay.whiten_inv:
-        raise ValueError('prepare_dd covers the plain basis only')
-    th = dd.mul(dd.to_dd(jnp.asarray(theta)), dd.to_dd(jnp.asarray(lay.scale)))
-    out = []
-    for g in lay.groups:
-        basis = jnp.asarray(g.basis)
-        his, los = [], []
-        for i, sl in enumerate(g.slices):
-            n = sl.stop - sl.start
-            terms = jnp.moveaxis(basis[i, :n], 0, -1)             # (d, d, n)
-            hi, lo = dd.dot_dd_fp((th[0][sl], th[1][sl]), terms, axis=-1)
-            his.append(hi)
-            los.append(lo)
-        rep = (jnp.stack(his)[g.orbit_of], jnp.stack(los)[g.orbit_of])
-        rot = jnp.asarray(g.rot)                                   # (b, d, d)
-        # T[b, k, j] = sum_l H[b, k, l] rot[b, j, l], which is H rot^T.
-        t = dd.dot_dd_fp((rep[0][:, :, None, :], rep[1][:, :, None, :]),
-                         rot[:, None, :, :], axis=-1)
-        # H_r[b, i, j] = sum_k rot[b, i, k] T[b, k, j], which is rot T.
-        t_t = (jnp.swapaxes(t[0], 1, 2)[:, None, :, :],
-               jnp.swapaxes(t[1], 1, 2)[:, None, :, :])
-        out.append(dd.to_fp(dd.dot_dd_fp(t_t, rot[:, :, None, :], axis=-1)))
-    return tuple(out)
+    return sections._prepare_rounded(lay, theta)
 
 
 def residual_from_mats(lay, mats, batch, chunk):
-    """sqrt(w) f from given block matrices, by the per-point path of the fit.
-
-    This is `analytic.volumes_analytic` with `mats` as an input in place of
-    `sections.prepare(lay, theta)`.
-    """
-    def one(args):
-        z, restriction, omega = args
-        phi, _ = analytic.phi_analytic(lay, mats, z)
-        g = restriction @ phi @ jnp.conj(restriction).T
-        return jnp.real(jnp.linalg.det(g)) / omega
-
+    """sqrt(w) f from given block matrices, by the per-point path of the fit."""
     xs = (batch['points'], batch['restriction'], batch['Omega_Omegabar'])
-    v = jax.lax.map(one, xs, batch_size=chunk)
+    v = jax.lax.map(lambda a: analytic.volume_at(lay, mats, *a), xs,
+                    batch_size=chunk)
     weights = batch['mass'] / jnp.sum(batch['mass'])
     return jnp.sqrt(weights) * (v / jnp.sum(weights * v) - 1.0)
 
@@ -152,7 +119,7 @@ def main():
 
     res_theta = jax.jit(fit.residual_fn(lay, batch, args.chunk))
     res_mats = jax.jit(lambda mats: residual_from_mats(lay, mats, batch, args.chunk))
-    make_fp = jax.jit(lambda t: sections.prepare(lay, t))
+    make_fp = jax.jit(lambda t: sections.prepare_fp(lay, t))
     make_dd = jax.jit(lambda t: prepare_dd(lay, t))
 
     mats_fp, mats_dd = make_fp(theta), make_dd(theta)

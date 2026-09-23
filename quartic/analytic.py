@@ -29,7 +29,7 @@ from . import dd, sections
 
 __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
            'phi_analytic', 'EXACT_MUL',
-           'volumes_analytic',
+           'volume_at', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
            'volume_and_weights', 'volume_tangent', 'volume_jacobian',
            'residual_jacobian', 'weighted_residual_fast']
@@ -452,15 +452,19 @@ def phi_analytic(lay, mats, z):
     return phi / p, p
 
 
+def volume_at(lay, mats, z, restriction, omega):
+    """v = det(g|_X) / OmegaOmegabar at one point, from given block matrices."""
+    phi, _ = phi_analytic(lay, mats, z)
+    g = restriction @ phi @ jnp.conj(restriction).T
+    return jnp.real(jnp.linalg.det(g)) / omega
+
+
 def volumes_analytic(lay, theta, batch, chunk=None):
     """v = det(g|_X) / OmegaOmegabar, with phi from `phi_analytic`."""
     mats = sections.prepare(lay, theta)
 
     def one(args):
-        z, restriction, omega = args
-        phi, _ = phi_analytic(lay, mats, z)
-        g = restriction @ phi @ jnp.conj(restriction).T
-        return jnp.real(jnp.linalg.det(g)) / omega
+        return volume_at(lay, mats, *args)
 
     xs = (batch['points'], batch['restriction'], batch['Omega_Omegabar'])
     if chunk is None:
@@ -586,7 +590,9 @@ def weighted_residual_fast(lay, theta, batch, chunk):
 def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
     (theta,), (dtheta,) = primals, tangents
     mats = sections.prepare(lay, theta)
-    dmats = sections.prepare(lay, dtheta)
+    # lineax batches the tangent over every direction of theta, so it keeps the
+    # FP64 map: the dd form would hold its intermediates once for each direction.
+    dmats = sections.prepare_fp(lay, dtheta)
 
     def one(args):
         z, restriction, omega = args

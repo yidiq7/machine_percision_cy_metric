@@ -15,17 +15,22 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from functools import partial
 from math import factorial, prod
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import blocks
+from . import blocks, dd
 
 __all__ = ['Group', 'Layout', 'layout', 'log_potential', 'potential',
-           'fubini_study_theta', 'block_matrices', 'prepare', 'potential_at',
-           'log_potential_at']
+           'fubini_study_theta', 'block_matrices', 'prepare', 'prepare_fp',
+           'potential_at', 'log_potential_at', 'PREPARE_DD']
+
+# Form each H_r in double-double and round it once to FP64. The FP64 form moves
+# the residual at the stalled theta of k = 28 by 38 percent of its norm.
+PREPARE_DD = False
 
 
 @dataclass(frozen=True)
@@ -187,9 +192,64 @@ def prepare(lay, theta):
     theta -> H costs O(64 d^3) and does not depend on the point, so it must stay
     outside the loop over points. `lay.scale` enters here, so a tangent gets the
     same factor and the chain rule of the reparametrization is automatic.
+
+    `PREPARE_DD` selects the form in double-double. H spans many orders of
+    magnitude and `rot` is dense, so in FP64 a small entry of H_r can carry an
+    absolute error of order eps * max abs(H).
     """
+    if PREPARE_DD:
+        return _prepare_rounded(lay, theta)
+    return prepare_fp(lay, theta)
+
+
+def prepare_fp(lay, theta):
+    """`prepare` in plain FP64. H is linear in theta, so this is its tangent map too."""
     scaled = theta * jnp.asarray(lay.scale)
     return tuple(block_matrices(g, scaled) for g in lay.groups)
+
+
+def _conjugate_dd(a, h):
+    """a h a^T in double-double, for a stack of FP64 matrices a and dd matrices h."""
+    t = dd.dot_dd_fp((h[0][:, :, None, :], h[1][:, :, None, :]),
+                     a[:, None, :, :], axis=-1)                  # h a^T
+    t_t = (jnp.swapaxes(t[0], 1, 2)[:, None, :, :],
+           jnp.swapaxes(t[1], 1, 2)[:, None, :, :])
+    return dd.dot_dd_fp(t_t, a[:, :, None, :], axis=-1)         # a (h a^T)
+
+
+def _block_matrices_dd(group, scaled, whitened):
+    """`block_matrices` in double-double, from theta * scale as a dd pair."""
+    basis = jnp.asarray(group.basis)
+    his, los = [], []
+    for i, sl in enumerate(group.slices):
+        terms = jnp.moveaxis(basis[i, :sl.stop - sl.start], 0, -1)   # (d, d, n)
+        hi, lo = dd.dot_dd_fp((scaled[0][sl], scaled[1][sl]), terms, axis=-1)
+        his.append(hi)
+        los.append(lo)
+    reps = (jnp.stack(his), jnp.stack(los))
+    if whitened:
+        # W is symmetric, so W H W is W H W^T.
+        reps = _conjugate_dd(jnp.asarray(group.whiten), reps)
+    per_block = (reps[0][group.orbit_of], reps[1][group.orbit_of])
+    return _conjugate_dd(jnp.asarray(group.rot), per_block)
+
+
+@partial(jax.custom_jvp, nondiff_argnums=(0,))
+def _prepare_rounded(lay, theta):
+    """`prepare` in double-double, with each entry of each H_r rounded once."""
+    scale = jnp.asarray(lay.scale, dtype=theta.dtype)
+    scaled = dd.mul(dd.to_dd(theta), dd.to_dd(scale))       # exact product
+    whitened = bool(lay.whiten_inv)
+    return tuple(dd.to_fp(_block_matrices_dd(g, scaled, whitened))
+                 for g in lay.groups)
+
+
+@_prepare_rounded.defjvp
+def _prepare_rounded_jvp(lay, primals, tangents):
+    # H is linear in theta, so the tangent is the FP64 map of the tangent.
+    # `dd.split` is a bitcast with no derivative, so autodiff must not see it.
+    (theta,), (dtheta,) = primals, tangents
+    return _prepare_rounded(lay, theta), prepare_fp(lay, dtheta)
 
 
 def potential_at(lay, mats, z):

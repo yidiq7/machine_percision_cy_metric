@@ -11,10 +11,10 @@ import jax
 import jax.numpy as jnp
 from MLGeometry import complex_math
 
-from . import sections
+from . import analytic, sections
 
-__all__ = ['restricted_metric', 'volumes', 'residual', 'weighted_residual',
-           'report']
+__all__ = ['restricted_metric', 'volumes', 'volumes_fit', 'residual',
+           'weighted_residual', 'report']
 
 
 def restricted_metric(lay, mats, z, restriction):
@@ -106,29 +106,58 @@ def weighted_residual(lay, theta, batch, chunk=None):
     return jnp.sqrt(weights) * residual(lay, theta, batch, chunk)
 
 
-def report(lay, theta, batch, chunk=100_000):
+def volumes_fit(lay, theta, batch, chunk=100_000, block=4096):
+    """v at every point by the arithmetic of the fit, a chunk at a time.
+
+    This is `analytic.volume_at`, so `analytic.GRAM_DD`, `analytic.SECTION_DD`
+    and `sections.PREPARE_DD` apply. `volumes_chunked` uses `complex_hessian` in
+    plain FP64, whatever those flags are.
+    """
+    n = int(batch['points'].shape[0])
+    mats = sections.prepare(lay, theta)
+
+    @jax.jit
+    def piece(points, restriction, omega):
+        return jax.lax.map(lambda a: analytic.volume_at(lay, mats, *a),
+                           (points, restriction, omega),
+                           batch_size=min(block, points.shape[0]))
+
+    return jnp.concatenate([
+        piece(batch['points'][s], batch['restriction'][s],
+              batch['Omega_Omegabar'][s]) for s in _chunks(n, chunk)])
+
+
+def report(lay, theta, batch, chunk=100_000, block=4096):
     """The numbers that "Output" asks for, on one point set.
 
     The standard error of `mape` is approximately `mape / sqrt(N)`, because the
     spread of abs(f) is close to its mean. So N sets how many digits of the
     reported residual are real, and it does not set the residual itself.
+
+    `mape`, `rms`, `max_abs` and `mspe` come from the arithmetic of the fit.
+    `mape_check` and `rms_check` come from `complex_hessian` in plain FP64, an
+    independent path, and the margins come from that path too.
     """
-    v = volumes_chunked(lay, theta, batch, chunk)
+    v = volumes_fit(lay, theta, batch, chunk, block)
     weights = batch['mass'] / jnp.sum(batch['mass'])
     f = v / jnp.sum(weights * v) - 1.0
 
     mats = sections.prepare(lay, theta)
 
     @jax.jit
-    def margins(points, restriction):
+    def check(points, restriction, omega):
         metrics = jax.vmap(lambda z, r: restricted_metric(lay, mats, z, r))(
             points, restriction)
         herm = 0.5 * (metrics + jnp.conj(jnp.swapaxes(metrics, -1, -2)))
-        return (jnp.min(jnp.linalg.eigvalsh(herm)),
+        return (jnp.real(jax.vmap(jnp.linalg.det)(metrics)) / omega,
+                jnp.min(jnp.linalg.eigvalsh(herm)),
                 jnp.min(jax.vmap(lambda z: sections.potential_at(lay, mats, z))(points)))
 
-    pairs = [margins(batch['points'][s], batch['restriction'][s])
+    parts = [check(batch['points'][s], batch['restriction'][s],
+                   batch['Omega_Omegabar'][s])
              for s in _chunks(int(f.shape[0]), chunk)]
+    v_check = jnp.concatenate([part[0] for part in parts])
+    f_check = v_check / jnp.sum(weights * v_check) - 1.0
 
     mape = float(jnp.sum(weights * jnp.abs(f)))
     return {
@@ -137,7 +166,9 @@ def report(lay, theta, batch, chunk=100_000):
         'rms': float(jnp.sqrt(jnp.sum(weights * f ** 2))),
         'max_abs': float(jnp.max(jnp.abs(f))),
         'mspe': float(jnp.sum(weights * f ** 2)),
-        'min_eig': float(min(float(a) for a, _ in pairs)),
-        'min_p': float(min(float(b) for _, b in pairs)),
+        'mape_check': float(jnp.sum(weights * jnp.abs(f_check))),
+        'rms_check': float(jnp.sqrt(jnp.sum(weights * f_check ** 2))),
+        'min_eig': float(min(float(part[1]) for part in parts)),
+        'min_p': float(min(float(part[2]) for part in parts)),
         'n_points': int(f.shape[0]),
     }

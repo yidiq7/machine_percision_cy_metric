@@ -78,6 +78,12 @@ def main():
                          'derivatives. The Gram stage alone leaves a floor on '
                          'abs(f) that grows by 1.28 for each unit of k; with '
                          'these it is approximately 2.5e-15 and flat in k.')
+    ap.add_argument('--prepare-dd', action='store_true',
+                    help='form the block matrices H_r in double-double and '
+                         'round each entry once. The FP64 form moves the '
+                         'residual at the stalled theta of k = 28 by 38 percent '
+                         'of its norm. H is built once for each LM step, so '
+                         'the cost is small.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -135,10 +141,9 @@ def main():
         raise SystemExit('--section-dd needs --gram-dd on. Stages 1 to 3 in '
                          'extended precision buy nothing while stage 4, which '
                          'carries almost all of the error, stays in FP64.')
-    print(f"Gram stage: {args.gram_dd}"
-          + ("  (floor on abs(f) is approximately 1.6e-14 at k = 28)"
-             if args.gram_dd == 'on' else
-             "  (floor on abs(f) is approximately 4.0e-13 at k = 28)"))
+    sections.PREPARE_DD = args.prepare_dd
+    print(f"Gram stage: {args.gram_dd}, stages 1 to 3 in dd: {args.section_dd}, "
+          f"H in dd: {args.prepare_dd}")
 
     train = sample(args.n_train, args.seed, 'fit set     ')
     hold = sample(args.n_eval, args.seed + 1000, 'hold-out set')
@@ -238,6 +243,8 @@ def main():
               f"{rep['min_eig']:>11.3e} {rep['min_p']:>10.3e}{flag}")
         print(f"    fit-set mean abs(f) = {rep_fit['mape']:.4e}, "
               f"hold-out over fit set = {rep['mape'] / rep_fit['mape']:.3f}")
+        print(f"    through complex_hessian in plain FP64: hold-out "
+              f"{rep['mape_check']:.4e}, fit set {rep_fit['mape_check']:.4e}")
 
         record = {'k': k, 'n_theta': lay.n_theta, 'seed': args.seed,
                   'n_train': int(fit_set['points'].shape[0]),
@@ -245,6 +252,10 @@ def main():
                   'loss': 'MSPE, LM from optimistix',
                   'gram_dd': args.gram_dd,
                   'section_dd': bool(args.section_dd),
+                  'prepare_dd': bool(args.prepare_dd),
+                  'sigma_path': 'analytic.volume_at, in the arithmetic of the '
+                                'fit; mape_check uses complex_hessian in FP64',
+                  'mape_fit_check': rep_fit['mape_check'],
                   'theta_init': args.theta_init,
                   'basis_fingerprint': basis_id,
                   'whiten': bool(args.whiten),
