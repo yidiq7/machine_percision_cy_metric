@@ -5,8 +5,8 @@ bitcast and carries no derivative, so that path cannot use dd, and at k = 32 the
 FP64 arithmetic has an error larger than f.
 
 This module moves each dd point of `dd_metric.point_extras` along X, from t_i
-to t_i + h with h = eps or i*eps, and puts it back on X with one Newton step in
-dd. v there comes from the END_DD path without the final rounding. v is real,
+to t_i + h with h = eps or i*eps, and puts it back on X with two Newton steps
+in dd. v there comes from the END_DD path without the final rounding. v is real,
 so the central difference over h gives 2 Re(h dv/dt_i) / eps.
 
 eps is a power of 2, so the step is exact in dd. The truncation error is
@@ -33,10 +33,14 @@ def _times_h(val, eps, rotate):
 
 
 def moved_point(z_dd, m, free, i, eps, rotate):
-    """The point of X at t_i + h, from the tangent line and one Newton step in dd."""
+    """The point of X at t_i + h, from the tangent line and two Newton steps in dd.
+
+    The tangent line leaves the point off X by eps^2. One step squares that to
+    approximately 1e-17 at eps = 2^-14, so the second step is necessary.
+    """
     rest, _ = dd_metric._restriction_dd(z_dd, m, free)
     line = dd.cadd(z_dd, _times_h(analytic._cindex(rest, i), eps, rotate))
-    return dd_metric.newton_step(line, m)
+    return dd_metric.newton_step(dd_metric.newton_step(line, m), m)
 
 
 def volume_keep(lay, mats, z_dd, m, free):
