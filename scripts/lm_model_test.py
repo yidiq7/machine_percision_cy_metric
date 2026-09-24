@@ -47,7 +47,7 @@ mlg.set_precision(64)
 import jax                                                  # noqa: E402
 import jax.numpy as jnp                                     # noqa: E402
 
-from quartic import analytic, data, fit, sections, whiten   # noqa: E402
+from quartic import analytic, data, dd_metric, fit, sections, whiten   # noqa: E402
 
 EPS = float(np.finfo(np.float64).eps)
 ACCEPT = 0.01          # low_cutoff of optimistix.ClassicalTrustRegion
@@ -249,6 +249,8 @@ def main():
                     help='carry the low part of H into the Gram stage')
     ap.add_argument('--phi-dd', action='store_true',
                     help='stage 5 in dd, as in run_fit.py')
+    ap.add_argument('--end-dd', action='store_true',
+                    help='the whole path in dd from dd points, as in run_fit.py')
     ap.add_argument('--no-whiten', action='store_true',
                     help='leave out the whitened family')
     ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
@@ -265,8 +267,11 @@ def main():
     sections.PREPARE_DD = args.prepare_dd
     analytic.H_LOW = args.h_low
     analytic.PHI_DD = args.phi_dd
+    analytic.END_DD = args.end_dd
     if args.section_dd and args.gram_dd != 'on':
         raise SystemExit('--section-dd needs --gram-dd on')
+    if args.end_dd and not (args.h_low and args.prepare_dd and args.gram_dd == 'on'):
+        raise SystemExit('--end-dd needs --h-low, --prepare-dd and --gram-dd on')
 
     lay_p = sections.layout(args.k)
     theta_saved = None
@@ -284,12 +289,15 @@ def main():
         raise SystemExit('--n-train must be at least --n-fit')
     sample = data.make(math.ceil(args.n_train / 4), args.seed)
     batch = {key: val[:args.n_fit] for key, val in sample.items()}
+    if args.end_dd:
+        batch.update(dd_metric.point_extras(batch['points']))
     mass = np.asarray(batch['mass'])
     weights = mass / mass.sum()
     chunk2 = args.chunk2 or max(64, args.chunk - 97)
     say(f"k = {args.k}, n_theta = {lay_p.n_theta}, {args.n_fit} of {args.n_train} "
         f"points, seed {args.seed}, blocks {args.chunk} and {chunk2}, Gram "
-        f"stage {args.gram_dd}, section dd {args.section_dd}")
+        f"stage {args.gram_dd}, section dd {args.section_dd}, end to end dd "
+        f"{args.end_dd}")
 
     lay_w = None
     if not args.no_whiten:
