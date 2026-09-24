@@ -251,6 +251,9 @@ def main():
                     help='stage 5 in dd, as in run_fit.py')
     ap.add_argument('--end-dd', action='store_true',
                     help='the whole path in dd from dd points, as in run_fit.py')
+    ap.add_argument('--remat-w', action='store_true',
+                    help='form W again in the tangent pass, as in run_fit.py, so '
+                         'that the control legs fit in memory at k = 32')
     ap.add_argument('--no-whiten', action='store_true',
                     help='leave out the whitened family')
     ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
@@ -268,6 +271,7 @@ def main():
     analytic.H_LOW = args.h_low
     analytic.PHI_DD = args.phi_dd
     analytic.END_DD = args.end_dd
+    analytic.REMAT_W = args.remat_w
     if args.section_dd and args.gram_dd != 'on':
         raise SystemExit('--section-dd needs --gram-dd on')
     if args.end_dd and not (args.h_low and args.prepare_dd and args.gram_dd == 'on'):
