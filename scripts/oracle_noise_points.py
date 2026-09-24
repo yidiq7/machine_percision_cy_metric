@@ -111,6 +111,9 @@ def main():
     ap.add_argument('--step', type=float, default=1e-12)
     ap.add_argument('--block', type=int, default=32,
                     help='points in each block of the dd reference')
+    ap.add_argument('--section-dd', action='store_true',
+                    help='stages 1 to 3 of the fit path in dd, as --section-dd in '
+                         'run_fit.py')
     ap.add_argument('--h-low', action='store_true',
                     help='carry the low part of H in all three forms, as '
                          '--h-low in run_fit.py does')
@@ -120,7 +123,7 @@ def main():
     if jax.devices()[0].platform != 'gpu':
         raise SystemExit('no GPU. Run with `uv run --extra gpu`.')
     analytic.GRAM_DD = True
-    analytic.SECTION_DD = False
+    analytic.SECTION_DD = args.section_dd
     sections.PREPARE_DD = True
     analytic.H_LOW = args.h_low
 
@@ -139,7 +142,8 @@ def main():
     make = jax.jit(lambda t: analytic.point_matrices(lay, t))
     mats = [make(jnp.asarray(theta + c * args.step * u)) for c in (0.0, 1.0, -1.0)]
     say(f'k = {args.k}, {args.n_fit} points, seed {args.seed}, at {args.theta}, '
-        f'step {args.step:.0e}, low part of H carried: {args.h_low}')
+        f'step {args.step:.0e}, low part of H carried: {args.h_low}, '
+        f'stages 1 to 3 in dd: {args.section_dd}')
 
     def mapped(fn, block):
         # The points go in as arguments, so that XLA holds no large constants.
@@ -199,7 +203,7 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
-    tag = '_hlow' if args.h_low else ''
+    tag = ('_hlow' if args.h_low else '') + ('_section' if args.section_dd else '')
     path = out_dir / f'noise_points_k{args.k}_seed{args.seed}{tag}.json'
     path.write_text(json.dumps({'args': vars(args), 'rows': rows}, indent=1))
     say(f'saved to {path}')

@@ -45,6 +45,7 @@ CONFIGS = {
     'gram':    ('on', False, True, False),   # H and stage 4 in dd
     'fp64':    ('off', False, True, False),  # H in dd, the per-point path in FP64
     'carry':   ('on', False, True, True),    # H in dd, and its low part carried
+    'all':     ('on', True, True, True),     # the same, and stages 1 to 3 in dd
 }
 T0 = time.perf_counter()
 
