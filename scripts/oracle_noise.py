@@ -36,17 +36,19 @@ mlg.set_precision(64)
 import jax                                                  # noqa: E402
 import jax.numpy as jnp                                     # noqa: E402
 
-from quartic import analytic, data, fit, sections           # noqa: E402
+from quartic import analytic, data, dd_metric, fit, sections   # noqa: E402
 
-# name: (Gram stage, stages 1 to 3 in dd, H in dd, low part of H, stage 5 in dd)
+# name: (Gram stage, stages 1 to 3 in dd, H in dd, low part of H, stage 5 in dd,
+#        the whole path in dd from a dd point)
 CONFIGS = {
-    'fit':     ('on', True, False, False, False),  # the fits to 2026-09
-    'prepare': ('on', True, True, False, False),   # the same with H in dd
-    'gram':    ('on', False, True, False, False),  # H and stage 4 in dd
-    'fp64':    ('off', False, True, False, False), # H in dd, per-point FP64
-    'carry':   ('on', False, True, True, False),   # and the low part of H
-    'all':     ('on', True, True, True, False),    # and stages 1 to 3 in dd
-    'phi':     ('on', False, True, True, True),    # carry, and stage 5 in dd
+    'fit':     ('on', True, False, False, False, False),  # the fits to 2026-09
+    'prepare': ('on', True, True, False, False, False),   # the same with H in dd
+    'gram':    ('on', False, True, False, False, False),  # H and stage 4 in dd
+    'fp64':    ('off', False, True, False, False, False), # H in dd, per-point FP64
+    'carry':   ('on', False, True, True, False, False),   # and the low part of H
+    'all':     ('on', True, True, True, False, False),    # and stages 1 to 3 in dd
+    'phi':     ('on', False, True, True, True, False),    # carry, and stage 5 in dd
+    'end':     ('on', False, True, True, True, True),     # END_DD at dd points
 }
 T0 = time.perf_counter()
 
@@ -94,6 +96,8 @@ def main():
                          'of this build')
     sample = data.make(math.ceil(args.n_train / 4), args.seed)
     batch = {key: val[:args.n_fit] for key, val in sample.items()}
+    if any(CONFIGS[name][5] for name in args.configs):
+        batch.update(dd_metric.point_extras(batch['points']))
     mass = np.asarray(batch['mass'])
     root = np.sqrt(mass / mass.sum())
     say(f'k = {args.k}, {args.n_fit} of {args.n_train} points, seed {args.seed}, '
@@ -104,12 +108,13 @@ def main():
 
     results, base = {}, {}
     for name in args.configs:
-        gram, section, prep, low, phi = CONFIGS[name]
+        gram, section, prep, low, phi, end = CONFIGS[name]
         analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[gram]
         analytic.SECTION_DD = section
         sections.PREPARE_DD = prep
         analytic.H_LOW = low
         analytic.PHI_DD = phi
+        analytic.END_DD = end
         # A new function object, so jit traces again with these flags.
         res = jax.jit(lambda t, lay=lay: fit.residual_fn(lay, batch, args.chunk)(t))
         r0 = np.asarray(res(jnp.asarray(theta)))
@@ -117,11 +122,11 @@ def main():
         f0 = r0 / root
         norm_r = float(np.linalg.norm(r0))
         row = {'gram_dd': gram, 'section_dd': section, 'prepare_dd': prep,
-               'h_low': low, 'phi_dd': phi,
+               'h_low': low, 'phi_dd': phi, 'end_dd': end,
                'sigma_fit': float(np.sum(root * np.abs(r0))), 'norm_r': norm_r,
                'noise': {}}
         say(f"{name}: Gram {gram}, stages 1-3 dd {section}, H dd {prep}, low {low}, "
-            f"stage 5 dd {phi}: "
+            f"stage 5 dd {phi}, end to end dd {end}: "
             f"fit-set sigma {row['sigma_fit']:.4e}, norm(r) {norm_r:.4e}")
         s2_small = None
         for h in args.steps:
