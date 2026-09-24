@@ -54,8 +54,9 @@ GRAM_DD = True
 # 1.28 for each unit of k, and the oracle puts dd on stages 1 to 4 at a relative
 # error of 5e-16 for phi that is flat in k. This flag turns on the rest.
 #
-# It needs `section_vectors_closed`, because `dd.split` uses a bitcast, which
-# carries no derivative, so `jax.jacfwd` cannot pass through it.
+# It needs `section_vectors_closed`: an autodiff tangent through dd is FP64
+# arithmetic, because `dd.split` gives hi a zero tangent, so dsigma must be a
+# primal output.
 SECTION_DD = False
 
 # `dd.mul_fast` against the exact `dd.mul` inside stages 1 to 3. `mul_fast`
@@ -147,8 +148,9 @@ def section_vectors_closed(lay, z):
     projections replace the 4 autodiff tangents.
 
     This form is what extended precision needs for stages 1 to 3 of the
-    evaluation: `dd.split` uses a bitcast, which carries no derivative, so
-    `jax.jacfwd` cannot pass through it.
+    evaluation. An autodiff tangent through dd is FP64 arithmetic, because
+    `dd.split` gives hi a zero tangent and lo = a - hi carries all of it, so the
+    derivatives would lose the extra digits.
 
     It is **not** the default. It agrees with the autodiff form to 6.3e-16, and
     it is approximately 30 percent slower, because XLA fuses the 4 tangents

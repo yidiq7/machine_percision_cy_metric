@@ -126,7 +126,7 @@ def test_the_ratio_is_free_of_the_volume_normalization():
 
 
 def test_dd_is_refused():
-    """`dd.split` is a bitcast and carries no derivative, so dd must be off."""
+    """`gradient_report` is the plain FP64 path, so it refuses the dd flags."""
     lay = sections.layout(4)
     theta = sections.fubini_study_theta(lay)
     try:

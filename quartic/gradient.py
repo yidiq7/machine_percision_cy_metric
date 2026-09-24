@@ -21,9 +21,11 @@ X is a graph over the 2 local complex coordinates `t`, so a tangent direction is
 one row of the restriction matrix. `v` needs no extension off X for a tangential
 derivative, so the closed forms above serve at the point itself.
 
-**The arithmetic must be plain FP64 here.** `dd.split` is a bitcast and carries
-no derivative, so `analytic.GRAM_DD` and `analytic.SECTION_DD` must be off. That
-is enough to k = 20, where sigma is 6.3e-11 against a floor of 4.4e-15.
+**The arithmetic is plain FP64 here.** Through a dd path the tangent is FP64
+arithmetic, because `dd.split` gives hi a zero tangent and lo = a - hi carries
+all of it, so dd would not make grad f more accurate. FP64 is enough to k = 20,
+where sigma is 6.3e-11 against a floor of 4.4e-15. `gradient_dd` serves above
+that.
 """
 from __future__ import annotations
 
@@ -124,9 +126,9 @@ def gradient_report(lay, theta, batch, chunk=None, volume=2.0 * np.pi ** 2):
     from . import sections
 
     if analytic.GRAM_DD or analytic.SECTION_DD:
-        raise RuntimeError('grad f needs plain FP64: dd.split is a bitcast and '
-                           'carries no derivative. Set analytic.GRAM_DD and '
-                           'analytic.SECTION_DD to False.')
+        raise RuntimeError('gradient_report is the plain FP64 path. Set '
+                           'analytic.GRAM_DD and analytic.SECTION_DD to False, '
+                           'or use gradient_dd.gradient_report_dd.')
 
     mats = sections.prepare(lay, theta)
     j, m, free = patch_indices(batch)

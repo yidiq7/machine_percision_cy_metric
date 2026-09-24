@@ -1,7 +1,8 @@
 """`grad f` on X in double-double, by central differences along X.
 
-`gradient.py` differentiates the FP64 arithmetic with autodiff. `dd.split` is a
-bitcast and carries no derivative, so that path cannot use dd, and at k = 32 the
+`gradient.py` differentiates with autodiff. Through a dd path the tangent is
+FP64 arithmetic: `dd.split` gives hi a zero tangent, and lo = a - hi carries
+all of it. So autodiff gives grad f to FP64 accuracy only, and at k = 32 the
 FP64 arithmetic has an error larger than f.
 
 This module moves each dd point of `dd_metric.point_extras` along X, from t_i
