@@ -25,7 +25,7 @@ mlg.set_precision(64)
 import jax                                                  # noqa: E402
 import jax.numpy as jnp                                     # noqa: E402
 
-from quartic import analytic, data, dd_metric, gradient_dd, sections   # noqa: E402
+from quartic import analytic, data, dd_metric, gradient_dd, sections, whiten   # noqa: E402
 
 T0 = time.perf_counter()
 
@@ -44,6 +44,13 @@ def main():
     ap.add_argument('--chunk', type=int, default=32)
     ap.add_argument('--eps', type=float, nargs='+', default=[2.0 ** -12, 2.0 ** -14],
                     help='step sizes along X; powers of 2 keep the step exact')
+    ap.add_argument('--h-base', type=str, default=None,
+                    help='the base theta of a fit with --h-base; --theta is then '
+                         'the correction')
+    ap.add_argument('--whiten', action='store_true',
+                    help='the correction is in the whitened basis, as in run_fit.py')
+    ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
+    ap.add_argument('--gram-seed', type=int, default=whiten.GRAM_SEED)
     ap.add_argument('--out', type=str, default='runs_gradient')
     args = ap.parse_args()
 
@@ -51,11 +58,19 @@ def main():
         raise SystemExit('no GPU. Run with `uv run --extra gpu`.')
     analytic.GRAM_DD, analytic.END_DD = True, True
 
-    lay = sections.layout(args.k)
+    plain = sections.layout(args.k)
+    lay = (whiten.whitened_layout(args.k, n_pairs=args.gram_pairs, seed=args.gram_seed)
+           if args.whiten else plain)
     theta = jnp.asarray(np.load(args.theta))
     side = Path(args.theta).with_suffix('.basis')
     if not side.exists() or side.read_text().strip() != lay.fingerprint():
-        raise SystemExit('the basis of --theta is absent or not the plain basis')
+        raise SystemExit('the basis of --theta is absent or not the basis of this build')
+    if args.h_base is not None:
+        side = Path(args.h_base).with_suffix('.basis')
+        if not side.exists() or side.read_text().strip() != plain.fingerprint():
+            raise SystemExit('the basis of --h-base is absent or not the plain basis')
+        base = jnp.asarray(np.load(args.h_base))
+        sections.H_BASE = jax.jit(lambda t: sections.base_matrices(plain, t))(base)
     batch = data.make(math.ceil(args.points / 4), args.seed)
     batch = {key: val[:args.points] for key, val in batch.items()}
     batch.update(dd_metric.point_extras(batch['points']))
