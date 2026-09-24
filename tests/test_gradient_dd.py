@@ -17,6 +17,10 @@ import jax.numpy as jnp                                     # noqa: E402
 
 from quartic import analytic, data, dd, dd_metric, gradient, gradient_dd, sections   # noqa: E402
 
+# The FP64 references must be plain FP64; `_dd_flags` turns the dd path on.
+analytic.GRAM_DD = False
+analytic.SECTION_DD = False
+
 BATCH = data.make(40, 17)
 BATCH.update(dd_metric.point_extras(BATCH['points']))
 
