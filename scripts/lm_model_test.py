@@ -243,6 +243,10 @@ def main():
     ap.add_argument('--leg', type=int, default=40, help='LM steps in each leg')
     ap.add_argument('--gram-dd', choices=['off', 'inner', 'on'], default='on')
     ap.add_argument('--section-dd', action='store_true')
+    ap.add_argument('--prepare-dd', action='store_true',
+                    help='form H in dd and round it once, as in run_fit.py')
+    ap.add_argument('--h-low', action='store_true',
+                    help='carry the low part of H into the Gram stage')
     ap.add_argument('--no-whiten', action='store_true',
                     help='leave out the whitened family')
     ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
@@ -256,6 +260,8 @@ def main():
         raise SystemExit('no GPU. Run with `uv run --extra gpu`.')
     analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[args.gram_dd]
     analytic.SECTION_DD = args.section_dd
+    sections.PREPARE_DD = args.prepare_dd
+    analytic.H_LOW = args.h_low
     if args.section_dd and args.gram_dd != 'on':
         raise SystemExit('--section-dd needs --gram-dd on')
 
