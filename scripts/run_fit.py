@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import MLGeometry as mlg                                    # noqa: E402
 mlg.set_precision(64)
 
-from quartic import analytic, data, fit, metric, sections, whiten  # noqa: E402
+from quartic import analytic, data, dd_metric, fit, metric, sections, whiten  # noqa: E402
 
 # sigma = mean abs(f) from the earlier fits, for comparison. CLAUDE.md holds them.
 KNOWN_SIGMA = {2: 1.90e-2, 4: 1.68e-3, 6: 1.60e-4, 8: 1.69e-5,
@@ -42,6 +42,15 @@ def sample(n_points, seed, tag):
           f"{time.perf_counter() - t0:.1f}s, "
           f"max abs(P)/scale = {res.max():.3e}, median = {np.median(res):.3e}")
     return batch
+
+
+def add_dd_points(batch, tag):
+    """Put each point on X in dd with one Newton step, for --end-dd."""
+    t0 = time.perf_counter()
+    batch.update(dd_metric.point_extras(batch['points']))
+    res = dd_metric.residual_of_P_batch(batch['points_hi'], batch['points_lo'])
+    print(f"{tag}: one Newton step in dd, {time.perf_counter() - t0:.1f}s, "
+          f"max abs(P)/scale = {res.max():.3e}, median = {np.median(res):.3e}")
 
 
 def main():
@@ -94,6 +103,12 @@ def main():
                          'and its Gram sum, with phi rounded once. It needs '
                          '--gram-dd on. With H in dd, the FP64 form of this '
                          'stage carries most of the noise that is left.')
+    ap.add_argument('--end-dd', action='store_true',
+                    help='the whole path in double-double, from the point to v: '
+                         'one dd Newton step puts each point on X, stages 1 to 3 '
+                         'and 5 run in dd, and R, det and OmegaOmegabar come in '
+                         'dd from their closed forms. It needs --gram-dd on, '
+                         '--prepare-dd and --h-low.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -158,12 +173,19 @@ def main():
         raise SystemExit('--phi-dd needs --gram-dd on')
     if args.h_low and not (args.prepare_dd and args.gram_dd == 'on'):
         raise SystemExit('--h-low needs --prepare-dd and --gram-dd on')
+    analytic.END_DD = args.end_dd
+    if args.end_dd and not args.h_low:
+        raise SystemExit('--end-dd needs --h-low, which needs --prepare-dd and '
+                         '--gram-dd on')
     print(f"Gram stage: {args.gram_dd}, stages 1 to 3 in dd: {args.section_dd}, "
           f"H in dd: {args.prepare_dd}, low part of H carried: {args.h_low}, "
-          f"stage 5 in dd: {args.phi_dd}")
+          f"stage 5 in dd: {args.phi_dd}, end to end in dd: {args.end_dd}")
 
     train = sample(args.n_train, args.seed, 'fit set     ')
     hold = sample(args.n_eval, args.seed + 1000, 'hold-out set')
+    if args.end_dd:
+        add_dd_points(train, 'fit set     ')
+        add_dd_points(hold, 'hold-out set')
     print()
 
     out_dir = Path(args.out)
@@ -272,6 +294,7 @@ def main():
                   'prepare_dd': bool(args.prepare_dd),
                   'h_low': bool(args.h_low),
                   'phi_dd': bool(args.phi_dd),
+                  'end_dd': bool(args.end_dd),
                   'sigma_path': 'analytic.volume_at, in the arithmetic of the '
                                 'fit; mape_check uses complex_hessian in FP64',
                   'mape_fit_check': rep_fit['mape_check'],

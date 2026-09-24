@@ -28,7 +28,8 @@ import jax.tree_util as jtu
 from . import dd, sections
 
 __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
-           'phi_analytic', 'EXACT_MUL', 'H_LOW', 'PHI_DD', 'point_matrices',
+           'phi_analytic', 'EXACT_MUL', 'H_LOW', 'PHI_DD', 'END_DD',
+           'point_matrices', 'point_inputs',
            'volume_at', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
            'volume_and_weights', 'volume_tangent', 'volume_jacobian',
@@ -79,6 +80,18 @@ H_LOW = False
 # rounded once. It needs `GRAM_DD = True`. With H carried in dd, the FP64 form
 # of this stage leaves 4.8e-14 of noise at the noisiest points of k = 28.
 PHI_DD = False
+
+# The whole path in double-double, from a point on X to v. Each point comes as a
+# dd pair after one dd Newton step, and R, det and OmegaOmegabar are dd too,
+# from the closed forms. It needs GRAM_DD = True, and it holds stage 5 in dd by
+# itself. At the endpoint of k = 28, the FP64 point moves f by 9.0e-16 rms, and
+# the FP64 parts of the fit arithmetic move it by 2.1e-15 rms.
+END_DD = False
+
+
+def _dd_sections():
+    """True when the section vectors reach the Gram stage in dd."""
+    return SECTION_DD or END_DD
 
 
 def point_matrices(lay, theta):
@@ -345,7 +358,7 @@ def _inner_dd(u, v, axes):
     return acc
 
 
-def _section_vectors(lay, z):
+def _section_vectors(lay, z, z_dd=None):
     """`sig` and `dsig` for the Gram stage, and FP64 copies for the centered form.
 
     Every caller of `_gram_parts` must come through here. `_gram_parts` branches
@@ -355,8 +368,8 @@ def _section_vectors(lay, z):
     with `Too many indices`, because `s[0]` took a row of an array where it
     meant the high part of a pair.
     """
-    if SECTION_DD:
-        sig, dsig = section_vectors_dd(lay, z)
+    if _dd_sections():
+        sig, dsig = section_vectors_dd(lay, z, z_dd=z_dd)
         return (sig, dsig,
                 tuple(dd.cto_fp(a) for a in sig),
                 tuple(dd.cto_fp(a) for a in dsig))
@@ -386,7 +399,7 @@ def _gram_parts(lay, mats, sig, dsig):
     store, store_dd = [], []
 
     for mat, s, ds in zip(mats, sig, dsig):
-        if SECTION_DD:
+        if _dd_sections():
             # sig and dsig arrive as complex double-double from stages 1 to 3.
             # Lay the real and imaginary parts out as the same 10 columns, and
             # keep both halves of each pair.
@@ -410,12 +423,12 @@ def _gram_parts(lay, mats, sig, dsig):
             out = _matvec_dd(mat, stack)                               # (b, d, 10)
             if low is not None:
                 # low is 2^-53 of mat, so its product needs FP64 only.
-                cols = stack[0] + stack[1] if SECTION_DD else stack
+                cols = stack[0] + stack[1] if _dd_sections() else stack
                 out = dd.add(out, dd.to_dd(jnp.einsum('bij,bjc->bic', low, cols)))
         else:
             plain = jnp.einsum(
                 'bij,bjc->bic', mat,
-                stack[0] + stack[1] if SECTION_DD else stack)
+                stack[0] + stack[1] if _dd_sections() else stack)
             out = dd.to_dd(plain)
         h_re = (out[0][..., :5], out[1][..., :5])
         h_im = (out[0][..., 5:], out[1][..., 5:])
@@ -435,7 +448,7 @@ def _gram_parts(lay, mats, sig, dsig):
         h_s = dd.to_fp(h_re)[..., 0] + 1j * dd.to_fp(h_im)[..., 0]
         h_d_fp = dd.to_fp(h_re)[..., 1:] + 1j * dd.to_fp(h_im)[..., 1:]
         # Entry [i, j] is d_i d_jbar p, so the conjugated index comes second.
-        ds_fp = dd.cto_fp(ds) if SECTION_DD else ds
+        ds_fp = dd.cto_fp(ds) if _dd_sections() else ds
         p_ij = p_ij + jnp.einsum('bil,bik->kl', jnp.conj(ds_fp), h_d_fp)
         store.append((h_s, h_d_fp))
         # H sigma and H dsigma as complex dd, for stage 5 in dd.
@@ -480,7 +493,7 @@ def _creduce_lead(val, n_axes):
     return one(val[0]), one(val[1])
 
 
-def _phi_stage5_dd(extras, sig, dsig):
+def _phi_stage5_dd(extras, sig, dsig, keep=False):
     """phi from the centered form and its Gram sum in dd, rounded once to FP64.
 
     `extras` holds p, p_i and the products H sigma, H dsigma of the Gram stage
@@ -492,7 +505,7 @@ def _phi_stage5_dd(extras, sig, dsig):
     zero = dd.to_dd(jnp.zeros((4, 4)))
     phi = (zero, zero)
     for (h_s, h_d), s, ds in zip(store, sig, dsig):
-        if not SECTION_DD:
+        if not _dd_sections():
             s, ds = dd.cto_dd(s), dd.cto_dd(ds)
         col = (slice(None), slice(None), None)
         b = dd.csub(ds, _cmul(_cindex(s, *col), ratio))            # (blocks, d, 4)
@@ -502,7 +515,8 @@ def _phi_stage5_dd(extras, sig, dsig):
         left = _cindex(h_b, slice(None), slice(None), slice(None), None)
         right = _cindex(b_conj, slice(None), slice(None), None, slice(None))
         phi = dd.cadd(phi, _creduce_lead(_cmul(left, right), 2))
-    return dd.cto_fp((_mul(phi[0], inv_p), _mul(phi[1], inv_p)))
+    phi = (_mul(phi[0], inv_p), _mul(phi[1], inv_p))
+    return phi if keep else dd.cto_fp(phi)
 
 
 def phi_analytic(lay, mats, z):
@@ -528,8 +542,52 @@ def phi_analytic(lay, mats, z):
     return phi / p, p
 
 
-def volume_at(lay, mats, z, restriction, omega):
+def point_inputs(batch):
+    """What each point of `batch` carries into the per-point path.
+
+    With `END_DD` that is the dd point and its patch indices as well, which
+    `dd_metric.point_extras` computes once for a sample.
+    """
+    xs = (batch['points'], batch['restriction'], batch['Omega_Omegabar'])
+    if END_DD:
+        xs = xs + (batch['points_hi'], batch['points_lo'], batch['patch'])
+    return xs
+
+
+def _dd_point(extra):
+    """The dd point, m and the two free coordinates, from the extra inputs."""
+    z_hi, z_lo, patch = extra
+    z_dd = ((jnp.real(z_hi), jnp.real(z_lo)), (jnp.imag(z_hi), jnp.imag(z_lo)))
+    return z_dd, patch[0], (patch[1], patch[2])
+
+
+def _volume_from_phi_dd(phi, z_dd, m, free):
+    """v = det(R phi R^dag) |dP/dz_m|^2 in dd, with R and dP from the dd point.
+
+    OmegaOmegabar is 1/abs(dP/dz_m)^2, so this is det(g|X) / OmegaOmegabar.
+    """
+    from . import dd_metric
+    rest, grad = dd_metric._restriction_dd(z_dd, m, free)
+    rest_conj = (rest[0], dd.neg(rest[1]))
+    left = _cindex(rest, slice(None), None, slice(None), None)
+    mid = _cindex(phi, None, None, slice(None), slice(None))
+    right = _cindex(rest_conj, None, slice(None), None, slice(None))
+    g = dd_metric._creduce_last_two(_cmul(_cmul(left, mid), right))
+    det = dd.csub(_cmul(dd_metric._at(g, 0, 0), dd_metric._at(g, 1, 1)),
+                  _cmul(dd_metric._at(g, 0, 1), dd_metric._at(g, 1, 0)))
+    return dd.to_fp(_mul(det[0], dd.cabs2(_cindex(grad, m))))
+
+
+def volume_at(lay, mats, z, restriction, omega, *extra):
     """v = det(g|_X) / OmegaOmegabar at one point, from given block matrices."""
+    if END_DD:
+        if GRAM_DD is not True:
+            raise ValueError('END_DD needs GRAM_DD = True')
+        z_dd, m, free = _dd_point(extra)
+        sig, dsig, _, _ = _section_vectors(lay, z, z_dd=z_dd)
+        extras = _gram_parts(lay, mats, sig, dsig)[4]
+        return _volume_from_phi_dd(_phi_stage5_dd(extras, sig, dsig, keep=True),
+                                   z_dd, m, free)
     phi, _ = phi_analytic(lay, mats, z)
     g = restriction @ phi @ jnp.conj(restriction).T
     return jnp.real(jnp.linalg.det(g)) / omega
@@ -542,7 +600,7 @@ def volumes_analytic(lay, theta, batch, chunk=None):
     def one(args):
         return volume_at(lay, mats, *args)
 
-    xs = (batch['points'], batch['restriction'], batch['Omega_Omegabar'])
+    xs = point_inputs(batch)
     if chunk is None:
         return jax.vmap(one)(xs)
     return jax.lax.map(one, xs, batch_size=chunk)
@@ -561,7 +619,7 @@ def weighted_residual_analytic(lay, theta, batch, chunk=None):
     return jnp.sqrt(weights) * residual_analytic(lay, theta, batch, chunk)
 
 
-def volume_and_weights(lay, mats, z, restriction, omega):
+def volume_and_weights(lay, mats, z, restriction, omega, *extra):
     """v at one point, and the matrix W_r of each block that carries dv.
 
     Jacobi's formula gives dv/dtheta_alpha = v * tr(g^-1 R dphi_alpha R^dag).
@@ -574,10 +632,17 @@ def volume_and_weights(lay, mats, z, restriction, omega):
     where dH_r is the block matrix of the tangent direction. So one direction
     costs one Frobenius product for each block, and nothing more.
     """
-    sig, dsig, sig_fp, dsig_fp = _section_vectors(lay, z)
+    point = _dd_point(extra) if END_DD else None
+    sig, dsig, sig_fp, dsig_fp = _section_vectors(
+        lay, z, z_dd=None if point is None else point[0])
     p, p_i, p_ij, store, extras = _gram_parts(lay, mats, sig, dsig)
 
-    if PHI_DD:
+    if END_DD:
+        if GRAM_DD is not True:
+            raise ValueError('END_DD needs GRAM_DD = True')
+        phi_dd = _phi_stage5_dd(extras, sig, dsig, keep=True)
+        phi = dd.cto_fp(phi_dd)
+    elif PHI_DD:
         # v must be the accurate one, because LM takes it as the residual. The
         # weights W below stay FP64, because they only enter J.
         if GRAM_DD is not True:
@@ -593,6 +658,10 @@ def volume_and_weights(lay, mats, z, restriction, omega):
 
     g = restriction @ phi @ jnp.conj(restriction).T
     v = jnp.real(jnp.linalg.det(g)) / omega
+    if END_DD:
+        # LM takes v as the residual, so it comes from the dd chain. The rest of
+        # this function only forms W, which enters J, so FP64 is enough there.
+        v = _volume_from_phi_dd(phi_dd, *point)
     k_mat = jnp.conj(restriction).T @ jnp.linalg.inv(g) @ restriction   # (4, 4)
 
     # Scalars and vectors that multiply the outer products inside W_r.
@@ -621,10 +690,10 @@ def volume_tangent(weights, dmats):
                for dmat, w in zip(dmats, weights))
 
 
-def volume_jacobian(lay, theta, z, restriction, omega):
+def volume_jacobian(lay, theta, z, restriction, omega, *extra):
     """v and the full dv/dtheta at one point. This is the reference for tests."""
     mats = point_matrices(lay, theta)
-    v, weights = volume_and_weights(lay, mats, z, restriction, omega)
+    v, weights = volume_and_weights(lay, mats, z, restriction, omega, *extra)
 
     out = jnp.zeros((lay.n_theta,), jnp.float64)
     for g_layout, w in zip(lay.groups, weights):
@@ -648,10 +717,9 @@ def volume_jacobian(lay, theta, z, restriction, omega):
 def residual_jacobian(lay, theta, batch, chunk=None):
     """v and dv/dtheta at every point, with no tangent for each parameter."""
     def one(args):
-        z, restriction, omega = args
-        return volume_jacobian(lay, theta, z, restriction, omega)
+        return volume_jacobian(lay, theta, *args)
 
-    xs = (batch['points'], batch['restriction'], batch['Omega_Omegabar'])
+    xs = point_inputs(batch)
     if chunk is None:
         return jax.vmap(one)(xs)
     return jax.lax.map(one, xs, batch_size=chunk)
@@ -678,11 +746,10 @@ def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
     dmats = sections.prepare_fp(lay, dtheta)
 
     def one(args):
-        z, restriction, omega = args
-        v, w = volume_and_weights(lay, mats, z, restriction, omega)
+        v, w = volume_and_weights(lay, mats, *args)
         return v, volume_tangent(w, dmats)
 
-    xs = (batch['points'], batch['restriction'], batch['Omega_Omegabar'])
+    xs = point_inputs(batch)
     v, dv = (jax.vmap(one)(xs) if chunk is None
              else jax.lax.map(one, xs, batch_size=chunk))
 

@@ -213,7 +213,7 @@ def test_jacobian_with_the_low_part():
 def _with_flags(fn, **flags):
     """Run fn with module flags set, and put them back after it."""
     owners = {'GRAM_DD': analytic, 'SECTION_DD': analytic, 'H_LOW': analytic,
-              'PHI_DD': analytic, 'PREPARE_DD': sections}
+              'PHI_DD': analytic, 'END_DD': analytic, 'PREPARE_DD': sections}
     old = {name: getattr(owners[name], name) for name in flags}
     try:
         for name, value in flags.items():
@@ -267,6 +267,115 @@ def test_jacobian_with_phi_dd():
     print(f"  with stage 5 in dd the custom rule matches autodiff to {rel:.2e}")
 
 
+_END_BATCH = {}
+
+
+def _end_batch():
+    """BATCH with the dd points of `dd_metric.point_extras`, made once."""
+    from quartic import dd_metric
+    if not _END_BATCH:
+        _END_BATCH.update(BATCH)
+        _END_BATCH.update(dd_metric.point_extras(BATCH['points']))
+    return _END_BATCH
+
+
+def test_refined_points_lie_on_X():
+    """One dd Newton step must put each point on X, and move z_m only."""
+    from quartic import dd_metric
+    batch = _end_batch()
+    z = np.asarray(BATCH['points'])
+    hi, lo = np.asarray(batch['points_hi']), np.asarray(batch['points_lo'])
+    patch = np.asarray(batch['patch'])
+    rows = np.arange(z.shape[0])
+    fixed = np.argmin(np.abs(z - 1.0), axis=1)
+    res = dd_metric.residual_of_P_batch(batch['points_hi'], batch['points_lo'])
+    assert res.max() < 1e-30, res.max()
+    assert np.all(hi[rows, fixed] == 1.0) and np.all(lo[rows, fixed] == 0.0)
+    for row, f in zip(patch, fixed):
+        assert sorted([int(row[0]), int(row[1]), int(row[2]), int(f)]) == [0, 1, 2, 3]
+    for i in (1, 2):
+        assert np.array_equal(hi[rows, patch[:, i]], z[rows, patch[:, i]])
+        assert np.all(lo[rows, patch[:, i]] == 0.0)
+    moved = np.abs(hi[rows, patch[:, 0]] - z[rows, patch[:, 0]]) / np.abs(z[rows, patch[:, 0]])
+    print(f"  max abs(P)/scale {data.residual_of_P(BATCH['points']).max():.2e} in FP64 "
+          f"and {res.max():.2e} after the step; z_m moves by {moved.max():.1e} at most, "
+          f"and the FP64 patch coordinate is off 1 by {np.abs(z[rows, fixed] - 1).max():.1e}")
+
+
+def test_end_dd_matches_the_dd_reference():
+    """At the dd point, END_DD must give `dd_metric.volume_dd` to one ulp."""
+    from quartic import dd, dd_metric
+    lay = sections.layout(8)
+    parts = sections.prepare_parts(lay, perturbed_theta(lay, 8))
+    batch = _end_batch()
+    n = 8
+    xs = [x[:n] for x in _with_flags(lambda: analytic.point_inputs(batch), END_DD=True)]
+    got = _with_flags(
+        lambda: jax.jit(jax.vmap(lambda *a: analytic.volume_at(lay, parts, *a)))(*xs),
+        GRAM_DD=True, END_DD=True)
+
+    def ref(z_dd, row):
+        return dd.to_fp(dd_metric.volume_dd(lay, parts, z_dd, row[0], (row[1], row[2])))
+
+    def split(hi, lo):
+        return ((jnp.real(hi), jnp.real(lo)), (jnp.imag(hi), jnp.imag(lo)))
+
+    patch = batch['patch'][:n]
+    want = jax.jit(jax.vmap(lambda h, l, r: ref(split(h, l), r)))(
+        batch['points_hi'][:n], batch['points_lo'][:n], patch)
+    at_z = jax.jit(jax.vmap(lambda z, r: ref(dd.cto_dd(z), r)))(BATCH['points'][:n], patch)
+    got, want, at_z = (np.asarray(a) for a in (got, want, at_z))
+    ulp = np.abs(got - want) / np.spacing(np.abs(want))
+    point = np.abs(at_z - want) / np.spacing(np.abs(want))
+    assert ulp.max() <= 1.0, ulp
+    assert point.max() > 1.0, point
+    print(f"  END_DD is within {ulp.max():.0f} ulp of the dd reference, and the FP64 "
+          f"point moves v by up to {point.max():.0f} ulp, k = 8")
+
+
+def test_end_dd_agrees_with_the_fp64_path():
+    """END_DD must give the v of the stored R and OmegaOmegabar to FP64 accuracy."""
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+    batch = _end_batch()
+    got = _with_flags(lambda: analytic.volumes_analytic(lay, theta, batch, 60),
+                      GRAM_DD=True, H_LOW=True, PREPARE_DD=True, END_DD=True)
+    want = analytic.volumes_analytic(lay, theta, BATCH, 60)
+    rel = float(jnp.abs(got / want - 1).max())
+    assert rel < 1e-13, rel
+    print(f"  END_DD and the FP64 path agree to {rel:.2e}, k = 6")
+
+
+def test_jacobian_with_end_dd():
+    """The custom rule must still match autodiff with the whole path in dd."""
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+    batch = _end_batch()
+    got = _with_flags(
+        lambda: jax.jacfwd(lambda t: analytic.weighted_residual_fast(lay, t, batch, 60))(theta),
+        GRAM_DD=True, H_LOW=True, PHI_DD=True, PREPARE_DD=True, END_DD=True)
+    want = jax.jacfwd(lambda t: metric.weighted_residual(lay, t, BATCH, 60))(theta)
+    rel = float(jnp.abs(got - want).max() / jnp.abs(want).max())
+    assert rel < 1e-12, rel
+    print(f"  with END_DD the custom rule matches autodiff to {rel:.2e}")
+
+
+def test_report_with_end_dd():
+    """`report` must pass the dd points to the fit path."""
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+    batch = _end_batch()
+    flags = dict(GRAM_DD=True, H_LOW=True, PREPARE_DD=True, END_DD=True)
+    rep = _with_flags(lambda: metric.report(lay, theta, batch, chunk=100), **flags)
+    f = np.asarray(_with_flags(lambda: analytic.residual_analytic(lay, theta, batch),
+                               **flags))
+    w = np.asarray(BATCH['mass']) / np.sum(np.asarray(BATCH['mass']))
+    want = float(np.sum(w * np.abs(f)))
+    assert abs(rep['mape'] / want - 1) < 1e-14, (rep['mape'], want)
+    assert abs(rep['mape_check'] / rep['mape'] - 1) < 1e-10, rep
+    print(f"  report sigma {rep['mape']:.12e}, check {rep['mape_check']:.12e}")
+
+
 if __name__ == '__main__':
     for fn in (test_dd_agrees_where_fp64_is_accurate,
                test_each_entry_is_rounded_once,
@@ -279,7 +388,12 @@ if __name__ == '__main__':
                test_jacobian_with_the_low_part,
                test_phi_dd_agrees_where_fp64_is_accurate,
                test_phi_dd_matches_the_dd_reference,
-               test_jacobian_with_phi_dd):
+               test_jacobian_with_phi_dd,
+               test_refined_points_lie_on_X,
+               test_end_dd_matches_the_dd_reference,
+               test_end_dd_agrees_with_the_fp64_path,
+               test_jacobian_with_end_dd,
+               test_report_with_end_dd):
         print(fn.__name__)
         fn()
     print('\nall prepare tests pass')

@@ -31,7 +31,8 @@ import jax.numpy as jnp
 
 from . import analytic, dd, sections
 
-__all__ = ['refine', 'residual_of_P', 'phi_dd', 'volume_dd', 'floor_report']
+__all__ = ['refine', 'residual_of_P', 'phi_dd', 'volume_dd', 'point_extras',
+           'residual_of_P_batch']
 
 
 def _reduce(pair, n_axes):
@@ -222,3 +223,53 @@ def residual_of_P(z_dd):
     total = _creduce(u, 1)
     scale = float(jnp.sum(jnp.abs(dd.cto_fp(u))))
     return float(jnp.abs(dd.cto_fp(total))) / scale
+
+
+
+def point_extras(points, chunk=200_000):
+    """The dd point after one Newton step, and its patch indices, for a sample.
+
+    Returns `points_hi` and `points_lo`, the complex high and low parts, and
+    `patch`, the int32 rows (m, free_0, free_1) that `analytic.point_inputs`
+    takes with `END_DD`. m follows `newton_index`. The coordinate of the patch
+    becomes exactly 1, because OmegaOmegabar = 1/abs(dP/dz_m)^2 holds in that
+    chart only.
+    """
+    z = np.array(points)
+    n = z.shape[0]
+    rows = np.arange(n)
+    patch = np.argmin(np.abs(z - 1.0), axis=1)
+    z[rows, patch] = 1.0
+    grad = np.abs(4.0 * z ** 3)
+    grad[rows, patch] = -1.0
+    m = np.argmax(grad, axis=1)
+    mask = np.ones((n, 4), dtype=bool)
+    mask[rows, patch] = False
+    mask[rows, m] = False
+    free = np.nonzero(mask)[1].reshape(n, 2)
+
+    step = jax.jit(jax.vmap(lambda zz, mm: refine(zz, mm, 1)[0]))
+    his, los = [], []
+    for start in range(0, n, chunk):
+        (re_hi, re_lo), (im_hi, im_lo) = step(jnp.asarray(z[start:start + chunk]),
+                                              jnp.asarray(m[start:start + chunk]))
+        his.append(np.asarray(re_hi) + 1j * np.asarray(im_hi))
+        los.append(np.asarray(re_lo) + 1j * np.asarray(im_lo))
+    patch_rows = np.stack([m, free[:, 0], free[:, 1]], axis=1).astype(np.int32)
+    return {'points_hi': jnp.asarray(np.concatenate(his)),
+            'points_lo': jnp.asarray(np.concatenate(los)),
+            'patch': jnp.asarray(patch_rows)}
+
+
+def residual_of_P_batch(points_hi, points_lo, chunk=200_000):
+    """`abs(P)/scale` at each dd point of a sample, as FP64."""
+    def one(hi, lo):
+        z_dd = ((jnp.real(hi), jnp.real(lo)), (jnp.imag(hi), jnp.imag(lo)))
+        z2 = dd.cmul(z_dd, z_dd)
+        u = dd.cmul(z2, z2)
+        return jnp.abs(dd.cto_fp(_creduce(u, 1))) / jnp.sum(jnp.abs(dd.cto_fp(u)))
+
+    run = jax.jit(jax.vmap(one))
+    n = points_hi.shape[0]
+    return np.concatenate([np.asarray(run(points_hi[s:s + chunk], points_lo[s:s + chunk]))
+                           for s in range(0, n, chunk)])

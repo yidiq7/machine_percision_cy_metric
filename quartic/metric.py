@@ -110,21 +110,21 @@ def volumes_fit(lay, theta, batch, chunk=100_000, block=4096):
     """v at every point by the arithmetic of the fit, a chunk at a time.
 
     This is `analytic.volume_at`, so `analytic.GRAM_DD`, `analytic.SECTION_DD`,
-    `analytic.H_LOW` and `sections.PREPARE_DD` apply. `volumes_chunked` uses `complex_hessian` in
+    `analytic.H_LOW`, `analytic.PHI_DD`, `analytic.END_DD` and
+    `sections.PREPARE_DD` apply. `volumes_chunked` uses `complex_hessian` in
     plain FP64, whatever those flags are.
     """
     n = int(batch['points'].shape[0])
     mats = analytic.point_matrices(lay, theta)
+    inputs = analytic.point_inputs(batch)
 
     @jax.jit
-    def piece(points, restriction, omega):
-        return jax.lax.map(lambda a: analytic.volume_at(lay, mats, *a),
-                           (points, restriction, omega),
-                           batch_size=min(block, points.shape[0]))
+    def piece(*xs):
+        return jax.lax.map(lambda a: analytic.volume_at(lay, mats, *a), xs,
+                           batch_size=min(block, xs[0].shape[0]))
 
-    return jnp.concatenate([
-        piece(batch['points'][s], batch['restriction'][s],
-              batch['Omega_Omegabar'][s]) for s in _chunks(n, chunk)])
+    return jnp.concatenate([piece(*(x[s] for x in inputs))
+                            for s in _chunks(n, chunk)])
 
 
 def report(lay, theta, batch, chunk=100_000, block=4096):
