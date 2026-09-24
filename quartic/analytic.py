@@ -28,7 +28,7 @@ import jax.tree_util as jtu
 from . import dd, sections
 
 __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
-           'phi_analytic', 'EXACT_MUL',
+           'phi_analytic', 'EXACT_MUL', 'H_LOW', 'point_matrices',
            'volume_at', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
            'volume_and_weights', 'volume_tangent', 'volume_jacobian',
@@ -67,6 +67,21 @@ SECTION_DD = False
 # 2 at 1e-25**. The exact form costs compile time: XLA cannot fuse across a
 # barrier, and the residual at k = 8 did not compile in 600 s with it.
 EXACT_MUL = False
+
+# Carry the low part of H into the dd products of the Gram stage. It needs
+# `GRAM_DD = True`. At the noisiest points of the stall at k = 28, the FP64
+# rounding of H alone moves f by 4e-13, and every per-point stage in dd leaves
+# that unchanged. One more FP64 matrix-vector product for each block removes it.
+H_LOW = False
+
+
+def point_matrices(lay, theta):
+    """The block matrices that the per-point path takes: (hi, lo) with `H_LOW`."""
+    if H_LOW:
+        if GRAM_DD is not True:
+            raise ValueError('H_LOW needs GRAM_DD = True')
+        return sections.prepare_parts(lay, theta)
+    return sections.prepare(lay, theta)
 
 
 def _cmul(a, b):
@@ -384,8 +399,13 @@ def _gram_parts(lay, mats, sig, dsig):
             s_re = jnp.real(s)[..., None]
             s_im = jnp.imag(s)[..., None]
 
+        mat, low = mat if isinstance(mat, tuple) else (mat, None)
         if matvec_dd:
             out = _matvec_dd(mat, stack)                               # (b, d, 10)
+            if low is not None:
+                # low is 2^-53 of mat, so its product needs FP64 only.
+                cols = stack[0] + stack[1] if SECTION_DD else stack
+                out = dd.add(out, dd.to_dd(jnp.einsum('bij,bjc->bic', low, cols)))
         else:
             plain = jnp.einsum(
                 'bij,bjc->bic', mat,
@@ -461,7 +481,7 @@ def volume_at(lay, mats, z, restriction, omega):
 
 def volumes_analytic(lay, theta, batch, chunk=None):
     """v = det(g|_X) / OmegaOmegabar, with phi from `phi_analytic`."""
-    mats = sections.prepare(lay, theta)
+    mats = point_matrices(lay, theta)
 
     def one(args):
         return volume_at(lay, mats, *args)
@@ -540,7 +560,7 @@ def volume_tangent(weights, dmats):
 
 def volume_jacobian(lay, theta, z, restriction, omega):
     """v and the full dv/dtheta at one point. This is the reference for tests."""
-    mats = sections.prepare(lay, theta)
+    mats = point_matrices(lay, theta)
     v, weights = volume_and_weights(lay, mats, z, restriction, omega)
 
     out = jnp.zeros((lay.n_theta,), jnp.float64)
@@ -589,7 +609,7 @@ def weighted_residual_fast(lay, theta, batch, chunk):
 @weighted_residual_fast.defjvp
 def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
     (theta,), (dtheta,) = primals, tangents
-    mats = sections.prepare(lay, theta)
+    mats = point_matrices(lay, theta)
     # lineax batches the tangent over every direction of theta, so it keeps the
     # FP64 map: the dd form would hold its intermediates once for each direction.
     dmats = sections.prepare_fp(lay, dtheta)

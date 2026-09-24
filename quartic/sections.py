@@ -26,6 +26,7 @@ from . import blocks, dd
 
 __all__ = ['Group', 'Layout', 'layout', 'log_potential', 'potential',
            'fubini_study_theta', 'block_matrices', 'prepare', 'prepare_fp',
+           'prepare_parts',
            'potential_at', 'log_potential_at', 'PREPARE_DD']
 
 # Form each H_r in double-double and round it once to FP64. The FP64 form moves
@@ -250,6 +251,33 @@ def _prepare_rounded_jvp(lay, primals, tangents):
     # `dd.split` is a bitcast with no derivative, so autodiff must not see it.
     (theta,), (dtheta,) = primals, tangents
     return _prepare_rounded(lay, theta), prepare_fp(lay, dtheta)
+
+
+@partial(jax.custom_jvp, nondiff_argnums=(0,))
+def prepare_parts(lay, theta):
+    """H_r in double-double, as one (hi, lo) pair for each group.
+
+    hi is the rounded form that `PREPARE_DD` gives, and lo is what that rounding
+    leaves. The rounding alone moves f by 4e-13 at the noisiest points of the
+    stall at k = 28, so the per-point path can carry lo into its dd products.
+    """
+    scale = jnp.asarray(lay.scale, dtype=theta.dtype)
+    scaled = dd.mul(dd.to_dd(theta), dd.to_dd(scale))
+    whitened = bool(lay.whiten_inv)
+    out = []
+    for g in lay.groups:
+        # Renormalize, so that the high part is the rounded H. `dd.two_sum`
+        # holds barriers; XLA can fold the plain form (hi - (hi + lo)) + lo to 0.
+        out.append(dd.two_sum(*_block_matrices_dd(g, scaled, whitened)))
+    return tuple(out)
+
+
+@prepare_parts.defjvp
+def _prepare_parts_jvp(lay, primals, tangents):
+    # The whole tangent goes to the high part, and the low part has none.
+    (theta,), (dtheta,) = primals, tangents
+    tan = prepare_fp(lay, dtheta)
+    return prepare_parts(lay, theta), tuple((t, jnp.zeros_like(t)) for t in tan)
 
 
 def potential_at(lay, mats, z):

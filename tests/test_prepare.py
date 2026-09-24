@@ -134,12 +134,74 @@ def test_report_uses_the_fit_path():
     print(f"  report sigma {rep['mape']:.12e}, check {rep['mape_check']:.12e}")
 
 
+def test_parts_split_the_dd_value():
+    """hi must be the rounded H exactly, and lo at most half an ulp of hi."""
+    lay = sections.layout(8)
+    theta = perturbed_theta(lay, 8)
+    parts = jax.jit(lambda t: sections.prepare_parts(lay, t))(theta)
+    worst = 0.0
+    for (hi, lo), ref in zip(parts, rounded(lay, theta)):
+        hi, lo = np.asarray(hi), np.asarray(lo)
+        assert np.array_equal(hi, np.asarray(ref))
+        big = hi != 0
+        worst = max(worst, float((np.abs(lo[big]) / np.spacing(np.abs(hi[big]))).max()))
+    assert worst <= 0.5, worst
+    print(f"  hi is the rounded H, and abs(lo) is at most {worst:.2f} ulp of hi")
+
+
+def test_low_part_reaches_the_gram_stage():
+    """A pair (hi, lo) must act as the single matrix hi + lo.
+
+    lo is made approximately 1e-3 of hi here, so that a Gram stage which drops it
+    fails. The factor differs between blocks: a uniform factor only scales H,
+    and phi = ddbar log p does not change under a scale of H.
+    """
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+    hi = sections.prepare_fp(lay, theta)
+    lo = tuple(m * (1e-3 * (1.0 + jnp.arange(m.shape[0])) / m.shape[0])[:, None, None]
+               for m in hi)
+    old = analytic.GRAM_DD
+    try:
+        analytic.GRAM_DD = True
+        z = BATCH['points'][0]
+        pair, _ = analytic.phi_analytic(lay, tuple(zip(hi, lo)), z)
+        single, _ = analytic.phi_analytic(lay, tuple(a + b for a, b in zip(hi, lo)), z)
+        plain, _ = analytic.phi_analytic(lay, hi, z)
+    finally:
+        analytic.GRAM_DD = old
+    rel = float(jnp.abs(pair - single).max() / jnp.abs(single).max())
+    moved = float(jnp.abs(plain - single).max() / jnp.abs(single).max())
+    assert rel < 1e-13, rel
+    assert moved > 1e-6, moved
+    print(f"  the pair matches hi + lo to {rel:.2e}, and hi alone differs by {moved:.1e}")
+
+
+def test_jacobian_with_the_low_part():
+    """The custom rule must still match autodiff with H_LOW on."""
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+    old = (analytic.GRAM_DD, analytic.H_LOW, sections.PREPARE_DD)
+    try:
+        analytic.GRAM_DD, analytic.H_LOW, sections.PREPARE_DD = True, True, True
+        got = jax.jacfwd(lambda t: analytic.weighted_residual_fast(lay, t, BATCH, 60))(theta)
+        want = jax.jacfwd(lambda t: metric.weighted_residual(lay, t, BATCH, 60))(theta)
+    finally:
+        analytic.GRAM_DD, analytic.H_LOW, sections.PREPARE_DD = old
+    rel = float(jnp.abs(got - want).max() / jnp.abs(want).max())
+    assert rel < 1e-12, rel
+    print(f"  with H_LOW the custom rule matches autodiff to {rel:.2e}")
+
+
 if __name__ == '__main__':
     for fn in (test_dd_agrees_where_fp64_is_accurate,
                test_each_entry_is_rounded_once,
                test_tangent_is_the_linear_map,
                test_whitened_layout,
-               test_report_uses_the_fit_path):
+               test_report_uses_the_fit_path,
+               test_parts_split_the_dd_value,
+               test_low_part_reaches_the_gram_stage,
+               test_jacobian_with_the_low_part):
         print(fn.__name__)
         fn()
     print('\nall prepare tests pass')

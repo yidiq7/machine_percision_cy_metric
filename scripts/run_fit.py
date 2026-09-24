@@ -84,6 +84,11 @@ def main():
                          'residual at the stalled theta of k = 28 by 38 percent '
                          'of its norm. H is built once for each LM step, so '
                          'the cost is small.')
+    ap.add_argument('--h-low', action='store_true',
+                    help='carry the low part of H into the dd products of the '
+                         'Gram stage. It needs --prepare-dd and --gram-dd on. '
+                         'The FP64 rounding of H alone moves f by 4e-13 at the '
+                         'noisiest points of the stall at k = 28.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -142,8 +147,11 @@ def main():
                          'extended precision buy nothing while stage 4, which '
                          'carries almost all of the error, stays in FP64.')
     sections.PREPARE_DD = args.prepare_dd
+    analytic.H_LOW = args.h_low
+    if args.h_low and not (args.prepare_dd and args.gram_dd == 'on'):
+        raise SystemExit('--h-low needs --prepare-dd and --gram-dd on')
     print(f"Gram stage: {args.gram_dd}, stages 1 to 3 in dd: {args.section_dd}, "
-          f"H in dd: {args.prepare_dd}")
+          f"H in dd: {args.prepare_dd}, low part of H carried: {args.h_low}")
 
     train = sample(args.n_train, args.seed, 'fit set     ')
     hold = sample(args.n_eval, args.seed + 1000, 'hold-out set')
@@ -253,6 +261,7 @@ def main():
                   'gram_dd': args.gram_dd,
                   'section_dd': bool(args.section_dd),
                   'prepare_dd': bool(args.prepare_dd),
+                  'h_low': bool(args.h_low),
                   'sigma_path': 'analytic.volume_at, in the arithmetic of the '
                                 'fit; mape_check uses complex_hessian in FP64',
                   'mape_fit_check': rep_fit['mape_check'],

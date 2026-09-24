@@ -109,12 +109,12 @@ def weighted_residual(lay, theta, batch, chunk=None):
 def volumes_fit(lay, theta, batch, chunk=100_000, block=4096):
     """v at every point by the arithmetic of the fit, a chunk at a time.
 
-    This is `analytic.volume_at`, so `analytic.GRAM_DD`, `analytic.SECTION_DD`
-    and `sections.PREPARE_DD` apply. `volumes_chunked` uses `complex_hessian` in
+    This is `analytic.volume_at`, so `analytic.GRAM_DD`, `analytic.SECTION_DD`,
+    `analytic.H_LOW` and `sections.PREPARE_DD` apply. `volumes_chunked` uses `complex_hessian` in
     plain FP64, whatever those flags are.
     """
     n = int(batch['points'].shape[0])
-    mats = sections.prepare(lay, theta)
+    mats = analytic.point_matrices(lay, theta)
 
     @jax.jit
     def piece(points, restriction, omega):
