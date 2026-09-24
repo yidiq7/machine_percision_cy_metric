@@ -125,6 +125,12 @@ def main():
                          'lambda = 1, and at k = 24 and k = 28 it then stopped '
                          'with no gain where steps that remove most of the '
                          'loss existed. One --k only.')
+    ap.add_argument('--h-base', type=str, default=None,
+                    help='a theta of the plain basis, whose H becomes a fixed '
+                         'base in dd. theta is then a correction from 0, so its '
+                         'FP64 grid is fine: at k = 32 one ulp of theta moves r '
+                         'by 2.2 times norm(r). It needs --prepare-dd and one --k, '
+                         'and it works with --whiten for the correction.')
     ap.add_argument('--whiten', action='store_true',
                     help='whiten the section basis in L2(X). The monomial frame '
                          'is orthonormal in the coefficients and not on X, so '
@@ -203,6 +209,8 @@ def main():
 
     if args.theta_init is not None and len(args.k) != 1:
         ap.error('--theta-init needs exactly one --k')
+    if args.h_base is not None and (len(args.k) != 1 or not args.prepare_dd):
+        ap.error('--h-base needs exactly one --k and --prepare-dd')
 
     for k in args.k:
         if args.whiten:
@@ -217,6 +225,19 @@ def main():
         # The whitening and the scale are part of the convention, so the
         # fingerprint must cover them and not the symmetry structure alone.
         basis_id = lay.fingerprint()
+
+        base_id = None
+        if args.h_base is not None:
+            plain = sections.layout(k)
+            base_id = plain.fingerprint()
+            side = Path(args.h_base).with_suffix('.basis')
+            if not side.exists() or side.read_text().strip() != base_id:
+                raise SystemExit('the basis of --h-base is absent or not the plain '
+                                 'basis of this build')
+            base = jnp.asarray(np.load(args.h_base))
+            sections.H_BASE = jax.jit(lambda t: sections.base_matrices(plain, t))(base)
+            print(f"    k={k}: the H of {args.h_base} is a fixed base in dd, and "
+                  f"theta is a correction from 0")
 
         theta0 = None
         if args.theta_init is not None:
@@ -241,6 +262,9 @@ def main():
             start = metric.report(lay, theta0, hold, chunk=args.chunk)
             print(f"    restart from {args.theta_init}: "
                   f"mean abs(f) = {start['mape']:.4e}")
+
+        if args.h_base is not None and theta0 is None:
+            theta0 = jnp.zeros(lay.n_theta)
 
         analytic_jac = not args.autodiff_jac
         fit_set, fit_chunk = train, args.fit_chunk
@@ -307,6 +331,8 @@ def main():
                                 'fit; mape_check uses complex_hessian in FP64',
                   'mape_fit_check': rep_fit['mape_check'],
                   'theta_init': args.theta_init,
+                  'h_base': args.h_base,
+                  'h_base_fingerprint': base_id,
                   'basis_fingerprint': basis_id,
                   'whiten': bool(args.whiten),
                   'gram_id': lay.gram_id,

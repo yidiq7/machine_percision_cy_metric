@@ -27,11 +27,16 @@ from . import blocks, dd
 __all__ = ['Group', 'Layout', 'layout', 'log_potential', 'potential',
            'fubini_study_theta', 'block_matrices', 'prepare', 'prepare_fp',
            'prepare_parts',
-           'potential_at', 'log_potential_at', 'PREPARE_DD']
+           'potential_at', 'log_potential_at', 'PREPARE_DD', 'H_BASE',
+           'base_matrices']
 
 # Form each H_r in double-double and round it once to FP64. The FP64 form moves
 # the residual at the stalled theta of k = 28 by 38 percent of its norm.
 PREPARE_DD = False
+
+# A fixed H in dd, one unrounded (hi, lo) pair for each group, that `prepare`
+# adds to the H of theta. A fit then moves a small correction on a fine FP64 grid.
+H_BASE = None
 
 
 @dataclass(frozen=True)
@@ -200,7 +205,27 @@ def prepare(lay, theta):
     """
     if PREPARE_DD:
         return _prepare_rounded(lay, theta)
-    return prepare_fp(lay, theta)
+    mats = prepare_fp(lay, theta)
+    if H_BASE is None:
+        return mats
+    return tuple(m + dd.to_fp(b) for m, b in zip(mats, H_BASE))
+
+
+def base_matrices(lay, theta):
+    """H_r of theta in dd, one unrounded (hi, lo) pair for each group, for `H_BASE`."""
+    scale = jnp.asarray(lay.scale, dtype=theta.dtype)
+    scaled = dd.mul(dd.to_dd(theta), dd.to_dd(scale))
+    whitened = bool(lay.whiten_inv)
+    return tuple(_block_matrices_dd(g, scaled, whitened) for g in lay.groups)
+
+
+def _with_base(i, mats):
+    """The dd pair `mats` of group i, plus the base of that group if one is set."""
+    if H_BASE is None:
+        return mats
+    if H_BASE[i][0].shape != mats[0].shape:
+        raise ValueError('H_BASE does not have the blocks of this layout')
+    return dd.add(mats, H_BASE[i])
 
 
 def prepare_fp(lay, theta):
@@ -241,14 +266,14 @@ def _prepare_rounded(lay, theta):
     scale = jnp.asarray(lay.scale, dtype=theta.dtype)
     scaled = dd.mul(dd.to_dd(theta), dd.to_dd(scale))       # exact product
     whitened = bool(lay.whiten_inv)
-    return tuple(dd.to_fp(_block_matrices_dd(g, scaled, whitened))
-                 for g in lay.groups)
+    return tuple(dd.to_fp(_with_base(i, _block_matrices_dd(g, scaled, whitened)))
+                 for i, g in enumerate(lay.groups))
 
 
 @_prepare_rounded.defjvp
 def _prepare_rounded_jvp(lay, primals, tangents):
-    # H is linear in theta, so the tangent is the FP64 map of the tangent.
-    # `dd.split` is a bitcast with no derivative, so autodiff must not see it.
+    # H is linear in theta, so the tangent is the FP64 map of the tangent. That
+    # costs far less than a tangent through the dd formation, and it is exact.
     (theta,), (dtheta,) = primals, tangents
     return _prepare_rounded(lay, theta), prepare_fp(lay, dtheta)
 
@@ -265,10 +290,10 @@ def prepare_parts(lay, theta):
     scaled = dd.mul(dd.to_dd(theta), dd.to_dd(scale))
     whitened = bool(lay.whiten_inv)
     out = []
-    for g in lay.groups:
+    for i, g in enumerate(lay.groups):
         # Renormalize, so that the high part is the rounded H. `dd.two_sum`
         # holds barriers; XLA can fold the plain form (hi - (hi + lo)) + lo to 0.
-        out.append(dd.two_sum(*_block_matrices_dd(g, scaled, whitened)))
+        out.append(dd.two_sum(*_with_base(i, _block_matrices_dd(g, scaled, whitened))))
     return tuple(out)
 
 

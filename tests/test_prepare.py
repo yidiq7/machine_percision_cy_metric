@@ -416,6 +416,103 @@ def test_remat_w_frees_the_linearization():
           f"with it; one row of J is {j_kb:.2f}")
 
 
+def _dd_gap(x, y):
+    """The largest entry of x - y for two dd pairs, formed in dd."""
+    from quartic import dd
+    return float(jnp.abs(dd.to_fp(dd.add(x, dd.neg(y)))).max())
+
+
+def _with_base(base, fn):
+    """Run fn with `sections.H_BASE` set to base, and clear it after."""
+    old = sections.H_BASE
+    try:
+        sections.H_BASE = base
+        return fn()
+    finally:
+        sections.H_BASE = old
+
+
+def test_base_adds_in_dd():
+    """The base of theta_a plus the H of theta_b must be the H of the dd sum."""
+    from quartic import dd
+    lay = sections.layout(8)
+    a = perturbed_theta(lay, 8)
+    b = jnp.asarray(np.random.default_rng(3).normal(size=lay.n_theta)) * 1e-9
+    base = sections.base_matrices(lay, a)
+    got = _with_base(base, lambda: sections.prepare_parts(lay, b))
+    scaled = dd.mul(dd.add(dd.to_dd(a), dd.to_dd(b)), dd.to_dd(jnp.asarray(lay.scale)))
+    want = [dd.two_sum(*sections._block_matrices_dd(g, scaled, False)) for g in lay.groups]
+    rounded = sections.prepare_parts(lay, a + b)
+    worst = lost = 0.0
+    for g, w, r in zip(got, want, rounded):
+        top = float(jnp.abs(w[0]).max())
+        worst = max(worst, _dd_gap(g, w) / top)
+        lost = max(lost, _dd_gap(r, w) / top)
+    assert worst < 1e-30 and lost > 1e-25, (worst, lost)
+    print(f"  base plus correction matches the dd sum to {worst:.1e}; an FP64 "
+          f"theta a + b is off by {lost:.1e}")
+
+
+def test_base_keeps_the_tangent_and_the_fp64_path():
+    """The tangent must not see the base, and the FP64 path must add it once."""
+    lay = sections.layout(6)
+    a = perturbed_theta(lay, 6)
+    b = jnp.asarray(np.random.default_rng(4).normal(size=lay.n_theta)) * 1e-6
+    tangent = jnp.asarray(np.random.default_rng(5).normal(size=lay.n_theta))
+    base = sections.base_matrices(lay, a)
+    _, tan = _with_base(base, lambda: jax.jvp(
+        lambda t: sections.prepare_parts(lay, t), (b,), (tangent,)))
+    for (t_hi, t_lo), want in zip(tan, sections.prepare_fp(lay, tangent)):
+        assert float(jnp.abs(t_hi - want).max()) == 0.0 and float(jnp.abs(t_lo).max()) == 0.0
+    fp = _with_base(base, lambda: sections.prepare(lay, b))
+    rel = max(float(jnp.abs(m - w).max() / jnp.abs(w).max())
+              for m, w in zip(fp, sections.prepare_fp(lay, a + b)))
+    assert rel < 1e-15, rel
+    print(f"  the tangent is prepare_fp exactly, and the FP64 path adds the base to {rel:.1e}")
+
+
+def test_residual_at_the_base():
+    """A correction of 0 on the base of theta must give the residual and J of theta."""
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+    zero = jnp.zeros(lay.n_theta)
+    flags = dict(GRAM_DD=True, H_LOW=True, PREPARE_DD=True)
+
+    def run(t):
+        return analytic.weighted_residual_fast(lay, t, BATCH, 60)
+
+    want = _with_flags(lambda: run(theta), **flags)
+    j_want = _with_flags(lambda: jax.jacfwd(run)(theta), **flags)
+    base = sections.base_matrices(lay, theta)
+    got = _with_base(base, lambda: _with_flags(lambda: run(zero), **flags))
+    j_got = _with_base(base, lambda: _with_flags(lambda: jax.jacfwd(run)(zero), **flags))
+    rel = float(jnp.abs(got - want).max() / jnp.abs(want).max())
+    rel_j = float(jnp.abs(j_got - j_want).max() / jnp.abs(j_want).max())
+    assert rel < 1e-14 and rel_j < 1e-13, (rel, rel_j)
+    print(f"  at a correction of 0, r matches to {rel:.1e} and J to {rel_j:.1e}")
+
+
+def test_base_with_a_whitened_correction():
+    """A plain base and a whitened correction must add as H matrices."""
+    from quartic import dd
+    lay_p = sections.layout(6)
+    lay_w = whiten.whitened_layout(6, n_pairs=1500, seed=4242)
+    a = perturbed_theta(lay_p, 6)
+    w = jnp.asarray(np.random.default_rng(6).normal(size=lay_w.n_theta)) * 1e-6
+    base = sections.base_matrices(lay_p, a)
+    got = _with_base(base, lambda: sections.prepare_parts(lay_w, w))
+    worst = 0.0
+    for g, bp, cw in zip(got, base, sections.base_matrices(lay_w, w)):
+        total = dd.add(bp, cw)
+        worst = max(worst, _dd_gap(g, total) / float(jnp.abs(total[0]).max()))
+    fp = sum(float(jnp.abs((gh + gl) - (p + q)).max() / jnp.abs(p).max())
+             for (gh, gl), p, q in zip(got, sections.prepare_fp(lay_p, a),
+                                       sections.prepare_fp(lay_w, w)))
+    assert worst < 1e-30 and fp < 1e-14, (worst, fp)
+    print(f"  plain base plus whitened correction: {worst:.1e} against the dd sum, "
+          f"{fp:.1e} against FP64")
+
+
 if __name__ == '__main__':
     for fn in (test_dd_agrees_where_fp64_is_accurate,
                test_each_entry_is_rounded_once,
@@ -435,7 +532,11 @@ if __name__ == '__main__':
                test_jacobian_with_end_dd,
                test_report_with_end_dd,
                test_remat_w_gives_the_same_jacobian,
-               test_remat_w_frees_the_linearization):
+               test_remat_w_frees_the_linearization,
+               test_base_adds_in_dd,
+               test_base_keeps_the_tangent_and_the_fp64_path,
+               test_residual_at_the_base,
+               test_base_with_a_whitened_correction):
         print(fn.__name__)
         fn()
     print('\nall prepare tests pass')
