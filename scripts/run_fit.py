@@ -89,6 +89,11 @@ def main():
                          'Gram stage. It needs --prepare-dd and --gram-dd on. '
                          'The FP64 rounding of H alone moves f by 4e-13 at the '
                          'noisiest points of the stall at k = 28.')
+    ap.add_argument('--phi-dd', action='store_true',
+                    help='stage 5 in double-double: the centered form of phi '
+                         'and its Gram sum, with phi rounded once. It needs '
+                         '--gram-dd on. With H in dd, the FP64 form of this '
+                         'stage carries most of the noise that is left.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -148,10 +153,14 @@ def main():
                          'carries almost all of the error, stays in FP64.')
     sections.PREPARE_DD = args.prepare_dd
     analytic.H_LOW = args.h_low
+    analytic.PHI_DD = args.phi_dd
+    if args.phi_dd and args.gram_dd != 'on':
+        raise SystemExit('--phi-dd needs --gram-dd on')
     if args.h_low and not (args.prepare_dd and args.gram_dd == 'on'):
         raise SystemExit('--h-low needs --prepare-dd and --gram-dd on')
     print(f"Gram stage: {args.gram_dd}, stages 1 to 3 in dd: {args.section_dd}, "
-          f"H in dd: {args.prepare_dd}, low part of H carried: {args.h_low}")
+          f"H in dd: {args.prepare_dd}, low part of H carried: {args.h_low}, "
+          f"stage 5 in dd: {args.phi_dd}")
 
     train = sample(args.n_train, args.seed, 'fit set     ')
     hold = sample(args.n_eval, args.seed + 1000, 'hold-out set')
@@ -262,6 +271,7 @@ def main():
                   'section_dd': bool(args.section_dd),
                   'prepare_dd': bool(args.prepare_dd),
                   'h_low': bool(args.h_low),
+                  'phi_dd': bool(args.phi_dd),
                   'sigma_path': 'analytic.volume_at, in the arithmetic of the '
                                 'fit; mape_check uses complex_hessian in FP64',
                   'mape_fit_check': rep_fit['mape_check'],

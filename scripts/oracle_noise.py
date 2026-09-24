@@ -38,14 +38,15 @@ import jax.numpy as jnp                                     # noqa: E402
 
 from quartic import analytic, data, fit, sections           # noqa: E402
 
-# name: (Gram stage, stages 1 to 3 in dd, H in dd, low part of H carried)
+# name: (Gram stage, stages 1 to 3 in dd, H in dd, low part of H, stage 5 in dd)
 CONFIGS = {
-    'fit':     ('on', True, False, False),   # the arithmetic of the fits to 2026-09
-    'prepare': ('on', True, True, False),    # the same with H in dd
-    'gram':    ('on', False, True, False),   # H and stage 4 in dd
-    'fp64':    ('off', False, True, False),  # H in dd, the per-point path in FP64
-    'carry':   ('on', False, True, True),    # H in dd, and its low part carried
-    'all':     ('on', True, True, True),     # the same, and stages 1 to 3 in dd
+    'fit':     ('on', True, False, False, False),  # the fits to 2026-09
+    'prepare': ('on', True, True, False, False),   # the same with H in dd
+    'gram':    ('on', False, True, False, False),  # H and stage 4 in dd
+    'fp64':    ('off', False, True, False, False), # H in dd, per-point FP64
+    'carry':   ('on', False, True, True, False),   # and the low part of H
+    'all':     ('on', True, True, True, False),    # and stages 1 to 3 in dd
+    'phi':     ('on', False, True, True, True),    # carry, and stage 5 in dd
 }
 T0 = time.perf_counter()
 
@@ -103,11 +104,12 @@ def main():
 
     results, base = {}, {}
     for name in args.configs:
-        gram, section, prep, low = CONFIGS[name]
+        gram, section, prep, low, phi = CONFIGS[name]
         analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[gram]
         analytic.SECTION_DD = section
         sections.PREPARE_DD = prep
         analytic.H_LOW = low
+        analytic.PHI_DD = phi
         # A new function object, so jit traces again with these flags.
         res = jax.jit(lambda t, lay=lay: fit.residual_fn(lay, batch, args.chunk)(t))
         r0 = np.asarray(res(jnp.asarray(theta)))
@@ -115,10 +117,11 @@ def main():
         f0 = r0 / root
         norm_r = float(np.linalg.norm(r0))
         row = {'gram_dd': gram, 'section_dd': section, 'prepare_dd': prep,
-               'h_low': low,
+               'h_low': low, 'phi_dd': phi,
                'sigma_fit': float(np.sum(root * np.abs(r0))), 'norm_r': norm_r,
                'noise': {}}
-        say(f"{name}: Gram {gram}, stages 1-3 dd {section}, H dd {prep}, low {low}: "
+        say(f"{name}: Gram {gram}, stages 1-3 dd {section}, H dd {prep}, low {low}, "
+            f"stage 5 dd {phi}: "
             f"fit-set sigma {row['sigma_fit']:.4e}, norm(r) {norm_r:.4e}")
         s2_small = None
         for h in args.steps:

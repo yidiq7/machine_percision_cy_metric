@@ -210,6 +210,63 @@ def test_jacobian_with_the_low_part():
     print(f"  with H_LOW the custom rule matches autodiff to {rel:.2e}")
 
 
+def _with_flags(fn, **flags):
+    """Run fn with module flags set, and put them back after it."""
+    owners = {'GRAM_DD': analytic, 'SECTION_DD': analytic, 'H_LOW': analytic,
+              'PHI_DD': analytic, 'PREPARE_DD': sections}
+    old = {name: getattr(owners[name], name) for name in flags}
+    try:
+        for name, value in flags.items():
+            setattr(owners[name], name, value)
+        return fn()
+    finally:
+        for name, value in old.items():
+            setattr(owners[name], name, value)
+
+
+def test_phi_dd_agrees_where_fp64_is_accurate():
+    """At small k, stage 5 in dd and in FP64 must give the same phi."""
+    worst = 0.0
+    for k in (6, 8):
+        lay = sections.layout(k)
+        mats = sections.prepare_fp(lay, perturbed_theta(lay, k))
+        for z in BATCH['points'][:4]:
+            run = lambda: analytic.phi_analytic(lay, mats, z)[0]
+            a = _with_flags(run, GRAM_DD=True, PHI_DD=True)
+            b = _with_flags(run, GRAM_DD=True, PHI_DD=False)
+            worst = max(worst, float(jnp.abs(a - b).max() / jnp.abs(b).max()))
+    assert worst < 1e-14, worst
+    print(f"  stage 5 in dd and in FP64 agree to {worst:.2e}, k = 6 and 8")
+
+
+def test_phi_dd_matches_the_dd_reference():
+    """With the same dd inputs, stage 5 in dd must match `dd_metric.phi_dd`."""
+    from quartic import dd, dd_metric
+    lay = sections.layout(8)
+    parts = sections.prepare_parts(lay, perturbed_theta(lay, 8))
+    worst = 0.0
+    for z in BATCH['points'][:3]:
+        got = _with_flags(lambda: analytic.phi_analytic(lay, parts, z)[0],
+                          GRAM_DD=True, SECTION_DD=True, PHI_DD=True)
+        want = dd.cto_fp(dd_metric.phi_dd(lay, parts, dd.cto_dd(z))[0])
+        worst = max(worst, float(jnp.abs(got - want).max() / jnp.abs(want).max()))
+    assert worst < 1e-15, worst
+    print(f"  stage 5 in dd matches the dd reference to {worst:.2e}")
+
+
+def test_jacobian_with_phi_dd():
+    """The custom rule must still match autodiff with every dd flag on."""
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+    got = _with_flags(
+        lambda: jax.jacfwd(lambda t: analytic.weighted_residual_fast(lay, t, BATCH, 60))(theta),
+        GRAM_DD=True, H_LOW=True, PHI_DD=True, PREPARE_DD=True)
+    want = jax.jacfwd(lambda t: metric.weighted_residual(lay, t, BATCH, 60))(theta)
+    rel = float(jnp.abs(got - want).max() / jnp.abs(want).max())
+    assert rel < 1e-12, rel
+    print(f"  with stage 5 in dd the custom rule matches autodiff to {rel:.2e}")
+
+
 if __name__ == '__main__':
     for fn in (test_dd_agrees_where_fp64_is_accurate,
                test_each_entry_is_rounded_once,
@@ -219,7 +276,10 @@ if __name__ == '__main__':
                test_parts_split_the_dd_value,
                test_low_part_reaches_the_gram_stage,
                test_dd_reference_takes_the_pair,
-               test_jacobian_with_the_low_part):
+               test_jacobian_with_the_low_part,
+               test_phi_dd_agrees_where_fp64_is_accurate,
+               test_phi_dd_matches_the_dd_reference,
+               test_jacobian_with_phi_dd):
         print(fn.__name__)
         fn()
     print('\nall prepare tests pass')

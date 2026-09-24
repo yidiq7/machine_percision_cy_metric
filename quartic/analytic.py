@@ -28,7 +28,7 @@ import jax.tree_util as jtu
 from . import dd, sections
 
 __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
-           'phi_analytic', 'EXACT_MUL', 'H_LOW', 'point_matrices',
+           'phi_analytic', 'EXACT_MUL', 'H_LOW', 'PHI_DD', 'point_matrices',
            'volume_at', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
            'volume_and_weights', 'volume_tangent', 'volume_jacobian',
@@ -73,6 +73,12 @@ EXACT_MUL = False
 # rounding of H alone moves f by 4e-13, and every per-point stage in dd leaves
 # that unchanged. One more FP64 matrix-vector product for each block removes it.
 H_LOW = False
+
+# Stage 5 in double-double: the centered form b = dsigma - (p_i/p) sigma, H b,
+# and the Gram sum of phi, from the dd values of the Gram stage, with phi
+# rounded once. It needs `GRAM_DD = True`. With H carried in dd, the FP64 form
+# of this stage leaves 4.8e-14 of noise at the noisiest points of k = 28.
+PHI_DD = False
 
 
 def point_matrices(lay, theta):
@@ -377,7 +383,7 @@ def _gram_parts(lay, mats, sig, dsig):
     p_i_re = dd.to_dd(jnp.zeros((4,)))
     p_i_im = dd.to_dd(jnp.zeros((4,)))
     p_ij = jnp.zeros((4, 4), jnp.complex128)
-    store = []
+    store, store_dd = [], []
 
     for mat, s, ds in zip(mats, sig, dsig):
         if SECTION_DD:
@@ -432,8 +438,15 @@ def _gram_parts(lay, mats, sig, dsig):
         ds_fp = dd.cto_fp(ds) if SECTION_DD else ds
         p_ij = p_ij + jnp.einsum('bil,bik->kl', jnp.conj(ds_fp), h_d_fp)
         store.append((h_s, h_d_fp))
+        # H sigma and H dsigma as complex dd, for stage 5 in dd.
+        store_dd.append((((h_re[0][..., 0], h_re[1][..., 0]),
+                          (h_im[0][..., 0], h_im[1][..., 0])),
+                         ((h_re[0][..., 1:], h_re[1][..., 1:]),
+                          (h_im[0][..., 1:], h_im[1][..., 1:]))))
 
-    return (dd.to_fp(p), dd.to_fp(p_i_re) + 1j * dd.to_fp(p_i_im), p_ij, store)
+    extras = (p, (p_i_re, p_i_im), store_dd)
+    return (dd.to_fp(p), dd.to_fp(p_i_re) + 1j * dd.to_fp(p_i_im), p_ij, store,
+            extras)
 
 
 def _gram_parts_fp(lay, mats, sig, dsig):
@@ -450,7 +463,46 @@ def _gram_parts_fp(lay, mats, sig, dsig):
         p_i = p_i + jnp.einsum('bi,bik->k', jnp.conj(s), h_d)
         p_ij = p_ij + jnp.einsum('bil,bik->kl', jnp.conj(ds), h_d)
         store.append((h_s, h_d))
-    return p, p_i, p_ij, store
+    return p, p_i, p_ij, store, None
+
+
+def _mul(x, y):
+    """Real double-double product, exact or fast by `EXACT_MUL`."""
+    return dd.mul(x, y) if EXACT_MUL else dd.mul_fast(x, y)
+
+
+def _creduce_lead(val, n_axes):
+    """Sum a complex double-double value over its first `n_axes` axes."""
+    def one(pair):
+        hi, lo = pair
+        shape = (-1,) + hi.shape[n_axes:]
+        return dd.sum_dd(jnp.reshape(hi, shape), jnp.reshape(lo, shape), axis=0)
+    return one(val[0]), one(val[1])
+
+
+def _phi_stage5_dd(extras, sig, dsig):
+    """phi from the centered form and its Gram sum in dd, rounded once to FP64.
+
+    `extras` holds p, p_i and the products H sigma, H dsigma of the Gram stage
+    as dd. sigma and dsigma are dd with `SECTION_DD`, and FP64 otherwise.
+    """
+    p, p_i, store = extras
+    inv_p = dd.reciprocal(p)
+    ratio = _cindex((_mul(p_i[0], inv_p), _mul(p_i[1], inv_p)), None, None, slice(None))
+    zero = dd.to_dd(jnp.zeros((4, 4)))
+    phi = (zero, zero)
+    for (h_s, h_d), s, ds in zip(store, sig, dsig):
+        if not SECTION_DD:
+            s, ds = dd.cto_dd(s), dd.cto_dd(ds)
+        col = (slice(None), slice(None), None)
+        b = dd.csub(ds, _cmul(_cindex(s, *col), ratio))            # (blocks, d, 4)
+        h_b = dd.csub(h_d, _cmul(_cindex(h_s, *col), ratio))
+        b_conj = (b[0], dd.neg(b[1]))
+        # phi[k, l] = sum over blocks and d of conj(b_l) H b_k, as in FP64.
+        left = _cindex(h_b, slice(None), slice(None), slice(None), None)
+        right = _cindex(b_conj, slice(None), slice(None), None, slice(None))
+        phi = dd.cadd(phi, _creduce_lead(_cmul(left, right), 2))
+    return dd.cto_fp((_mul(phi[0], inv_p), _mul(phi[1], inv_p)))
 
 
 def phi_analytic(lay, mats, z):
@@ -461,7 +513,11 @@ def phi_analytic(lay, mats, z):
     matrix, so the cancellation goes into a vector subtraction instead.
     """
     sig, dsig, sig_fp, dsig_fp = _section_vectors(lay, z)
-    p, p_i, _, store = _gram_parts(lay, mats, sig, dsig)
+    p, p_i, _, store, extras = _gram_parts(lay, mats, sig, dsig)
+    if PHI_DD:
+        if GRAM_DD is not True:
+            raise ValueError('PHI_DD needs GRAM_DD = True')
+        return _phi_stage5_dd(extras, sig, dsig), p
 
     phi = jnp.zeros((4, 4), jnp.complex128)
     for (h_s, h_d), s, ds in zip(store, sig_fp, dsig_fp):
@@ -519,14 +575,21 @@ def volume_and_weights(lay, mats, z, restriction, omega):
     costs one Frobenius product for each block, and nothing more.
     """
     sig, dsig, sig_fp, dsig_fp = _section_vectors(lay, z)
-    p, p_i, p_ij, store = _gram_parts(lay, mats, sig, dsig)
+    p, p_i, p_ij, store, extras = _gram_parts(lay, mats, sig, dsig)
 
-    phi = jnp.zeros((4, 4), jnp.complex128)
-    for (h_s, h_d), s, ds in zip(store, sig_fp, dsig_fp):
-        b = ds - jnp.einsum('bi,k->bik', s, p_i / p)
-        h_b = h_d - jnp.einsum('bi,k->bik', h_s, p_i / p)
-        phi = phi + jnp.einsum('bil,bik->kl', jnp.conj(b), h_b)
-    phi = phi / p
+    if PHI_DD:
+        # v must be the accurate one, because LM takes it as the residual. The
+        # weights W below stay FP64, because they only enter J.
+        if GRAM_DD is not True:
+            raise ValueError('PHI_DD needs GRAM_DD = True')
+        phi = _phi_stage5_dd(extras, sig, dsig)
+    else:
+        phi = jnp.zeros((4, 4), jnp.complex128)
+        for (h_s, h_d), s, ds in zip(store, sig_fp, dsig_fp):
+            b = ds - jnp.einsum('bi,k->bik', s, p_i / p)
+            h_b = h_d - jnp.einsum('bi,k->bik', h_s, p_i / p)
+            phi = phi + jnp.einsum('bil,bik->kl', jnp.conj(b), h_b)
+        phi = phi / p
 
     g = restriction @ phi @ jnp.conj(restriction).T
     v = jnp.real(jnp.linalg.det(g)) / omega

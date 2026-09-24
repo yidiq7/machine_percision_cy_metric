@@ -114,6 +114,8 @@ def main():
     ap.add_argument('--section-dd', action='store_true',
                     help='stages 1 to 3 of the fit path in dd, as --section-dd in '
                          'run_fit.py')
+    ap.add_argument('--phi-dd', action='store_true',
+                    help='stage 5 of the fit path in dd, as --phi-dd in run_fit.py')
     ap.add_argument('--h-low', action='store_true',
                     help='carry the low part of H in all three forms, as '
                          '--h-low in run_fit.py does')
@@ -126,6 +128,7 @@ def main():
     analytic.SECTION_DD = args.section_dd
     sections.PREPARE_DD = True
     analytic.H_LOW = args.h_low
+    analytic.PHI_DD = args.phi_dd
 
     lay = sections.layout(args.k)
     theta = np.asarray(np.load(args.theta))
@@ -203,7 +206,8 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
-    tag = ('_hlow' if args.h_low else '') + ('_section' if args.section_dd else '')
+    tag = (('_hlow' if args.h_low else '') + ('_section' if args.section_dd else '')
+           + ('_phi' if args.phi_dd else ''))
     path = out_dir / f'noise_points_k{args.k}_seed{args.seed}{tag}.json'
     path.write_text(json.dumps({'args': vars(args), 'rows': rows}, indent=1))
     say(f'saved to {path}')
