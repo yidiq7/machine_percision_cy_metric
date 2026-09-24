@@ -177,6 +177,23 @@ def test_low_part_reaches_the_gram_stage():
     print(f"  the pair matches hi + lo to {rel:.2e}, and hi alone differs by {moved:.1e}")
 
 
+def test_dd_reference_takes_the_pair():
+    """`dd_metric.phi_dd` must also act on a pair (hi, lo) as on hi + lo."""
+    from quartic import dd, dd_metric
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+    hi = sections.prepare_fp(lay, theta)
+    lo = tuple(m * (1e-3 * (1.0 + jnp.arange(m.shape[0])) / m.shape[0])[:, None, None]
+               for m in hi)
+    z = dd.cto_dd(BATCH['points'][0])
+    run = jax.jit(lambda m: dd.cto_fp(dd_metric.phi_dd(lay, m, z)[0]))
+    pair = run(tuple(zip(hi, lo)))
+    single = run(tuple(a + b for a, b in zip(hi, lo)))
+    rel = float(jnp.abs(pair - single).max() / jnp.abs(single).max())
+    assert rel < 1e-13, rel
+    print(f"  the dd reference acts on the pair as on hi + lo, to {rel:.2e}")
+
+
 def test_jacobian_with_the_low_part():
     """The custom rule must still match autodiff with H_LOW on."""
     lay = sections.layout(6)
@@ -201,6 +218,7 @@ if __name__ == '__main__':
                test_report_uses_the_fit_path,
                test_parts_split_the_dd_value,
                test_low_part_reaches_the_gram_stage,
+               test_dd_reference_takes_the_pair,
                test_jacobian_with_the_low_part):
         print(fn.__name__)
         fn()

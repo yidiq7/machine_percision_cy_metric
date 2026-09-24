@@ -49,15 +49,22 @@ def _creduce(val, n_axes):
 def _matvec(mat, vec, extra):
     """`mat @ vec` over the last axis of `mat`, with `vec` complex dd.
 
-    `mat` is a real FP64 array of shape `(blocks, d, d)`. `vec` carries the
-    block axis first and `extra` trailing axes after the `d` axis.
+    `mat` is a real FP64 array of shape `(blocks, d, d)`, or a (hi, lo) pair of
+    them as `sections.prepare_parts` gives. `vec` carries the block axis first
+    and `extra` trailing axes after the `d` axis.
     """
+    mat, low = mat if isinstance(mat, tuple) else (mat, None)
     idx = (slice(None), None) + (slice(None),) * (1 + extra)
-    mat_b = mat[(slice(None), slice(None), slice(None)) + (None,) * extra]
+    pad = (slice(None), slice(None), slice(None)) + (None,) * extra
+    mat_b = jnp.asarray(mat)[pad]
 
     def part(component):
-        return dd.dot_dd_fp((component[0][idx], component[1][idx]),
-                            mat_b, axis=2)
+        out = dd.dot_dd_fp((component[0][idx], component[1][idx]), mat_b, axis=2)
+        if low is not None:
+            # lo is 2^-53 of mat, so its product needs FP64 only.
+            extra_part = jnp.sum(component[0][idx] * jnp.asarray(low)[pad], axis=2)
+            out = dd.add(out, dd.to_dd(extra_part))
+        return out
     return part(vec[0]), part(vec[1])
 
 
@@ -82,7 +89,6 @@ def phi_dd(lay, mats, z_dd):
     p_i = (dd.to_dd(jnp.zeros(4)), dd.to_dd(jnp.zeros(4)))
     store = []
     for mat, s, ds in zip(mats, sig, dsig):
-        mat = jnp.asarray(mat)
         h_s = _matvec(mat, s, 0)                      # (blocks, d)
         h_d = _matvec(mat, ds, 1)                     # (blocks, d, 4)
         store.append((h_s, h_d))

@@ -21,6 +21,10 @@ errors are fixed and cannot make noise. So the noise of `all dd` is what the
 rounding of H alone causes, `phi dd` minus `all dd` is the chain after phi, and
 `fit` minus `phi dd` is stages 1 to 5 of the fit.
 
+With `--h-low` all three take H as the dd pair of `sections.prepare_parts`
+instead, as the fit does with `--h-low`. Then `all dd` is nearly free of noise,
+and the other two locate what the fit path still rounds.
+
 Usage, on the GPU node:
     uv run --extra gpu python -u scripts/oracle_noise_points.py --k 28 \\
         --n-fit 59312 --chunk 2653 --theta runs/theta_k28_seed20260813.npy
@@ -107,6 +111,9 @@ def main():
     ap.add_argument('--step', type=float, default=1e-12)
     ap.add_argument('--block', type=int, default=32,
                     help='points in each block of the dd reference')
+    ap.add_argument('--h-low', action='store_true',
+                    help='carry the low part of H in all three forms, as '
+                         '--h-low in run_fit.py does')
     ap.add_argument('--out', type=str, default='runs_modeltest')
     args = ap.parse_args()
 
@@ -115,6 +122,7 @@ def main():
     analytic.GRAM_DD = True
     analytic.SECTION_DD = False
     sections.PREPARE_DD = True
+    analytic.H_LOW = args.h_low
 
     lay = sections.layout(args.k)
     theta = np.asarray(np.load(args.theta))
@@ -128,10 +136,10 @@ def main():
     w = mass / mass.sum()
 
     u = theta * np.random.default_rng(11).normal(size=theta.size)
-    make = jax.jit(lambda t: sections.prepare(lay, t))
+    make = jax.jit(lambda t: analytic.point_matrices(lay, t))
     mats = [make(jnp.asarray(theta + c * args.step * u)) for c in (0.0, 1.0, -1.0)]
     say(f'k = {args.k}, {args.n_fit} points, seed {args.seed}, at {args.theta}, '
-        f'step {args.step:.0e}')
+        f'step {args.step:.0e}, low part of H carried: {args.h_low}')
 
     def mapped(fn, block):
         # The points go in as arguments, so that XLA holds no large constants.
@@ -191,7 +199,8 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
-    path = out_dir / f'noise_points_k{args.k}_seed{args.seed}.json'
+    tag = '_hlow' if args.h_low else ''
+    path = out_dir / f'noise_points_k{args.k}_seed{args.seed}{tag}.json'
     path.write_text(json.dumps({'args': vars(args), 'rows': rows}, indent=1))
     say(f'saved to {path}')
 
