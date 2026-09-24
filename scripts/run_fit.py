@@ -109,6 +109,11 @@ def main():
                          'and 5 run in dd, and R, det and OmegaOmegabar come in '
                          'dd from their closed forms. It needs --gram-dd on, '
                          '--prepare-dd and --h-low.')
+    ap.add_argument('--remat-w', action='store_true',
+                    help='keep only v and a few numbers for each point between '
+                         'the two passes of the LM linearization, and form W '
+                         'again in the tangent pass. The planner measures the '
+                         'memory, so this gives a larger fit set or block.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -174,12 +179,14 @@ def main():
     if args.h_low and not (args.prepare_dd and args.gram_dd == 'on'):
         raise SystemExit('--h-low needs --prepare-dd and --gram-dd on')
     analytic.END_DD = args.end_dd
+    analytic.REMAT_W = args.remat_w
     if args.end_dd and not args.h_low:
         raise SystemExit('--end-dd needs --h-low, which needs --prepare-dd and '
                          '--gram-dd on')
     print(f"Gram stage: {args.gram_dd}, stages 1 to 3 in dd: {args.section_dd}, "
           f"H in dd: {args.prepare_dd}, low part of H carried: {args.h_low}, "
-          f"stage 5 in dd: {args.phi_dd}, end to end in dd: {args.end_dd}")
+          f"stage 5 in dd: {args.phi_dd}, end to end in dd: {args.end_dd}, "
+          f"W formed again in the tangent pass: {args.remat_w}")
 
     train = sample(args.n_train, args.seed, 'fit set     ')
     hold = sample(args.n_eval, args.seed + 1000, 'hold-out set')
@@ -295,6 +302,7 @@ def main():
                   'h_low': bool(args.h_low),
                   'phi_dd': bool(args.phi_dd),
                   'end_dd': bool(args.end_dd),
+                  'remat_w': bool(args.remat_w),
                   'sigma_path': 'analytic.volume_at, in the arithmetic of the '
                                 'fit; mape_check uses complex_hessian in FP64',
                   'mape_fit_check': rep_fit['mape_check'],

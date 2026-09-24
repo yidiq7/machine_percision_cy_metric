@@ -213,7 +213,8 @@ def test_jacobian_with_the_low_part():
 def _with_flags(fn, **flags):
     """Run fn with module flags set, and put them back after it."""
     owners = {'GRAM_DD': analytic, 'SECTION_DD': analytic, 'H_LOW': analytic,
-              'PHI_DD': analytic, 'END_DD': analytic, 'PREPARE_DD': sections}
+              'PHI_DD': analytic, 'END_DD': analytic, 'REMAT_W': analytic,
+              'PREPARE_DD': sections}
     old = {name: getattr(owners[name], name) for name in flags}
     try:
         for name, value in flags.items():
@@ -376,6 +377,45 @@ def test_report_with_end_dd():
     print(f"  report sigma {rep['mape']:.12e}, check {rep['mape_check']:.12e}")
 
 
+def test_remat_w_gives_the_same_jacobian():
+    """W from FP64 sections in the tangent pass must give the same J."""
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+
+    def jac(batch):
+        return jax.jacfwd(lambda t: analytic.weighted_residual_fast(lay, t, batch, 60))(theta)
+
+    rel = []
+    for batch, flags in ((BATCH, {}),
+                         (_end_batch(), dict(GRAM_DD=True, H_LOW=True,
+                                             PREPARE_DD=True, END_DD=True))):
+        want = _with_flags(lambda: jac(batch), **flags)
+        got = _with_flags(lambda: jac(batch), REMAT_W=True, **flags)
+        rel.append(float(jnp.abs(got - want).max() / jnp.abs(want).max()))
+    assert rel[0] < 1e-14 and rel[1] < 1e-13, rel
+    print(f"  REMAT_W moves J by {rel[0]:.2e} in FP64 and {rel[1]:.2e} with END_DD")
+
+
+def test_remat_w_frees_the_linearization():
+    """The LM solve must hold far less for each fit point with REMAT_W."""
+    from quartic import fit
+    lay = sections.layout(12)
+    batch = data.make(1000, 5)
+
+    def per_point():
+        low, high = ({k: v[:n] for k, v in batch.items()} for n in (1000, 4000))
+        a = fit.solve_memory(lay, low, 250, max_steps=5)
+        b = fit.solve_memory(lay, high, 250, max_steps=5)
+        return (b - a) / 3000 * 1e6
+
+    old = per_point()
+    new = _with_flags(per_point, REMAT_W=True)
+    j_kb = lay.n_theta * 8 / 1e3
+    assert new < old / 2, (old, new)
+    print(f"  kB for each fit point at k = 12: {old:.1f} without REMAT_W, {new:.1f} "
+          f"with it; one row of J is {j_kb:.2f}")
+
+
 if __name__ == '__main__':
     for fn in (test_dd_agrees_where_fp64_is_accurate,
                test_each_entry_is_rounded_once,
@@ -393,7 +433,9 @@ if __name__ == '__main__':
                test_end_dd_matches_the_dd_reference,
                test_end_dd_agrees_with_the_fp64_path,
                test_jacobian_with_end_dd,
-               test_report_with_end_dd):
+               test_report_with_end_dd,
+               test_remat_w_gives_the_same_jacobian,
+               test_remat_w_frees_the_linearization):
         print(fn.__name__)
         fn()
     print('\nall prepare tests pass')

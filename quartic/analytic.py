@@ -28,7 +28,7 @@ import jax.tree_util as jtu
 from . import dd, sections
 
 __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
-           'phi_analytic', 'EXACT_MUL', 'H_LOW', 'PHI_DD', 'END_DD',
+           'phi_analytic', 'EXACT_MUL', 'H_LOW', 'PHI_DD', 'END_DD', 'REMAT_W',
            'point_matrices', 'point_inputs',
            'volume_at', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
@@ -87,6 +87,11 @@ PHI_DD = False
 # itself. At the endpoint of k = 28, the FP64 point moves f by 9.0e-16 rms, and
 # the FP64 parts of the fit arithmetic move it by 2.1e-15 rms.
 END_DD = False
+
+# Keep only v and (p, p_i, p_ij, phi) of each point between the two passes of the
+# LM linearization, and form W again from FP64 sections in the tangent pass.
+# Else the linearization holds W for every fit point, 3.6 sum_r d_r^2 doubles.
+REMAT_W = False
 
 
 def _dd_sections():
@@ -632,6 +637,12 @@ def volume_and_weights(lay, mats, z, restriction, omega, *extra):
     where dH_r is the block matrix of the tangent direction. So one direction
     costs one Frobenius product for each block, and nothing more.
     """
+    v, small, sig_fp, dsig_fp = _point_state(lay, mats, z, restriction, omega, *extra)
+    return v, _block_weights(sig_fp, dsig_fp, small, restriction, v)
+
+
+def _point_state(lay, mats, z, restriction, omega, *extra):
+    """v, the per-point values (p, p_i, p_ij, phi) that W needs, and FP64 sections."""
     point = _dd_point(extra) if END_DD else None
     sig, dsig, sig_fp, dsig_fp = _section_vectors(
         lay, z, z_dd=None if point is None else point[0])
@@ -642,26 +653,31 @@ def volume_and_weights(lay, mats, z, restriction, omega, *extra):
             raise ValueError('END_DD needs GRAM_DD = True')
         phi_dd = _phi_stage5_dd(extras, sig, dsig, keep=True)
         phi = dd.cto_fp(phi_dd)
-    elif PHI_DD:
-        # v must be the accurate one, because LM takes it as the residual. The
-        # weights W below stay FP64, because they only enter J.
-        if GRAM_DD is not True:
-            raise ValueError('PHI_DD needs GRAM_DD = True')
-        phi = _phi_stage5_dd(extras, sig, dsig)
-    else:
-        phi = jnp.zeros((4, 4), jnp.complex128)
-        for (h_s, h_d), s, ds in zip(store, sig_fp, dsig_fp):
-            b = ds - jnp.einsum('bi,k->bik', s, p_i / p)
-            h_b = h_d - jnp.einsum('bi,k->bik', h_s, p_i / p)
-            phi = phi + jnp.einsum('bil,bik->kl', jnp.conj(b), h_b)
-        phi = phi / p
-
-    g = restriction @ phi @ jnp.conj(restriction).T
-    v = jnp.real(jnp.linalg.det(g)) / omega
-    if END_DD:
-        # LM takes v as the residual, so it comes from the dd chain. The rest of
-        # this function only forms W, which enters J, so FP64 is enough there.
+        # LM takes v as the residual, so it comes from the dd chain. W only
+        # enters J, so FP64 is enough there.
         v = _volume_from_phi_dd(phi_dd, *point)
+    else:
+        if PHI_DD:
+            # v must be the accurate one, because LM takes it as the residual.
+            if GRAM_DD is not True:
+                raise ValueError('PHI_DD needs GRAM_DD = True')
+            phi = _phi_stage5_dd(extras, sig, dsig)
+        else:
+            phi = jnp.zeros((4, 4), jnp.complex128)
+            for (h_s, h_d), s, ds in zip(store, sig_fp, dsig_fp):
+                b = ds - jnp.einsum('bi,k->bik', s, p_i / p)
+                h_b = h_d - jnp.einsum('bi,k->bik', h_s, p_i / p)
+                phi = phi + jnp.einsum('bil,bik->kl', jnp.conj(b), h_b)
+            phi = phi / p
+        g = restriction @ phi @ jnp.conj(restriction).T
+        v = jnp.real(jnp.linalg.det(g)) / omega
+    return v, (p, p_i, p_ij, phi), sig_fp, dsig_fp
+
+
+def _block_weights(sig_fp, dsig_fp, small, restriction, v):
+    """W_r of each block, from FP64 sections and the per-point values."""
+    p, p_i, p_ij, phi = small
+    g = restriction @ phi @ jnp.conj(restriction).T
     k_mat = jnp.conj(restriction).T @ jnp.linalg.inv(g) @ restriction   # (4, 4)
 
     # Scalars and vectors that multiply the outer products inside W_r.
@@ -678,7 +694,7 @@ def volume_and_weights(lay, mats, z, restriction, omega, *extra):
         w = w - jnp.einsum('bik,k,bj->bij', ds, left, jnp.conj(s)) / p ** 2
         w = w - jnp.einsum('bi,bjl,l->bij', s, jnp.conj(ds), right) / p ** 2
         weights.append(v * jnp.real(w))
-    return v, tuple(weights)
+    return tuple(weights)
 
 
 def volume_tangent(weights, dmats):
@@ -749,9 +765,28 @@ def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
         v, w = volume_and_weights(lay, mats, *args)
         return v, volume_tangent(w, dmats)
 
+    def run(fn, inputs):
+        return (jax.vmap(fn)(inputs) if chunk is None
+                else jax.lax.map(fn, inputs, batch_size=chunk))
+
     xs = point_inputs(batch)
-    v, dv = (jax.vmap(one)(xs) if chunk is None
-             else jax.lax.map(one, xs, batch_size=chunk))
+    if REMAT_W:
+        def primal(args):
+            v, small, _, _ = _point_state(lay, mats, *args)
+            return v, small
+
+        # W comes again from FP64 sections, so the linearization keeps only
+        # v and the per-point values, and not W for every point.
+        @jax.checkpoint
+        def tangent(args):
+            (z, restriction, _omega, *_), v, small = args
+            sig, dsig = section_vectors(lay, z)
+            return volume_tangent(_block_weights(sig, dsig, small, restriction, v), dmats)
+
+        v, small = run(primal, xs)
+        dv = run(tangent, (xs, v, small))
+    else:
+        v, dv = run(one, xs)
 
     weights = batch['mass'] / jnp.sum(batch['mass'])
     mean = jnp.sum(weights * v)
