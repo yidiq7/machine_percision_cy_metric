@@ -566,10 +566,11 @@ def _dd_point(extra):
     return z_dd, patch[0], (patch[1], patch[2])
 
 
-def _volume_from_phi_dd(phi, z_dd, m, free):
+def _volume_from_phi_dd(phi, z_dd, m, free, keep=False):
     """v = det(R phi R^dag) |dP/dz_m|^2 in dd, with R and dP from the dd point.
 
     OmegaOmegabar is 1/abs(dP/dz_m)^2, so this is det(g|X) / OmegaOmegabar.
+    `keep` returns the dd pair and not its FP64 rounding.
     """
     from . import dd_metric
     rest, grad = dd_metric._restriction_dd(z_dd, m, free)
@@ -580,7 +581,8 @@ def _volume_from_phi_dd(phi, z_dd, m, free):
     g = dd_metric._creduce_last_two(_cmul(_cmul(left, mid), right))
     det = dd.csub(_cmul(dd_metric._at(g, 0, 0), dd_metric._at(g, 1, 1)),
                   _cmul(dd_metric._at(g, 0, 1), dd_metric._at(g, 1, 0)))
-    return dd.to_fp(_mul(det[0], dd.cabs2(_cindex(grad, m))))
+    v = _mul(det[0], dd.cabs2(_cindex(grad, m)))
+    return v if keep else dd.to_fp(v)
 
 
 def volume_at(lay, mats, z, restriction, omega, *extra):

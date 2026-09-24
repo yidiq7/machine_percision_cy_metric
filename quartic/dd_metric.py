@@ -31,8 +31,8 @@ import jax.numpy as jnp
 
 from . import analytic, dd, sections
 
-__all__ = ['refine', 'residual_of_P', 'phi_dd', 'volume_dd', 'point_extras',
-           'residual_of_P_batch']
+__all__ = ['refine', 'newton_step', 'residual_of_P', 'phi_dd', 'volume_dd',
+           'point_extras', 'residual_of_P_batch']
 
 
 def _reduce(pair, n_axes):
@@ -198,22 +198,27 @@ def refine(z, m, steps=2):
     """
     zc = dd.cto_dd(jnp.asarray(z))
     for _ in range(steps):
-        z2 = dd.cmul(zc, zc)
-        u = dd.cmul(z2, z2)
-        total = _creduce(u, 1)
-        z2_m = analytic._cindex(z2, m)
-        cube = dd.cmul(z2_m, analytic._cindex(zc, m))
-        deriv = (dd.mul_dd_fp(cube[0], jnp.asarray(4.0)),
-                 dd.mul_dd_fp(cube[1], jnp.asarray(4.0)))
-        step = dd.cdiv(total, deriv)
-        new_m = dd.csub(analytic._cindex(zc, m), step)
-        mask = jnp.zeros(4).at[m].set(1.0)
-        keep = 1.0 - mask
-        zc = ((zc[0][0] * keep + new_m[0][0] * mask,
-               zc[0][1] * keep + new_m[0][1] * mask),
-              (zc[1][0] * keep + new_m[1][0] * mask,
-               zc[1][1] * keep + new_m[1][1] * mask))
+        zc = newton_step(zc, m)
     return zc, m
+
+
+def newton_step(zc, m):
+    """One Newton step onto `P = 0` for a complex dd point, in coordinate `m`."""
+    z2 = dd.cmul(zc, zc)
+    u = dd.cmul(z2, z2)
+    total = _creduce(u, 1)
+    z2_m = analytic._cindex(z2, m)
+    cube = dd.cmul(z2_m, analytic._cindex(zc, m))
+    deriv = (dd.mul_dd_fp(cube[0], jnp.asarray(4.0)),
+             dd.mul_dd_fp(cube[1], jnp.asarray(4.0)))
+    step = dd.cdiv(total, deriv)
+    new_m = dd.csub(analytic._cindex(zc, m), step)
+    mask = jnp.zeros(4).at[m].set(1.0)
+    keep = 1.0 - mask
+    return ((zc[0][0] * keep + new_m[0][0] * mask,
+             zc[0][1] * keep + new_m[0][1] * mask),
+            (zc[1][0] * keep + new_m[1][0] * mask,
+             zc[1][1] * keep + new_m[1][1] * mask))
 
 
 def residual_of_P(z_dd):
