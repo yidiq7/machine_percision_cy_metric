@@ -141,7 +141,8 @@ def test_basis_is_deterministic():
 def test_frame_is_the_complement_of_the_relations():
     """Gram-Schmidt must still span exactly the complement of the relations."""
     worst = 0.0
-    for m in range(1, 8):
+    # m = 8 first appears at k = 32, in the block r = 0, and m = 9 at k = 36.
+    for m in range(1, 10):
         frame = blocks.section_frame(m)
         rel = blocks.relation_columns(m)
         # Every relation must be orthogonal to the frame.
@@ -152,6 +153,19 @@ def test_frame_is_the_complement_of_the_relations():
     assert worst < 1e-12, worst
     print(f"  the frame is orthogonal to the relations to {worst:.2e}, and "
           f"together they span")
+
+
+def test_basis_is_orthonormal():
+    """The invariant basis must span n_theta directions, so it must be orthonormal."""
+    worst = 0.0
+    for k in (20, 28, 32, 38):
+        st = blocks.build(k)
+        for orb in st.orbits:
+            flat = orb.basis.reshape(orb.basis.shape[0], -1)
+            gram = flat @ flat.T
+            worst = max(worst, np.abs(gram - np.eye(gram.shape[0])).max())
+    assert worst < 1e-12, worst
+    print(f"  max |B_a . B_b - delta_ab| = {worst:.2e}, to k = 38")
 
 
 def test_high_k_counts():
@@ -169,6 +183,7 @@ if __name__ == "__main__":
                test_blocks_cover_every_residue,
                test_basis_is_deterministic,
                test_frame_is_the_complement_of_the_relations,
+               test_basis_is_orthonormal,
                test_high_k_counts):
         print(fn.__name__)
         fn()
