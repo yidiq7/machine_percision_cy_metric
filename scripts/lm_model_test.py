@@ -83,7 +83,7 @@ def h_difference(lay_a, th_a, lay_b, th_b):
     return worst
 
 
-def scan(res, jac_fn, theta):
+def scan(res, jac_fn, theta, gauge=None):
     """One family of damped steps at theta. Returns the rows and a summary.
 
     J = Q R and R = U S V^T. The SVD is backward stable, so each step is the
@@ -101,8 +101,10 @@ def scan(res, jac_fn, theta):
     s_max = float(s[0])
 
     # h -> c h leaves v unchanged, so J has one null direction along theta.
-    # Keep its singular vector out of every step and out of every share.
-    gauge = theta / np.linalg.norm(theta)
+    # Keep its singular vector out of every step and out of every share. For a
+    # correction on a base, the caller gives that direction.
+    gauge = theta if gauge is None else np.asarray(gauge, dtype=np.float64)
+    gauge = gauge / np.linalg.norm(gauge)
     overlap = np.abs(vt @ gauge)
     ig = int(np.argmax(overlap))
     keep = np.ones(s.size, dtype=bool)
@@ -254,6 +256,12 @@ def main():
     ap.add_argument('--remat-w', action='store_true',
                     help='form W again in the tangent pass, as in run_fit.py, so '
                          'that the control legs fit in memory at k = 32')
+    ap.add_argument('--h-base', type=str, default=None,
+                    help='the base theta of a fit with --h-base in run_fit.py. '
+                         '--theta is then the correction, and only that point '
+                         'is measured')
+    ap.add_argument('--correction-whitened', action='store_true',
+                    help='the correction is in the whitened basis')
     ap.add_argument('--no-whiten', action='store_true',
                     help='leave out the whitened family')
     ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
@@ -278,16 +286,30 @@ def main():
         raise SystemExit('--end-dd needs --h-low, --prepare-dd and --gram-dd on')
 
     lay_p = sections.layout(args.k)
+    lay_c = lay_p
+    base = None
+    if args.h_base is not None:
+        if args.theta is None:
+            raise SystemExit('--h-base needs --theta, the correction')
+        side = Path(args.h_base).with_suffix('.basis')
+        if not side.exists() or side.read_text().strip() != lay_p.fingerprint():
+            raise SystemExit('the basis of --h-base is absent or not the plain basis')
+        base = np.asarray(np.load(args.h_base))
+        sections.H_BASE = jax.jit(lambda t: sections.base_matrices(lay_p, t))(
+            jnp.asarray(base))
+        if args.correction_whitened:
+            lay_c = whiten.whitened_layout(args.k, n_pairs=args.gram_pairs,
+                                           seed=args.gram_seed)
     theta_saved = None
     if args.theta is not None:
         theta_saved = jnp.asarray(np.load(args.theta))
-        if theta_saved.shape != (lay_p.n_theta,):
+        if theta_saved.shape != (lay_c.n_theta,):
             raise SystemExit(f'theta has {theta_saved.shape}, k = {args.k} needs '
-                             f'({lay_p.n_theta},)')
+                             f'({lay_c.n_theta},)')
         side = Path(args.theta).with_suffix('.basis')
-        if not side.exists() or side.read_text().strip() != lay_p.fingerprint():
-            raise SystemExit('the basis of --theta is absent or not the plain '
-                             'basis of this build')
+        if not side.exists() or side.read_text().strip() != lay_c.fingerprint():
+            raise SystemExit('the basis of --theta is absent or not the basis '
+                             'of this build')
 
     if args.n_train < args.n_fit:
         raise SystemExit('--n-train must be at least --n-fit')
@@ -298,6 +320,33 @@ def main():
     mass = np.asarray(batch['mass'])
     weights = mass / mass.sum()
     chunk2 = args.chunk2 or max(64, args.chunk - 97)
+
+    if base is not None:
+        # One point: the correction on its base. The null direction of J is the
+        # scale of the whole H, so the gauge is the base plus the correction.
+        res_c = jax.jit(fit.residual_fn(lay_c, batch, args.chunk))
+        res_c2 = jax.jit(fit.residual_fn(lay_c, batch, chunk2))
+        jac_c = jax.jit(jax.jacfwd(fit.residual_fn(lay_c, batch, args.chunk)))
+        start = (to_whitened(lay_p, lay_c, base) if args.correction_whitened
+                 else jnp.asarray(base))
+        gauge = np.asarray(start) + np.asarray(theta_saved)
+        r = np.asarray(res_c(theta_saved))
+        r2 = np.asarray(res_c2(theta_saved))
+        loss, loss2 = 0.5 * float(r @ r), 0.5 * float(r2 @ r2)
+        sigma = float(np.sum(np.sqrt(weights) * np.abs(r)))
+        say(f"the correction {args.theta} on {args.h_base}: fit-set sigma = "
+            f"{sigma:.4e}, loss = {loss:.4e}, relative noise of the loss between "
+            f"two blocks = {abs(loss2 - loss) / loss:.2e}")
+        family = 'whitened' if args.correction_whitened else 'plain'
+        rows, summ = scan(res_c, jac_c, theta_saved, gauge=gauge)
+        show(f'{family} correction', rows, summ)
+        out_dir = Path(args.out)
+        out_dir.mkdir(exist_ok=True)
+        path = out_dir / f'model_correction_k{args.k}_seed{args.seed}.json'
+        path.write_text(json.dumps({'args': vars(args), 'sigma_fit': sigma,
+                                    'rows': rows, 'summary': summ}, indent=1))
+        say(f'saved to {path}')
+        return
     say(f"k = {args.k}, n_theta = {lay_p.n_theta}, {args.n_fit} of {args.n_train} "
         f"points, seed {args.seed}, blocks {args.chunk} and {chunk2}, Gram "
         f"stage {args.gram_dd}, section dd {args.section_dd}, end to end dd "
