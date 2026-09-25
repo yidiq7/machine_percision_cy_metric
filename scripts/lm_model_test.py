@@ -262,6 +262,10 @@ def main():
                          'is measured')
     ap.add_argument('--correction-whitened', action='store_true',
                     help='the correction is in the whitened basis')
+    ap.add_argument('--zero-correction', action='store_true',
+                    help='measure at a correction of exactly 0, so at the base '
+                         'itself. That point does not depend on W, which moves '
+                         'between processes.')
     ap.add_argument('--no-whiten', action='store_true',
                     help='leave out the whitened family')
     ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
@@ -289,8 +293,9 @@ def main():
     lay_c = lay_p
     base = None
     if args.h_base is not None:
-        if args.theta is None:
-            raise SystemExit('--h-base needs --theta, the correction')
+        if args.theta is None and not args.zero_correction:
+            raise SystemExit('--h-base needs --theta, the correction, or '
+                             '--zero-correction')
         side = Path(args.h_base).with_suffix('.basis')
         if not side.exists() or side.read_text().strip() != lay_p.fingerprint():
             raise SystemExit('the basis of --h-base is absent or not the plain basis')
@@ -301,7 +306,9 @@ def main():
             lay_c = whiten.whitened_layout(args.k, n_pairs=args.gram_pairs,
                                            seed=args.gram_seed)
     theta_saved = None
-    if args.theta is not None:
+    if args.zero_correction:
+        theta_saved = jnp.zeros(lay_c.n_theta)
+    elif args.theta is not None:
         theta_saved = jnp.asarray(np.load(args.theta))
         if theta_saved.shape != (lay_c.n_theta,):
             raise SystemExit(f'theta has {theta_saved.shape}, k = {args.k} needs '
@@ -334,7 +341,7 @@ def main():
         r2 = np.asarray(res_c2(theta_saved))
         loss, loss2 = 0.5 * float(r @ r), 0.5 * float(r2 @ r2)
         sigma = float(np.sum(np.sqrt(weights) * np.abs(r)))
-        say(f"the correction {args.theta} on {args.h_base}: fit-set sigma = "
+        say(f"the correction {args.theta or 0} on {args.h_base}: fit-set sigma = "
             f"{sigma:.4e}, loss = {loss:.4e}, relative noise of the loss between "
             f"two blocks = {abs(loss2 - loss) / loss:.2e}")
         family = 'whitened' if args.correction_whitened else 'plain'
