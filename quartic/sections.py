@@ -93,7 +93,9 @@ class Layout:
         digest.update(self.structure.fingerprint().encode())
         digest.update(self.gram_id.encode())
         for mat in self.whiten_inv:
-            digest.update(np.ascontiguousarray(np.round(mat, 8)).tobytes())
+            # + 0.0 turns -0.0 into 0.0: the entries that are zero by symmetry
+            # carry noise of either sign, and np.round keeps that sign.
+            digest.update(np.ascontiguousarray(np.round(mat, 8) + 0.0).tobytes())
         digest.update(np.ascontiguousarray(
             np.round(self.scale / max(self.scale.max(), 1e-300), 12)).tobytes())
         return digest.hexdigest()[:16]
