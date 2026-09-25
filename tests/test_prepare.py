@@ -214,7 +214,7 @@ def _with_flags(fn, **flags):
     """Run fn with module flags set, and put them back after it."""
     owners = {'GRAM_DD': analytic, 'SECTION_DD': analytic, 'H_LOW': analytic,
               'PHI_DD': analytic, 'END_DD': analytic, 'REMAT_W': analytic,
-              'PREPARE_DD': sections}
+              'W_CENTERED': analytic, 'PREPARE_DD': sections}
     old = {name: getattr(owners[name], name) for name in flags}
     try:
         for name, value in flags.items():
@@ -513,6 +513,31 @@ def test_base_with_a_whitened_correction():
           f"{fp:.1e} against FP64")
 
 
+def test_w_centered_gives_the_same_jacobian():
+    """W from the centered vectors must give the J of the expanded form, and of autodiff."""
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+
+    def jac(batch):
+        return jax.jacfwd(lambda t: analytic.weighted_residual_fast(lay, t, batch, 60))(theta)
+
+    want = jax.jacfwd(lambda t: metric.weighted_residual(lay, t, BATCH, 60))(theta)
+    rel = {}
+    for tag, batch, flags in (
+            ('fp64', BATCH, {}),
+            ('end_dd', _end_batch(), dict(GRAM_DD=True, H_LOW=True, PREPARE_DD=True,
+                                          END_DD=True)),
+            ('end_dd, remat', _end_batch(), dict(GRAM_DD=True, H_LOW=True, PREPARE_DD=True,
+                                                 END_DD=True, REMAT_W=True))):
+        old = _with_flags(lambda: jac(batch), **flags)
+        new = _with_flags(lambda: jac(batch), W_CENTERED=True, **flags)
+        top = float(jnp.abs(want).max())
+        rel[tag] = (float(jnp.abs(new - old).max()) / top, float(jnp.abs(new - want).max()) / top)
+    assert all(a < 1e-13 and b < 1e-12 for a, b in rel.values()), rel
+    print("  centered W against the expanded W, and against autodiff: " + '; '.join(
+        f"{tag} {a:.1e}, {b:.1e}" for tag, (a, b) in rel.items()))
+
+
 if __name__ == '__main__':
     for fn in (test_dd_agrees_where_fp64_is_accurate,
                test_each_entry_is_rounded_once,
@@ -536,7 +561,8 @@ if __name__ == '__main__':
                test_base_adds_in_dd,
                test_base_keeps_the_tangent_and_the_fp64_path,
                test_residual_at_the_base,
-               test_base_with_a_whitened_correction):
+               test_base_with_a_whitened_correction,
+               test_w_centered_gives_the_same_jacobian):
         print(fn.__name__)
         fn()
     print('\nall prepare tests pass')

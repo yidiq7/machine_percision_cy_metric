@@ -114,6 +114,10 @@ def main():
                          'the two passes of the LM linearization, and form W '
                          'again in the tangent pass. The planner measures the '
                          'memory, so this gives a larger fit set or block.')
+    ap.add_argument('--w-centered', action='store_true',
+                    help='form W, which carries J, from the centered vectors b. '
+                         'The expanded form cancels by about (k/abs(z_a))^2 at '
+                         'points with a small coordinate. It needs --gram-dd on.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -186,13 +190,17 @@ def main():
         raise SystemExit('--h-low needs --prepare-dd and --gram-dd on')
     analytic.END_DD = args.end_dd
     analytic.REMAT_W = args.remat_w
+    analytic.W_CENTERED = args.w_centered
+    if args.w_centered and args.gram_dd != 'on':
+        raise SystemExit('--w-centered needs --gram-dd on')
     if args.end_dd and not args.h_low:
         raise SystemExit('--end-dd needs --h-low, which needs --prepare-dd and '
                          '--gram-dd on')
     print(f"Gram stage: {args.gram_dd}, stages 1 to 3 in dd: {args.section_dd}, "
           f"H in dd: {args.prepare_dd}, low part of H carried: {args.h_low}, "
           f"stage 5 in dd: {args.phi_dd}, end to end in dd: {args.end_dd}, "
-          f"W formed again in the tangent pass: {args.remat_w}")
+          f"W formed again in the tangent pass: {args.remat_w}, "
+          f"W from the centered vectors: {args.w_centered}")
 
     train = sample(args.n_train, args.seed, 'fit set     ')
     hold = sample(args.n_eval, args.seed + 1000, 'hold-out set')
@@ -327,6 +335,7 @@ def main():
                   'phi_dd': bool(args.phi_dd),
                   'end_dd': bool(args.end_dd),
                   'remat_w': bool(args.remat_w),
+                  'w_centered': bool(args.w_centered),
                   'sigma_path': 'analytic.volume_at, in the arithmetic of the '
                                 'fit; mape_check uses complex_hessian in FP64',
                   'mape_fit_check': rep_fit['mape_check'],

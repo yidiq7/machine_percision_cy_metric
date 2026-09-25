@@ -29,6 +29,7 @@ from . import dd, sections
 
 __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
            'phi_analytic', 'EXACT_MUL', 'H_LOW', 'PHI_DD', 'END_DD', 'REMAT_W',
+           'W_CENTERED',
            'point_matrices', 'point_inputs',
            'volume_at', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
@@ -93,6 +94,11 @@ END_DD = False
 # LM linearization, and form W again from FP64 sections in the tangent pass.
 # Else the linearization holds W for every fit point, 3.6 sum_r d_r^2 doubles.
 REMAT_W = False
+
+# W from the centered vectors b = dsigma - (p_i/p) sigma, as (v/p) Re(b K b^T* -
+# 2 sigma sigma^*). The expanded form cancels by about (k/abs(z_a))^2 at points
+# with a small coordinate. It needs GRAM_DD = True, and dd sections for full effect.
+W_CENTERED = False
 
 
 def _dd_sections():
@@ -500,22 +506,26 @@ def _creduce_lead(val, n_axes):
     return one(val[0]), one(val[1])
 
 
-def _phi_stage5_dd(extras, sig, dsig, keep=False):
+def _phi_stage5_dd(extras, sig, dsig, keep=False, with_b=False):
     """phi from the centered form and its Gram sum in dd, rounded once to FP64.
 
     `extras` holds p, p_i and the products H sigma, H dsigma of the Gram stage
     as dd. sigma and dsigma are dd with `SECTION_DD`, and FP64 otherwise.
+    `with_b` also returns the centered vectors b of each group, rounded to FP64.
     """
     p, p_i, store = extras
     inv_p = dd.reciprocal(p)
     ratio = _cindex((_mul(p_i[0], inv_p), _mul(p_i[1], inv_p)), None, None, slice(None))
     zero = dd.to_dd(jnp.zeros((4, 4)))
     phi = (zero, zero)
+    bs = []
     for (h_s, h_d), s, ds in zip(store, sig, dsig):
         if not _dd_sections():
             s, ds = dd.cto_dd(s), dd.cto_dd(ds)
         col = (slice(None), slice(None), None)
         b = dd.csub(ds, _cmul(_cindex(s, *col), ratio))            # (blocks, d, 4)
+        if with_b:
+            bs.append(dd.cto_fp(b))
         h_b = dd.csub(h_d, _cmul(_cindex(h_s, *col), ratio))
         b_conj = (b[0], dd.neg(b[1]))
         # phi[k, l] = sum over blocks and d of conj(b_l) H b_k, as in FP64.
@@ -523,7 +533,21 @@ def _phi_stage5_dd(extras, sig, dsig, keep=False):
         right = _cindex(b_conj, slice(None), slice(None), None, slice(None))
         phi = dd.cadd(phi, _creduce_lead(_cmul(left, right), 2))
     phi = (_mul(phi[0], inv_p), _mul(phi[1], inv_p))
-    return phi if keep else dd.cto_fp(phi)
+    phi = phi if keep else dd.cto_fp(phi)
+    return (phi, tuple(bs)) if with_b else phi
+
+
+def _centered_dd(p, p_i, sig, dsig):
+    """The centered vectors b = dsigma - (p_i/p) sigma of each group, in dd, rounded."""
+    inv_p = dd.reciprocal(p)
+    ratio = _cindex((_mul(p_i[0], inv_p), _mul(p_i[1], inv_p)), None, None, slice(None))
+    out = []
+    for s, ds in zip(sig, dsig):
+        if not _dd_sections():
+            s, ds = dd.cto_dd(s), dd.cto_dd(ds)
+        col = (slice(None), slice(None), None)
+        out.append(dd.cto_fp(dd.csub(ds, _cmul(_cindex(s, *col), ratio))))
+    return tuple(out)
 
 
 def phi_analytic(lay, mats, z):
@@ -641,8 +665,9 @@ def volume_and_weights(lay, mats, z, restriction, omega, *extra):
     where dH_r is the block matrix of the tangent direction. So one direction
     costs one Frobenius product for each block, and nothing more.
     """
-    v, small, sig_fp, dsig_fp = _point_state(lay, mats, z, restriction, omega, *extra)
-    return v, _block_weights(sig_fp, dsig_fp, small, restriction, v)
+    v, small, sig_fp, dsig_fp, b_fp = _point_state(lay, mats, z, restriction, omega,
+                                                   *extra)
+    return v, _block_weights(sig_fp, dsig_fp, small, restriction, v, b_fp)
 
 
 def _point_state(lay, mats, z, restriction, omega, *extra):
@@ -655,7 +680,7 @@ def _point_state(lay, mats, z, restriction, omega, *extra):
     if END_DD:
         if GRAM_DD is not True:
             raise ValueError('END_DD needs GRAM_DD = True')
-        phi_dd = _phi_stage5_dd(extras, sig, dsig, keep=True)
+        phi_dd, b_fp = _phi_stage5_dd(extras, sig, dsig, keep=True, with_b=True)
         phi = dd.cto_fp(phi_dd)
         # LM takes v as the residual, so it comes from the dd chain. W only
         # enters J, so FP64 is enough there.
@@ -665,24 +690,43 @@ def _point_state(lay, mats, z, restriction, omega, *extra):
             # v must be the accurate one, because LM takes it as the residual.
             if GRAM_DD is not True:
                 raise ValueError('PHI_DD needs GRAM_DD = True')
-            phi = _phi_stage5_dd(extras, sig, dsig)
+            phi, b_fp = _phi_stage5_dd(extras, sig, dsig, with_b=True)
         else:
             phi = jnp.zeros((4, 4), jnp.complex128)
+            b_fp = []
             for (h_s, h_d), s, ds in zip(store, sig_fp, dsig_fp):
                 b = ds - jnp.einsum('bi,k->bik', s, p_i / p)
                 h_b = h_d - jnp.einsum('bi,k->bik', h_s, p_i / p)
                 phi = phi + jnp.einsum('bil,bik->kl', jnp.conj(b), h_b)
+                b_fp.append(b)
             phi = phi / p
+            b_fp = tuple(b_fp)
         g = restriction @ phi @ jnp.conj(restriction).T
         v = jnp.real(jnp.linalg.det(g)) / omega
-    return v, (p, p_i, p_ij, phi), sig_fp, dsig_fp
+    if extras is None:
+        p_dd = dd.to_dd(p)
+        p_i_dd = (dd.to_dd(jnp.real(p_i)), dd.to_dd(jnp.imag(p_i)))
+    else:
+        p_dd, p_i_dd = extras[0], extras[1]
+    return v, (p, p_i, p_ij, phi, p_dd, p_i_dd), sig_fp, dsig_fp, b_fp
 
 
-def _block_weights(sig_fp, dsig_fp, small, restriction, v):
-    """W_r of each block, from FP64 sections and the per-point values."""
-    p, p_i, p_ij, phi = small
+def _block_weights(sig_fp, dsig_fp, small, restriction, v, b_fp=None):
+    """W_r of each block, from FP64 sections and the per-point values.
+
+    With `W_CENTERED` it takes the centered vectors b and not dsigma.
+    """
+    p, p_i, p_ij, phi = small[:4]
     g = restriction @ phi @ jnp.conj(restriction).T
     k_mat = jnp.conj(restriction).T @ jnp.linalg.inv(g) @ restriction   # (4, 4)
+    if W_CENTERED:
+        # dv/v = (1/p) [sum K_lk b_l^* dH b_k - 2 sigma^* dH sigma], since tr(K phi) = 2.
+        out = []
+        for s, b in zip(sig_fp, b_fp):
+            w = jnp.einsum('bik,lk,bjl->bij', b, k_mat, jnp.conj(b))
+            w = w - 2.0 * jnp.einsum('bi,bj->bij', s, jnp.conj(s))
+            out.append((v / p) * jnp.real(w))
+        return tuple(out)
 
     # Scalars and vectors that multiply the outer products inside W_r.
     k_p = jnp.einsum('lk,kl->', k_mat, p_ij)
@@ -776,16 +820,24 @@ def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
     xs = point_inputs(batch)
     if REMAT_W:
         def primal(args):
-            v, small, _, _ = _point_state(lay, mats, *args)
+            v, small, _, _, _ = _point_state(lay, mats, *args)
             return v, small
 
-        # W comes again from FP64 sections, so the linearization keeps only
+        # W comes again from the sections, so the linearization keeps only
         # v and the per-point values, and not W for every point.
         @jax.checkpoint
         def tangent(args):
-            (z, restriction, _omega, *_), v, small = args
-            sig, dsig = section_vectors(lay, z)
-            return volume_tangent(_block_weights(sig, dsig, small, restriction, v), dmats)
+            (z, restriction, _omega, *extra), v, small = args
+            if W_CENTERED:
+                point = _dd_point(extra) if END_DD else None
+                sig, dsig, sig_fp, _ = _section_vectors(
+                    lay, z, z_dd=None if point is None else point[0])
+                b_fp = _centered_dd(small[4], small[5], sig, dsig)
+                weights = _block_weights(sig_fp, None, small, restriction, v, b_fp)
+            else:
+                sig, dsig = section_vectors(lay, z)
+                weights = _block_weights(sig, dsig, small, restriction, v)
+            return volume_tangent(weights, dmats)
 
         v, small = run(primal, xs)
         dv = run(tangent, (xs, v, small))
