@@ -145,6 +145,10 @@ def main():
                          'its Gram condition number reaches 4.5e5 at k = 24 and '
                          'enters twice, because h is quadratic in the sections. '
                          'The change is an exact reparametrization.')
+    ap.add_argument('--whiten-file', type=str, default=None,
+                    help='with --whiten: load W and W^-1 from this file, which a '
+                         'whitened fit saves beside its theta, instead of a new '
+                         'Gram. W moves between processes by 2.5e-9 at k = 32.')
     ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS,
                     help='lines for the Gram sample; each line gives 4 points')
     ap.add_argument('--gram-seed', type=int, default=whiten.GRAM_SEED,
@@ -228,7 +232,10 @@ def main():
         ap.error('--h-base needs exactly one --k and --prepare-dd')
 
     for k in args.k:
-        if args.whiten:
+        if args.whiten and args.whiten_file is not None:
+            lay = whiten.load_layout(k, args.whiten_file)
+            print(f"    k={k}: whitened basis from {args.whiten_file}")
+        elif args.whiten:
             t0 = time.perf_counter()
             lay = whiten.whitened_layout(k, n_pairs=args.gram_pairs,
                                          seed=args.gram_seed)
@@ -367,6 +374,8 @@ def main():
                   f"J shape = {record['cond']['shape']}")
 
         np.save(out_dir / f"theta_k{k}_seed{args.seed}.npy", np.asarray(theta))
+        if args.whiten:
+            whiten.save_whitening(lay, out_dir / f"whiten_k{k}_seed{args.seed}.npz")
         (out_dir / f"theta_k{k}_seed{args.seed}.basis").write_text(basis_id + "\n")
         (out_dir / f"fit_k{k}_seed{args.seed}.json").write_text(
             json.dumps(record, indent=2))

@@ -40,6 +40,8 @@ def main():
     ap.add_argument('--theta', type=str, required=True)
     ap.add_argument('--h-base', type=str, default=None)
     ap.add_argument('--whiten', action='store_true')
+    ap.add_argument('--whiten-file', type=str, default=None,
+                    help='W and W^-1 saved by a whitened fit, in place of a new Gram')
     ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
     ap.add_argument('--gram-seed', type=int, default=whiten.GRAM_SEED)
     ap.add_argument('--n-eval', type=int, default=8_000_000)
@@ -58,8 +60,12 @@ def main():
     sections.PREPARE_DD = True
 
     plain = sections.layout(args.k)
-    lay = (whiten.whitened_layout(args.k, n_pairs=args.gram_pairs, seed=args.gram_seed)
-           if args.whiten else plain)
+    if args.whiten and args.whiten_file is not None:
+        lay = whiten.load_layout(args.k, args.whiten_file)
+    elif args.whiten:
+        lay = whiten.whitened_layout(args.k, n_pairs=args.gram_pairs, seed=args.gram_seed)
+    else:
+        lay = plain
     theta = jnp.asarray(np.load(args.theta))
     side = Path(args.theta).with_suffix('.basis')
     if not side.exists() or side.read_text().strip() != lay.fingerprint():

@@ -272,6 +272,8 @@ def main():
                          'between processes.')
     ap.add_argument('--no-whiten', action='store_true',
                     help='leave out the whitened family')
+    ap.add_argument('--whiten-file', type=str, default=None,
+                    help='W and W^-1 saved by a whitened fit, in place of a new Gram')
     ap.add_argument('--gram-pairs', type=int, default=whiten.GRAM_PAIRS)
     ap.add_argument('--gram-seed', type=int, default=whiten.GRAM_SEED)
     ap.add_argument('--out', type=str, default='runs_modeltest')
@@ -308,7 +310,9 @@ def main():
         base = np.asarray(np.load(args.h_base))
         sections.H_BASE = jax.jit(lambda t: sections.base_matrices(lay_p, t))(
             jnp.asarray(base))
-        if args.correction_whitened:
+        if args.correction_whitened and args.whiten_file is not None:
+            lay_c = whiten.load_layout(args.k, args.whiten_file)
+        elif args.correction_whitened:
             lay_c = whiten.whitened_layout(args.k, n_pairs=args.gram_pairs,
                                            seed=args.gram_seed)
     theta_saved = None

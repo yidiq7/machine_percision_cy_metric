@@ -29,7 +29,8 @@ import jax.numpy as jnp
 
 from . import blocks
 
-__all__ = ['gram_matrices', 'whitening_matrices', 'whitened_layout',
+__all__ = ['gram_matrices', 'whitening_matrices', 'whitened_layout', 'save_whitening',
+           'load_layout',
            'GRAM_SEED', 'GRAM_PAIRS']
 
 # The sample that defines the convention. Report both with h.
@@ -136,3 +137,22 @@ def whitened_layout(k, n_pairs=GRAM_PAIRS, seed=GRAM_SEED, batch=None,
     grams = gram_matrices(plain, batch, chunk=chunk)
     return sections.layout(k, struct=plain.structure,
                            whiten=whitening_matrices(grams), gram_id=tag)
+
+
+def save_whitening(lay, path):
+    """Save W and W^-1 of a whitened layout. W moves between processes by approximately
+    2.5e-9 at k = 32, because the GPU Gram carries noise of 1e-16 and cond(G) is 4e7."""
+    arrays = {f'w{i}': np.asarray(m) for i, m in enumerate(lay.whiten_fwd)}
+    arrays.update({f'winv{i}': np.asarray(m) for i, m in enumerate(lay.whiten_inv)})
+    np.savez(path, gram_id=np.array(lay.gram_id), **arrays)
+
+
+def load_layout(k, path):
+    """The whitened layout at degree k with the W and W^-1 of `save_whitening`."""
+    from . import blocks, sections
+    data = np.load(path)
+    n = len([key for key in data.files if key.startswith('winv')])
+    w = tuple(data[f'w{i}'] for i in range(n))
+    w_inv = tuple(data[f'winv{i}'] for i in range(n))
+    return sections.layout(k, struct=blocks.build(k), whiten=(w, w_inv),
+                           gram_id=str(data['gram_id']))

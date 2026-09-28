@@ -569,6 +569,21 @@ def test_j_rows_gives_the_same_jacobian():
         f"{tag} {val:.1e}" for tag, val in rel.items()))
 
 
+def test_saved_whitening_repeats_the_layout():
+    """A layout from saved W must have the fingerprint and the H of the original."""
+    import tempfile
+    lay = whiten.whitened_layout(6, n_pairs=1500, seed=4242)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'w.npz'
+        whiten.save_whitening(lay, path)
+        again = whiten.load_layout(6, path)
+    theta = perturbed_theta(lay, 6)
+    worst = max(float(jnp.abs(a - b).max())
+                for a, b in zip(sections.prepare_fp(lay, theta), sections.prepare_fp(again, theta)))
+    assert again.fingerprint() == lay.fingerprint() and worst == 0.0, (worst,)
+    print(f"  the saved whitening gives the fingerprint {again.fingerprint()} and the same H")
+
+
 if __name__ == '__main__':
     for fn in (test_dd_agrees_where_fp64_is_accurate,
                test_each_entry_is_rounded_once,
@@ -594,7 +609,8 @@ if __name__ == '__main__':
                test_residual_at_the_base,
                test_base_with_a_whitened_correction,
                test_w_centered_gives_the_same_jacobian,
-               test_j_rows_gives_the_same_jacobian):
+               test_j_rows_gives_the_same_jacobian,
+               test_saved_whitening_repeats_the_layout):
         print(fn.__name__)
         fn()
     print('\nall prepare tests pass')

@@ -81,6 +81,7 @@ class Layout:
     structure: blocks.Structure
     scale: np.ndarray
     whiten_inv: tuple = ()   # (d, d) per orbit, G^1/2; empty means no whitening
+    whiten_fwd: tuple = ()   # (d, d) per orbit, W = G^-1/2, kept so that it can be saved
     gram_id: str = 'none'    # names the Gram sample, for the fingerprint
 
     def fingerprint(self):
@@ -139,9 +140,10 @@ def layout(k, struct=None, normalize=True, whiten=None, gram_id='none'):
             whiten=w_group,
         ))
     inv = tuple(w_inv) if w_inv is not None else ()
+    fwd = tuple(w_fwd) if w_fwd is not None else ()
     lay = Layout(k=k, groups=tuple(groups), n_theta=struct.n_theta,
                  structure=struct, scale=np.ones(struct.n_theta),
-                 whiten_inv=inv, gram_id=gram_id)
+                 whiten_inv=inv, whiten_fwd=fwd, gram_id=gram_id)
     if not normalize:
         return lay
     # One global scale, from the largest raw component. See `Layout`.
@@ -149,7 +151,7 @@ def layout(k, struct=None, normalize=True, whiten=None, gram_id='none'):
     largest = float(np.abs(raw).max())
     scale = np.full(struct.n_theta, largest if largest > 0 else 1.0)
     return Layout(k=k, groups=lay.groups, n_theta=lay.n_theta,
-                  structure=struct, scale=scale, whiten_inv=inv,
+                  structure=struct, scale=scale, whiten_inv=inv, whiten_fwd=fwd,
                   gram_id=gram_id)
 
 
