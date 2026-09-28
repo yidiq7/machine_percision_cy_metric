@@ -118,6 +118,10 @@ def main():
                     help='form W, which carries J, from the centered vectors b. '
                          'The expanded form cancels by about (k/abs(z_a))^2 at '
                          'points with a small coordinate. It needs --gram-dd on.')
+    ap.add_argument('--j-rows', action='store_true',
+                    help='form J from one row for each point, from W rot^T sigma '
+                         'and W rot^T b in dd, and not from an FP64 tangent dH. '
+                         'It needs --end-dd.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -191,8 +195,11 @@ def main():
     analytic.END_DD = args.end_dd
     analytic.REMAT_W = args.remat_w
     analytic.W_CENTERED = args.w_centered
+    analytic.J_ROWS = args.j_rows
     if args.w_centered and args.gram_dd != 'on':
         raise SystemExit('--w-centered needs --gram-dd on')
+    if args.j_rows and not args.end_dd:
+        raise SystemExit('--j-rows needs --end-dd')
     if args.end_dd and not args.h_low:
         raise SystemExit('--end-dd needs --h-low, which needs --prepare-dd and '
                          '--gram-dd on')
@@ -336,6 +343,7 @@ def main():
                   'end_dd': bool(args.end_dd),
                   'remat_w': bool(args.remat_w),
                   'w_centered': bool(args.w_centered),
+                  'j_rows': bool(args.j_rows),
                   'sigma_path': 'analytic.volume_at, in the arithmetic of the '
                                 'fit; mape_check uses complex_hessian in FP64',
                   'mape_fit_check': rep_fit['mape_check'],

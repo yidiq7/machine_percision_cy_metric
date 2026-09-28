@@ -214,7 +214,7 @@ def _with_flags(fn, **flags):
     """Run fn with module flags set, and put them back after it."""
     owners = {'GRAM_DD': analytic, 'SECTION_DD': analytic, 'H_LOW': analytic,
               'PHI_DD': analytic, 'END_DD': analytic, 'REMAT_W': analytic,
-              'W_CENTERED': analytic, 'PREPARE_DD': sections}
+              'W_CENTERED': analytic, 'J_ROWS': analytic, 'PREPARE_DD': sections}
     old = {name: getattr(owners[name], name) for name in flags}
     try:
         for name, value in flags.items():
@@ -538,6 +538,37 @@ def test_w_centered_gives_the_same_jacobian():
         f"{tag} {a:.1e}, {b:.1e}" for tag, (a, b) in rel.items()))
 
 
+def test_j_rows_gives_the_same_jacobian():
+    """J from rows of tau and beta must give the J of the tangent map, in every basis."""
+    flags = dict(GRAM_DD=True, H_LOW=True, PREPARE_DD=True, END_DD=True)
+    batch = _end_batch()
+    plain = sections.layout(6)
+    white = whiten.whitened_layout(6, n_pairs=1500, seed=4242)
+
+    def jac(lay, theta):
+        return jax.jacfwd(lambda t: analytic.weighted_residual_fast(lay, t, batch, 60))(theta)
+
+    rel = {}
+    for tag, lay in (('plain', plain), ('whitened', white)):
+        theta = perturbed_theta(lay, 6)
+        want = _with_flags(lambda: jac(lay, theta), **flags)
+        got = _with_flags(lambda: jac(lay, theta), J_ROWS=True, **flags)
+        rel[tag] = float(jnp.abs(got - want).max() / jnp.abs(want).max())
+    base = sections.base_matrices(plain, perturbed_theta(plain, 7))
+    corr = jnp.asarray(np.random.default_rng(8).normal(size=white.n_theta)) * 1e-6
+    want = _with_base(base, lambda: _with_flags(lambda: jac(white, corr), **flags))
+    got = _with_base(base, lambda: _with_flags(lambda: jac(white, corr), J_ROWS=True, **flags))
+    rel['whitened correction on a base'] = float(jnp.abs(got - want).max()
+                                                 / jnp.abs(want).max())
+    auto = jax.jacfwd(lambda t: metric.weighted_residual(plain, t, BATCH, 60))(
+        perturbed_theta(plain, 6))
+    rows = _with_flags(lambda: jac(plain, perturbed_theta(plain, 6)), J_ROWS=True, **flags)
+    rel['plain against autodiff'] = float(jnp.abs(rows - auto).max() / jnp.abs(auto).max())
+    assert all(val < 1e-12 for val in rel.values()), rel
+    print("  J_ROWS against the tangent map: " + '; '.join(
+        f"{tag} {val:.1e}" for tag, val in rel.items()))
+
+
 if __name__ == '__main__':
     for fn in (test_dd_agrees_where_fp64_is_accurate,
                test_each_entry_is_rounded_once,
@@ -562,7 +593,8 @@ if __name__ == '__main__':
                test_base_keeps_the_tangent_and_the_fp64_path,
                test_residual_at_the_base,
                test_base_with_a_whitened_correction,
-               test_w_centered_gives_the_same_jacobian):
+               test_w_centered_gives_the_same_jacobian,
+               test_j_rows_gives_the_same_jacobian):
         print(fn.__name__)
         fn()
     print('\nall prepare tests pass')

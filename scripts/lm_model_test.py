@@ -255,6 +255,8 @@ def main():
                     help='the whole path in dd from dd points, as in run_fit.py')
     ap.add_argument('--w-centered', action='store_true',
                     help='form W from the centered vectors, as in run_fit.py')
+    ap.add_argument('--j-rows', action='store_true',
+                    help='form J from one row for each point, as in run_fit.py')
     ap.add_argument('--remat-w', action='store_true',
                     help='form W again in the tangent pass, as in run_fit.py, so '
                          'that the control legs fit in memory at k = 32')
@@ -287,6 +289,7 @@ def main():
     analytic.END_DD = args.end_dd
     analytic.REMAT_W = args.remat_w
     analytic.W_CENTERED = args.w_centered
+    analytic.J_ROWS = args.j_rows
     if args.section_dd and args.gram_dd != 'on':
         raise SystemExit('--section-dd needs --gram-dd on')
     if args.end_dd and not (args.h_low and args.prepare_dd and args.gram_dd == 'on'):

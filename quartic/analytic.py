@@ -29,7 +29,7 @@ from . import dd, sections
 
 __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
            'phi_analytic', 'EXACT_MUL', 'H_LOW', 'PHI_DD', 'END_DD', 'REMAT_W',
-           'W_CENTERED',
+           'W_CENTERED', 'J_ROWS',
            'point_matrices', 'point_inputs',
            'volume_at', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
@@ -99,6 +99,11 @@ REMAT_W = False
 # 2 sigma sigma^*). The expanded form cancels by about (k/abs(z_a))^2 at points
 # with a small coordinate. It needs GRAM_DD = True, and dd sections for full effect.
 W_CENTERED = False
+
+# J from one row dv/dtheta for each point, formed from tau = W rot^T sigma and
+# beta = W rot^T b in dd. No FP64 dH enters, whose whitened form W B W carries a
+# dynamic range of cond(W)^2. It needs END_DD.
+J_ROWS = False
 
 
 def _dd_sections():
@@ -511,7 +516,8 @@ def _phi_stage5_dd(extras, sig, dsig, keep=False, with_b=False):
 
     `extras` holds p, p_i and the products H sigma, H dsigma of the Gram stage
     as dd. sigma and dsigma are dd with `SECTION_DD`, and FP64 otherwise.
-    `with_b` also returns the centered vectors b of each group, rounded to FP64.
+    `with_b` also returns the centered vectors b of each group, rounded to FP64,
+    or in dd if it is 'dd'.
     """
     p, p_i, store = extras
     inv_p = dd.reciprocal(p)
@@ -525,7 +531,7 @@ def _phi_stage5_dd(extras, sig, dsig, keep=False, with_b=False):
         col = (slice(None), slice(None), None)
         b = dd.csub(ds, _cmul(_cindex(s, *col), ratio))            # (blocks, d, 4)
         if with_b:
-            bs.append(dd.cto_fp(b))
+            bs.append(b if with_b == 'dd' else dd.cto_fp(b))
         h_b = dd.csub(h_d, _cmul(_cindex(h_s, *col), ratio))
         b_conj = (b[0], dd.neg(b[1]))
         # phi[k, l] = sum over blocks and d of conj(b_l) H b_k, as in FP64.
@@ -745,6 +751,50 @@ def _block_weights(sig_fp, dsig_fp, small, restriction, v, b_fp=None):
     return tuple(weights)
 
 
+def _mat_t_vec_dd(mat, vec):
+    """sum over i of mat[b, i, j] vec[b, i, ...], for FP64 mat and complex dd vec."""
+    def part(x):
+        extra = x[0].ndim - 2
+        m = jnp.reshape(mat, mat.shape + (1,) * extra)                  # (b, i, j, ...)
+        xs = (x[0][:, :, None], x[1][:, :, None])                       # (b, i, 1, ...)
+        return dd.dot_dd_fp(xs, m, axis=1)
+    return part(vec[0]), part(vec[1])
+
+
+def _volume_and_row(lay, mats, z, restriction, omega, *extra):
+    """v at one point and the whole row dv/dtheta, from tau and beta in dd.
+
+    p_b = tau_b^* H_white tau_b with tau_b = W rot_b^T sigma_b, so the row of an
+    orbit is scale <B_a, sum_b (v/p) Re(beta K beta^* - 2 tau tau^*)>.
+    """
+    if not (END_DD and GRAM_DD is True):
+        raise ValueError('J_ROWS needs END_DD and GRAM_DD = True')
+    z_dd, m, free = _dd_point(extra)
+    sig, dsig, _, _ = _section_vectors(lay, z, z_dd=z_dd)
+    p, _, _, _, extras = _gram_parts(lay, mats, sig, dsig)
+    phi_dd, b_dd = _phi_stage5_dd(extras, sig, dsig, keep=True, with_b='dd')
+    phi = dd.cto_fp(phi_dd)
+    v = _volume_from_phi_dd(phi_dd, z_dd, m, free)
+    g = restriction @ phi @ jnp.conj(restriction).T
+    k_mat = jnp.conj(restriction).T @ jnp.linalg.inv(g) @ restriction   # (4, 4)
+
+    row = jnp.zeros((lay.n_theta,), jnp.float64)
+    for g_layout, s, b in zip(lay.groups, sig, b_dd):
+        rot = jnp.asarray(g_layout.rot)
+        white = jnp.asarray(g_layout.whiten)[jnp.asarray(g_layout.orbit_of)]
+        tau = dd.cto_fp(_mat_t_vec_dd(white, _mat_t_vec_dd(rot, s)))       # (b, d)
+        beta = dd.cto_fp(_mat_t_vec_dd(white, _mat_t_vec_dd(rot, b)))      # (b, d, 4)
+        w = jnp.einsum('bik,lk,bjl->bij', beta, k_mat, jnp.conj(beta))
+        w = w - 2.0 * jnp.einsum('bi,bj->bij', tau, jnp.conj(tau))
+        w = (v / p) * jnp.real(w)
+        for local, sl in enumerate(g_layout.slices):
+            take = jnp.asarray(g_layout.orbit_of == local)
+            summed = jnp.sum(jnp.where(take[:, None, None], w, 0.0), axis=0)
+            basis = jnp.asarray(g_layout.basis[local, :sl.stop - sl.start])
+            row = row.at[sl].add(jnp.einsum('aij,ij->a', basis, summed))
+    return v, row * jnp.asarray(lay.scale)
+
+
 def volume_tangent(weights, dmats):
     """dv along one direction, from the block matrices of that direction.
 
@@ -818,7 +868,13 @@ def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
                 else jax.lax.map(fn, inputs, batch_size=chunk))
 
     xs = point_inputs(batch)
-    if REMAT_W:
+    if J_ROWS:
+        def one_row(args):
+            v, row = _volume_and_row(lay, mats, *args)
+            return v, jnp.dot(row, dtheta)
+
+        v, dv = run(one_row, xs)
+    elif REMAT_W:
         def primal(args):
             v, small, _, _, _ = _point_state(lay, mats, *args)
             return v, small
