@@ -123,8 +123,9 @@ def volumes_fit(lay, theta, batch, chunk=100_000, block=4096):
         return jax.lax.map(lambda a: analytic.volume_at(lay, mats, *a), xs,
                            batch_size=min(block, xs[0].shape[0]))
 
-    return jnp.concatenate([piece(*(x[s] for x in inputs))
-                            for s in _chunks(n, chunk)])
+    pieces = [piece(*(x[s] for x in inputs)) for s in _chunks(n, chunk)]
+    # With analytic.F_DD each piece is a dd pair (hi, lo).
+    return jax.tree_util.tree_map(lambda *xs: jnp.concatenate(xs), *pieces)
 
 
 def report(lay, theta, batch, chunk=100_000, block=4096):
@@ -140,7 +141,7 @@ def report(lay, theta, batch, chunk=100_000, block=4096):
     """
     v = volumes_fit(lay, theta, batch, chunk, block)
     weights = batch['mass'] / jnp.sum(batch['mass'])
-    f = v / jnp.sum(weights * v) - 1.0
+    f = analytic.residual_from_volumes(v, weights)
 
     mats = sections.prepare(lay, theta)
 

@@ -214,7 +214,8 @@ def _with_flags(fn, **flags):
     """Run fn with module flags set, and put them back after it."""
     owners = {'GRAM_DD': analytic, 'SECTION_DD': analytic, 'H_LOW': analytic,
               'PHI_DD': analytic, 'END_DD': analytic, 'REMAT_W': analytic,
-              'W_CENTERED': analytic, 'J_ROWS': analytic, 'PREPARE_DD': sections}
+              'W_CENTERED': analytic, 'J_ROWS': analytic, 'F_DD': analytic,
+              'PREPARE_DD': sections}
     old = {name: getattr(owners[name], name) for name in flags}
     try:
         for name, value in flags.items():
@@ -584,6 +585,40 @@ def test_saved_whitening_repeats_the_layout():
     print(f"  the saved whitening gives the fingerprint {again.fingerprint()} and the same H")
 
 
+def test_f_dd_rounds_f_once():
+    """With F_DD, f must match the dd reference far below the FP64 rounding of v."""
+    from quartic import dd_metric
+    lay = sections.layout(6)
+    theta = perturbed_theta(lay, 6)
+    batch = _end_batch()
+    flags = dict(GRAM_DD=True, H_LOW=True, PREPARE_DD=True, END_DD=True)
+
+    def f_of():
+        return analytic.residual_analytic(lay, theta, batch, 60)
+
+    f_dd = np.asarray(_with_flags(f_of, F_DD=True, **flags))
+    f_fp = np.asarray(_with_flags(f_of, **flags))
+    parts = _with_flags(lambda: analytic.point_matrices(lay, theta), **flags)
+
+    def ref(h, l, row):
+        z_dd = ((jnp.real(h), jnp.real(l)), (jnp.imag(h), jnp.imag(l)))
+        return dd_metric.volume_dd(lay, parts, z_dd, row[0], (row[1], row[2]))
+
+    v_ref = jax.jit(jax.vmap(ref))(batch['points_hi'], batch['points_lo'], batch['patch'])
+    weights = batch['mass'] / jnp.sum(batch['mass'])
+    f_ref = np.asarray(analytic.residual_from_volumes(v_ref, weights))
+    gap_dd = float(np.abs(f_dd - f_ref).max())
+    gap_fp = float(np.abs(f_fp - f_ref).max())
+    jac = _with_flags(lambda: jax.jacfwd(
+        lambda t: analytic.weighted_residual_fast(lay, t, batch, 60))(theta), F_DD=True,
+        J_ROWS=True, **flags)
+    auto = jax.jacfwd(lambda t: metric.weighted_residual(lay, t, BATCH, 60))(theta)
+    rel = float(jnp.abs(jac - auto).max() / jnp.abs(auto).max())
+    assert gap_dd < 1e-20 and gap_fp > 1e-18 and rel < 1e-12, (gap_dd, gap_fp, rel)
+    print(f"  f against the dd reference: {gap_dd:.1e} with F_DD, {gap_fp:.1e} with v "
+          f"rounded first; J with F_DD against autodiff {rel:.1e}")
+
+
 if __name__ == '__main__':
     for fn in (test_dd_agrees_where_fp64_is_accurate,
                test_each_entry_is_rounded_once,
@@ -610,7 +645,8 @@ if __name__ == '__main__':
                test_base_with_a_whitened_correction,
                test_w_centered_gives_the_same_jacobian,
                test_j_rows_gives_the_same_jacobian,
-               test_saved_whitening_repeats_the_layout):
+               test_saved_whitening_repeats_the_layout,
+               test_f_dd_rounds_f_once):
         print(fn.__name__)
         fn()
     print('\nall prepare tests pass')

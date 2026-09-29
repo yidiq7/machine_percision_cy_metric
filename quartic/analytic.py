@@ -29,7 +29,7 @@ from . import dd, sections
 
 __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
            'phi_analytic', 'EXACT_MUL', 'H_LOW', 'PHI_DD', 'END_DD', 'REMAT_W',
-           'W_CENTERED', 'J_ROWS',
+           'W_CENTERED', 'J_ROWS', 'F_DD',
            'point_matrices', 'point_inputs',
            'volume_at', 'volumes_analytic',
            'residual_analytic', 'weighted_residual_analytic',
@@ -104,6 +104,10 @@ W_CENTERED = False
 # beta = W rot^T b in dd. No FP64 dH enters, whose whitened form W B W carries a
 # dynamic range of cond(W)^2. It needs END_DD.
 J_ROWS = False
+
+# f = v/<v> - 1 in dd from v as a dd pair, rounded once. With v rounded first,
+# f carries 1e-16 of absolute noise, 7e-4 of norm(r) at k = 32. It needs END_DD.
+F_DD = False
 
 
 def _dd_sections():
@@ -626,7 +630,7 @@ def volume_at(lay, mats, z, restriction, omega, *extra):
         sig, dsig, _, _ = _section_vectors(lay, z, z_dd=z_dd)
         extras = _gram_parts(lay, mats, sig, dsig)[4]
         return _volume_from_phi_dd(_phi_stage5_dd(extras, sig, dsig, keep=True),
-                                   z_dd, m, free)
+                                   z_dd, m, free, keep=F_DD)
     phi, _ = phi_analytic(lay, mats, z)
     g = restriction @ phi @ jnp.conj(restriction).T
     return jnp.real(jnp.linalg.det(g)) / omega
@@ -645,11 +649,25 @@ def volumes_analytic(lay, theta, batch, chunk=None):
     return jax.lax.map(one, xs, batch_size=chunk)
 
 
+def _fp(v):
+    """v in FP64, from an FP64 array or a dd pair."""
+    return dd.to_fp(v) if isinstance(v, tuple) else v
+
+
+def residual_from_volumes(v, weights):
+    """f = v/<v> - 1 from v in FP64, or from a dd pair in dd with f rounded once."""
+    if not isinstance(v, tuple):
+        return v / jnp.sum(weights * v) - 1.0
+    mean = dd.dot_dd_fp(v, weights, axis=0)
+    ratio = dd.mul(v, dd.reciprocal(mean))
+    return dd.to_fp(dd.add(ratio, dd.to_dd(-jnp.ones_like(v[0]))))
+
+
 def residual_analytic(lay, theta, batch, chunk=None):
     """f = v/<v> - 1, with v from `volumes_analytic`."""
     v = volumes_analytic(lay, theta, batch, chunk)
     weights = batch['mass'] / jnp.sum(batch['mass'])
-    return v / jnp.sum(weights * v) - 1.0
+    return residual_from_volumes(v, weights)
 
 
 def weighted_residual_analytic(lay, theta, batch, chunk=None):
@@ -673,7 +691,7 @@ def volume_and_weights(lay, mats, z, restriction, omega, *extra):
     """
     v, small, sig_fp, dsig_fp, b_fp = _point_state(lay, mats, z, restriction, omega,
                                                    *extra)
-    return v, _block_weights(sig_fp, dsig_fp, small, restriction, v, b_fp)
+    return v, _block_weights(sig_fp, dsig_fp, small, restriction, _fp(v), b_fp)
 
 
 def _point_state(lay, mats, z, restriction, omega, *extra):
@@ -690,7 +708,7 @@ def _point_state(lay, mats, z, restriction, omega, *extra):
         phi = dd.cto_fp(phi_dd)
         # LM takes v as the residual, so it comes from the dd chain. W only
         # enters J, so FP64 is enough there.
-        v = _volume_from_phi_dd(phi_dd, *point)
+        v = _volume_from_phi_dd(phi_dd, *point, keep=F_DD)
     else:
         if PHI_DD:
             # v must be the accurate one, because LM takes it as the residual.
@@ -789,7 +807,8 @@ def _volume_and_row(lay, mats, z, restriction, omega, *extra, rots=None):
     p, _, _, _, extras = _gram_parts(lay, mats, sig, dsig)
     phi_dd, b_dd = _phi_stage5_dd(extras, sig, dsig, keep=True, with_b='dd')
     phi = dd.cto_fp(phi_dd)
-    v = _volume_from_phi_dd(phi_dd, z_dd, m, free)
+    v_out = _volume_from_phi_dd(phi_dd, z_dd, m, free, keep=F_DD)
+    v = _fp(v_out)
     g = restriction @ phi @ jnp.conj(restriction).T
     k_mat = jnp.conj(restriction).T @ jnp.linalg.inv(g) @ restriction   # (4, 4)
 
@@ -808,7 +827,7 @@ def _volume_and_row(lay, mats, z, restriction, omega, *extra, rots=None):
             summed = jnp.sum(jnp.where(take[:, None, None], w, 0.0), axis=0)
             basis = jnp.asarray(g_layout.basis[local, :sl.stop - sl.start])
             row = row.at[sl].add(jnp.einsum('aij,ij->a', basis, summed))
-    return v, row * jnp.asarray(lay.scale)
+    return v_out, row * jnp.asarray(lay.scale)
 
 
 def volume_tangent(weights, dmats):
@@ -907,10 +926,10 @@ def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
                 sig, dsig, sig_fp, _ = _section_vectors(
                     lay, z, z_dd=None if point is None else point[0])
                 b_fp = _centered_dd(small[4], small[5], sig, dsig)
-                weights = _block_weights(sig_fp, None, small, restriction, v, b_fp)
+                weights = _block_weights(sig_fp, None, small, restriction, _fp(v), b_fp)
             else:
                 sig, dsig = section_vectors(lay, z)
-                weights = _block_weights(sig, dsig, small, restriction, v)
+                weights = _block_weights(sig, dsig, small, restriction, _fp(v))
             return volume_tangent(weights, dmats)
 
         v, small = run(primal, xs)
@@ -919,7 +938,9 @@ def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
         v, dv = run(one, xs)
 
     weights = batch['mass'] / jnp.sum(batch['mass'])
+    f = residual_from_volumes(v, weights)
+    v = _fp(v)
     mean = jnp.sum(weights * v)
     d_mean = jnp.sum(weights * dv)
     root = jnp.sqrt(weights)
-    return root * (v / mean - 1.0), root * (dv / mean - v * d_mean / mean ** 2)
+    return root * f, root * (dv / mean - v * d_mean / mean ** 2)

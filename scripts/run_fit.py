@@ -118,6 +118,10 @@ def main():
                     help='form W, which carries J, from the centered vectors b. '
                          'The expanded form cancels by about (k/abs(z_a))^2 at '
                          'points with a small coordinate. It needs --gram-dd on.')
+    ap.add_argument('--f-dd', action='store_true',
+                    help='form f = v/<v> - 1 in dd from v as a dd pair. With v '
+                         'rounded first, f carries 1e-16 of absolute noise, 7e-4 '
+                         'of norm(r) at k = 32. It needs --end-dd.')
     ap.add_argument('--j-rows', action='store_true',
                     help='form J from one row for each point, from W rot^T sigma '
                          'and W rot^T b in dd, and not from an FP64 tangent dH. '
@@ -209,11 +213,14 @@ def main():
     analytic.REMAT_W = args.remat_w
     analytic.W_CENTERED = args.w_centered
     analytic.J_ROWS = args.j_rows
+    analytic.F_DD = args.f_dd
     fit.RIDGE = args.ridge
     if args.w_centered and args.gram_dd != 'on':
         raise SystemExit('--w-centered needs --gram-dd on')
     if args.j_rows and not args.end_dd:
         raise SystemExit('--j-rows needs --end-dd')
+    if args.f_dd and not args.end_dd:
+        raise SystemExit('--f-dd needs --end-dd')
     if args.end_dd and not args.h_low:
         raise SystemExit('--end-dd needs --h-low, which needs --prepare-dd and '
                          '--gram-dd on')
@@ -362,6 +369,7 @@ def main():
                   'remat_w': bool(args.remat_w),
                   'w_centered': bool(args.w_centered),
                   'j_rows': bool(args.j_rows),
+                  'f_dd': bool(args.f_dd),
                   'ridge': float(args.ridge),
                   'sigma_path': 'analytic.volume_at, in the arithmetic of the '
                                 'fit; mape_check uses complex_hessian in FP64',
