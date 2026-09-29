@@ -179,6 +179,8 @@ def main():
                          'where the residual stops falling. Two exact '
                          'reparametrizations of the same h then stop 6.6 times '
                          'apart in sigma at k = 28.')
+    ap.add_argument('--verbose', action='store_true',
+                    help='print the loss and the step size of LM at every step')
     ap.add_argument('--dry-run', action='store_true',
                     help='size the block and report the memory, then stop')
     ap.add_argument('--cond', action='store_true', help='also measure cond(J)')
@@ -329,7 +331,8 @@ def main():
                                chunk=fit_chunk, analytic_jac=analytic_jac,
                                rcond=args.rcond,
                                best_so_far=args.run_to_limit,
-                               theta_unit=args.theta_unit, **tols)
+                               theta_unit=args.theta_unit, verbose=args.verbose,
+                               **tols)
         rep = metric.report(lay, theta, hold, chunk=args.chunk)
         # sigma on the fit set as well. The two together separate a fit that
         # stalls from a fit that lands on a different point of a flat valley:
