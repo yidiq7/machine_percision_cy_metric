@@ -28,14 +28,23 @@ import optimistix as optx
 from . import analytic, metric, sections
 
 __all__ = ['residual_fn', 'fit', 'condition_number', 'jacobian_memory',
-           'plan_fit', 'suggest_chunk', 'solve_memory', 'device_memory_gb']
+           'plan_fit', 'suggest_chunk', 'solve_memory', 'device_memory_gb', 'RIDGE']
+
+# A ridge mu on theta: the residual gets sqrt(mu) theta appended, so the loss
+# gains mu |theta|^2. With `sections.H_BASE`, theta is the correction from the base.
+RIDGE = 0.0
 
 
 def residual_fn(lay, batch, chunk, analytic_jac=True):
     """The weighted residual, either with the analytic rule or with autodiff."""
     if analytic_jac:
-        return lambda theta: analytic.weighted_residual_fast(lay, theta, batch, chunk)
-    return lambda theta: metric.weighted_residual(lay, theta, batch, chunk)
+        base = lambda theta: analytic.weighted_residual_fast(lay, theta, batch, chunk)
+    else:
+        base = lambda theta: metric.weighted_residual(lay, theta, batch, chunk)
+    if RIDGE <= 0.0:
+        return base
+    root = float(np.sqrt(RIDGE))
+    return lambda theta: jnp.concatenate([base(theta), root * theta])
 
 
 def device_memory_gb():

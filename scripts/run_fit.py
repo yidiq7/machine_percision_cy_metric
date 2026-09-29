@@ -122,6 +122,10 @@ def main():
                     help='form J from one row for each point, from W rot^T sigma '
                          'and W rot^T b in dd, and not from an FP64 tangent dH. '
                          'It needs --end-dd.')
+    ap.add_argument('--ridge', type=float, default=0.0,
+                    help='add mu |theta|^2 to the loss. With --h-base, theta is the '
+                         'correction, so the ridge keeps the fit near the base in '
+                         'the directions that the fit set determines poorly.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -200,6 +204,7 @@ def main():
     analytic.REMAT_W = args.remat_w
     analytic.W_CENTERED = args.w_centered
     analytic.J_ROWS = args.j_rows
+    fit.RIDGE = args.ridge
     if args.w_centered and args.gram_dd != 'on':
         raise SystemExit('--w-centered needs --gram-dd on')
     if args.j_rows and not args.end_dd:
@@ -351,6 +356,7 @@ def main():
                   'remat_w': bool(args.remat_w),
                   'w_centered': bool(args.w_centered),
                   'j_rows': bool(args.j_rows),
+                  'ridge': float(args.ridge),
                   'sigma_path': 'analytic.volume_at, in the arithmetic of the '
                                 'fit; mape_check uses complex_hessian in FP64',
                   'mape_fit_check': rep_fit['mape_check'],
