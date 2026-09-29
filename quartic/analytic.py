@@ -751,24 +751,39 @@ def _block_weights(sig_fp, dsig_fp, small, restriction, v, b_fp=None):
     return tuple(weights)
 
 
-def _mat_t_vec_dd(mat, vec):
-    """sum over i of mat[b, i, j] vec[b, i, ...], for FP64 mat and complex dd vec."""
+def whitened_rotations(lay):
+    """A_b = W rot_b^T for every block, as a dd pair for each group, so tau = A sigma."""
+    out = []
+    for g in lay.groups:
+        white = jnp.asarray(g.whiten)[jnp.asarray(g.orbit_of)]           # (b, j, k)
+        rot = jnp.asarray(g.rot)                                         # (b, i, k)
+        prod = dd.dot_dd_fp(dd.to_dd(white[:, :, None, :]), rot[:, None, :, :], axis=-1)
+        out.append(dd.two_sum(*prod))                                    # (b, j, i)
+    return tuple(out)
+
+
+def _apply_rotation_dd(pair, vec):
+    """sum over i of A[b, j, i] vec[b, i, c], for A a dd pair and vec complex dd."""
+    a_hi, a_lo = pair
+
     def part(x):
-        extra = x[0].ndim - 2
-        m = jnp.reshape(mat, mat.shape + (1,) * extra)                  # (b, i, j, ...)
-        xs = (x[0][:, :, None], x[1][:, :, None])                       # (b, i, 1, ...)
-        return dd.dot_dd_fp(xs, m, axis=1)
+        xs = (x[0][:, None], x[1][:, None])                              # (b, 1, i, c)
+        main = dd.dot_dd_fp(xs, a_hi[:, :, :, None], axis=2)             # (b, j, c)
+        # a_lo is 2^-53 of a_hi, so its product needs FP64 only.
+        return dd.add(main, dd.to_dd(jnp.einsum('bji,bic->bjc', a_lo, x[0])))
     return part(vec[0]), part(vec[1])
 
 
-def _volume_and_row(lay, mats, z, restriction, omega, *extra):
+def _volume_and_row(lay, mats, z, restriction, omega, *extra, rots=None):
     """v at one point and the whole row dv/dtheta, from tau and beta in dd.
 
     p_b = tau_b^* H_white tau_b with tau_b = W rot_b^T sigma_b, so the row of an
-    orbit is scale <B_a, sum_b (v/p) Re(beta K beta^* - 2 tau tau^*)>.
+    orbit is scale <B_a, sum_b (v/p) Re(beta K beta^* - 2 tau tau^*)>. `rots` is
+    `whitened_rotations(lay)`, formed once outside the loop over points.
     """
     if not (END_DD and GRAM_DD is True):
         raise ValueError('J_ROWS needs END_DD and GRAM_DD = True')
+    rots = whitened_rotations(lay) if rots is None else rots
     z_dd, m, free = _dd_point(extra)
     sig, dsig, _, _ = _section_vectors(lay, z, z_dd=z_dd)
     p, _, _, _, extras = _gram_parts(lay, mats, sig, dsig)
@@ -779,11 +794,12 @@ def _volume_and_row(lay, mats, z, restriction, omega, *extra):
     k_mat = jnp.conj(restriction).T @ jnp.linalg.inv(g) @ restriction   # (4, 4)
 
     row = jnp.zeros((lay.n_theta,), jnp.float64)
-    for g_layout, s, b in zip(lay.groups, sig, b_dd):
-        rot = jnp.asarray(g_layout.rot)
-        white = jnp.asarray(g_layout.whiten)[jnp.asarray(g_layout.orbit_of)]
-        tau = dd.cto_fp(_mat_t_vec_dd(white, _mat_t_vec_dd(rot, s)))       # (b, d)
-        beta = dd.cto_fp(_mat_t_vec_dd(white, _mat_t_vec_dd(rot, b)))      # (b, d, 4)
+    for g_layout, pair, s, b in zip(lay.groups, rots, sig, b_dd):
+        # sigma and the 4 columns of b as 5 columns, so one product serves both.
+        cols = tuple(tuple(jnp.concatenate([s[c][h][..., None], b[c][h]], axis=-1)
+                           for h in (0, 1)) for c in (0, 1))
+        both = dd.cto_fp(_apply_rotation_dd(pair, cols))                  # (b, d, 5)
+        tau, beta = both[..., 0], both[..., 1:]
         w = jnp.einsum('bik,lk,bjl->bij', beta, k_mat, jnp.conj(beta))
         w = w - 2.0 * jnp.einsum('bi,bj->bij', tau, jnp.conj(tau))
         w = (v / p) * jnp.real(w)
@@ -869,8 +885,10 @@ def _weighted_residual_fast_jvp(lay, batch, chunk, primals, tangents):
 
     xs = point_inputs(batch)
     if J_ROWS:
+        rots = whitened_rotations(lay)
+
         def one_row(args):
-            v, row = _volume_and_row(lay, mats, *args)
+            v, row = _volume_and_row(lay, mats, *args, rots=rots)
             return v, jnp.dot(row, dtheta)
 
         v, dv = run(one_row, xs)
