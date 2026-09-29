@@ -126,6 +126,11 @@ def main():
                     help='add mu |theta|^2 to the loss. With --h-base, theta is the '
                          'correction, so the ridge keeps the fit near the base in '
                          'the directions that the fit set determines poorly.')
+    ap.add_argument('--theta-unit', type=float, default=1.0,
+                    help='run LM in theta / S. LM starts at lambda = 1 in its own '
+                         'units, which is 1/S^2 for theta. At the k = 32 base, '
+                         'lambda near s_max^2 sits at the noise floor of the FP64 '
+                         'residual, and a refinement did not get past it.')
     ap.add_argument('--rcond', type=float, default=None,
                     help='rank cutoff for the LM step. None uses QR, which '
                          'fails once cond(J) passes 1/eps near k = 23. Set it '
@@ -316,7 +321,8 @@ def main():
                                max_steps=args.max_steps,
                                chunk=fit_chunk, analytic_jac=analytic_jac,
                                rcond=args.rcond,
-                               best_so_far=args.run_to_limit, **tols)
+                               best_so_far=args.run_to_limit,
+                               theta_unit=args.theta_unit, **tols)
         rep = metric.report(lay, theta, hold, chunk=args.chunk)
         # sigma on the fit set as well. The two together separate a fit that
         # stalls from a fit that lands on a different point of a flat valley:

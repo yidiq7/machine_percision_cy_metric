@@ -101,24 +101,28 @@ def solve_memory(lay, batch, chunk, theta=None, max_steps=200, rtol=1e-15,
 
 def fit(lay, batch, theta0=None, max_steps=200, rtol=1e-15, atol=1e-32,
         chunk=2000, analytic_jac=True, verbose=False, rcond=None,
-        best_so_far=False):
+        best_so_far=False, theta_unit=1.0):
     """Minimize the MSPE over theta. Returns the solution and its statistics.
 
     The convergence test of optimistix measures the step in theta, so it fires
     where the step is small and not where the residual stops falling. Two exact
     reparametrizations therefore stop at different residuals. `best_so_far` with
     rtol = atol = 0 removes that dependence, at the cost of every step.
+
+    LM runs in theta / `theta_unit`. It starts at lambda = 1 in its own units,
+    which is lambda = 1/theta_unit^2 for theta.
     """
     theta0 = sections.fubini_study_theta(lay) if theta0 is None else theta0
     residual = residual_fn(lay, batch, chunk, analytic_jac)
     solver = _solver(rtol, atol, verbose, rcond, best_so_far)
+    unit = float(theta_unit)
 
     start = time.perf_counter()
-    sol = optx.least_squares(lambda theta, args: residual(theta), solver, theta0,
+    sol = optx.least_squares(lambda q, args: residual(unit * q), solver, theta0 / unit,
                              max_steps=max_steps, throw=False)
     steps = int(sol.stats['num_steps'])
     # RESULTS has no readable name, so compare it and report the step limit too.
-    return sol.value, {
+    return unit * sol.value, {
         'steps': steps,
         'converged': bool(sol.result == optx.RESULTS.successful),
         'hit_max_steps': steps >= max_steps,
@@ -129,6 +133,7 @@ def fit(lay, batch, theta0=None, max_steps=200, rtol=1e-15, atol=1e-32,
         'best_so_far': best_so_far,
         'rtol': rtol,
         'atol': atol,
+        'theta_unit': unit,
         'seconds': time.perf_counter() - start,
     }
 
