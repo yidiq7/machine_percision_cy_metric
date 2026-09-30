@@ -103,9 +103,9 @@ def test_base_weight_at_fs_is_the_fs_weight():
         base = correction.psi_parts(lay_c, cmats, z, 1.5,
                                     *correction.base_state(lay0, mats0, z))
         fs = correction.psi_parts(lay_c, cmats, z, 6.0, *correction.fs_state(z))
-        along = [(b[0], f[0]), (r @ b[1], r @ f[1]),
-                 (r @ b[2] @ jnp.conj(r).T, r @ f[2] @ jnp.conj(r).T)]
-        worst = max(worst, *(rel(b, f) for b, f in along))
+        along = [(base[0], fs[0]), (r @ base[1], r @ fs[1]),
+                 (r @ base[2] @ jnp.conj(r).T, r @ fs[2] @ jnp.conj(r).T)]
+        worst = max(worst, *(rel(got, want) for got, want in along))
     assert worst < 1e-13, worst
     print(f"  base weight at theta_FS against the FS weight, along X: {worst:.2e}")
 
