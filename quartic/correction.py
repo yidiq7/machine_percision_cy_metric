@@ -31,7 +31,7 @@ from . import analytic, dd, sections
 __all__ = ['fs_state', 'base_state', 'psi_parts', 'add_level', 'states',
            'volume_corrected', 'volumes', 'residual_fn', 'base_state_dd',
            'volume_mixed', 'psi_hessian_dd', 'volume_mixed_dd', 'centered_fp',
-           'centered_dd', 'weights',
+           'centered_dd', 'weights', 'correction_row',
            'residual_fn_mixed', 'advance_mixed', 'chain_volume']
 
 
@@ -230,13 +230,53 @@ def weights(sig, bs, restriction, state, psi_ij, v, alpha):
     return tuple(out)
 
 
-def residual_fn_mixed(lay_c, batch, state, hi, chunk, alpha, dd_b=True, psi_dd=False):
+def correction_row(lay_c, rots, extra, restriction, state, hi, psi_ij, v, alpha):
+    """dv/dc at one point as one row, from tau = A sigma and beta = A b in dd.
+
+    A_b = W rot_b^T, as `analytic.whitened_rotations` forms it, so the row of an
+    orbit is <B_a, sum_b v exp(-alpha Phi) Re(beta K beta^* - alpha t tau tau^*)>
+    with t = tr(K ddbar Phi). The small parts of tau keep their digits, which
+    the contraction of FP64 block matrices with W loses at a small coordinate.
+    """
+    z_dd = analytic._dd_point(extra)[0]
+    sig, dsig = analytic.section_vectors_dd(lay_c, None, z_dd=z_dd)
+    unit = dd.to_dd(jnp.asarray(alpha, jnp.float64))
+    ratio = analytic._cindex((analytic._mul(hi[1][0], unit),
+                              analytic._mul(hi[1][1], unit)), None, None, slice(None))
+    pot, _, pot_ij = state
+    g = restriction @ (pot_ij + psi_ij) @ jnp.conj(restriction).T
+    k_mat = jnp.conj(restriction).T @ jnp.linalg.inv(g) @ restriction
+    trace = jnp.einsum('lk,kl->', k_mat, pot_ij)
+    scale = v * jnp.exp(-alpha * pot)
+    col = (slice(None), slice(None), None)
+    row = jnp.zeros((lay_c.n_theta,), jnp.float64)
+    for g_layout, pair, s_, ds in zip(lay_c.groups, rots, sig, dsig):
+        b = dd.csub(ds, analytic._cmul(analytic._cindex(s_, *col), ratio))
+        # sigma and the 4 columns of b as 5 columns, so one product serves both.
+        cols = tuple(tuple(jnp.concatenate([s_[c][h][..., None], b[c][h]], axis=-1)
+                           for h in (0, 1)) for c in (0, 1))
+        both = dd.cto_fp(analytic._apply_rotation_dd(pair, cols))          # (b, d, 5)
+        tau, beta = both[..., 0], both[..., 1:]
+        w = jnp.einsum('bik,lk,bjl->bij', beta, k_mat, jnp.conj(beta))
+        w = w - alpha * trace * jnp.einsum('bi,bj->bij', tau, jnp.conj(tau))
+        w = scale * jnp.real(w)
+        for local, sl in enumerate(g_layout.slices):
+            take = jnp.asarray(g_layout.orbit_of == local)
+            summed = jnp.sum(jnp.where(take[:, None, None], w, 0.0), axis=0)
+            basis = jnp.asarray(g_layout.basis[local, :sl.stop - sl.start])
+            row = row.at[sl].add(jnp.einsum('aij,ij->a', basis, summed))
+    return row * jnp.asarray(lay_c.scale)
+
+
+def residual_fn_mixed(lay_c, batch, state, hi, chunk, alpha, dd_b=True, psi_dd=False,
+                      j_rows=False):
     """sqrt(w) f with v and f in dd, and an FP64 tangent from `weights`.
 
     `batch` carries the dd points of `dd_metric.point_extras`. The tangent pass
     forms W again for each point, so the linearization keeps no W. `dd_b` forms
     b in dd, which the small singular directions of J need. `psi_dd` forms psi
-    with its Gram sums in dd, through `psi_hessian_dd`.
+    with its Gram sums in dd, through `psi_hessian_dd`. `j_rows` forms each row
+    of J with `correction_row` and keeps one row for each point.
     """
     mass = batch['mass'] / jnp.sum(batch['mass'])
     root = jnp.sqrt(mass)
@@ -264,6 +304,15 @@ def residual_fn_mixed(lay_c, batch, state, hi, chunk, alpha, dd_b=True, psi_dd=F
         v, psi = primal(c)
         f = analytic.residual_from_volumes(v, mass)
         v_fp = dd.to_fp(v)
+        xs = (extra, batch['restriction'], state, hi, psi, v_fp)
+        if j_rows:
+            rots = analytic.whitened_rotations(lay_c)
+            rows = jax.lax.map(lambda a: correction_row(lay_c, rots, *a, alpha), xs,
+                               batch_size=chunk)
+            dv = rows @ dc
+            mean = jnp.sum(mass * v_fp)
+            df = dv / mean - v_fp * jnp.sum(mass * dv) / mean ** 2
+            return root * f, root * df
         dmats = sections.prepare_fp(lay_c, dc)
 
         @jax.checkpoint
@@ -275,8 +324,7 @@ def residual_fn_mixed(lay_c, batch, state, hi, chunk, alpha, dd_b=True, psi_dd=F
                 sig, bs = centered_fp(lay_c, ex[0], alpha, st[1])
             return analytic.volume_tangent(weights(sig, bs, rest, st, ps, vv, alpha),
                                            dmats)
-        dv = jax.lax.map(one, (extra, batch['restriction'], state, hi, psi, v_fp),
-                         batch_size=chunk)
+        dv = jax.lax.map(one, xs, batch_size=chunk)
         mean = jnp.sum(mass * v_fp)
         df = dv / mean - v_fp * jnp.sum(mass * dv) / mean ** 2
         return root * f, root * df

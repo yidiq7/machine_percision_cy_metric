@@ -111,6 +111,10 @@ def main():
                     help='form b of the tangent in FP64 and not in dd')
     ap.add_argument('--psi-dd', action='store_true',
                     help='form psi with its Gram sums in dd, in the fit and the report')
+    ap.add_argument('--j-rows', action='store_true',
+                    help='form each row of J from tau and beta in dd')
+    ap.add_argument('--init', type=str, default=None,
+                    help='saved coefficients of the first level, as the start of LM')
     ap.add_argument('--load', type=str, nargs='+', default=None,
                     help='saved coefficients of the levels of --chain, in place of a fit')
     ap.add_argument('--out', type=str, default='runs_corr')
@@ -181,19 +185,25 @@ def main():
         alpha = k1 / args.k0
         res = correction.residual_fn_mixed(lay_c, fit_set, state, hi, args.chunk,
                                            alpha, dd_b=not args.fp64_b,
-                                           psi_dd=args.psi_dd)
+                                           psi_dd=args.psi_dd, j_rows=args.j_rows)
         zero = jnp.zeros(lay_c.n_theta)
         t1 = time.perf_counter()
         norms = jax.jit(lambda c: jnp.linalg.norm(jax.jacfwd(res)(c), axis=0))(zero)
         scale = 1.0 / norms
-        loss0 = float(jnp.sum(res(zero) ** 2))
+        start = zero
+        if args.init is not None and level == 1:
+            side = Path(args.init).with_suffix('.basis')
+            if not side.exists() or side.read_text().strip() != lay_c.fingerprint():
+                raise SystemExit('the basis of --init is absent or not the layout of level 1')
+            start = jnp.asarray(np.load(args.init)) / scale
+        loss0 = float(jnp.sum(res(scale * start) ** 2))
         say(f'level {level} at k = {k1}: n = {lay_c.n_theta}, alpha = {alpha:.6f}, '
             f'column norms {float(norms.min()):.3e} to {float(norms.max()):.3e}, '
             f'loss at 0 {loss0:.4e}, {time.perf_counter() - t1:.0f}s')
 
         solver = optx.LevenbergMarquardt(rtol=1e-15, atol=1e-32, verbose=args.verbose)
         t1 = time.perf_counter()
-        sol = optx.least_squares(lambda q, a: res(scale * q), solver, zero,
+        sol = optx.least_squares(lambda q, a: res(scale * q), solver, start,
                                  max_steps=args.max_steps, throw=False)
         coeffs = scale * sol.value
         steps = int(sol.stats['num_steps'])
