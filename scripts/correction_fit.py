@@ -115,6 +115,9 @@ def main():
                     help='form each row of J from tau and beta in dd')
     ap.add_argument('--init', type=str, default=None,
                     help='saved coefficients of the first level, as the start of LM')
+    ap.add_argument('--unit', type=float, default=1.0,
+                    help='run LM in the scaled coordinates over this unit, so that its '
+                         'start at lambda = 1 is lambda = 1/unit^2 for them')
     ap.add_argument('--load', type=str, nargs='+', default=None,
                     help='saved coefficients of the levels of --chain, in place of a fit')
     ap.add_argument('--out', type=str, default='runs_corr')
@@ -203,9 +206,10 @@ def main():
 
         solver = optx.LevenbergMarquardt(rtol=1e-15, atol=1e-32, verbose=args.verbose)
         t1 = time.perf_counter()
-        sol = optx.least_squares(lambda q, a: res(scale * q), solver, start,
-                                 max_steps=args.max_steps, throw=False)
-        coeffs = scale * sol.value
+        unit = args.unit
+        sol = optx.least_squares(lambda q, a: res(scale * unit * q), solver,
+                                 start / unit, max_steps=args.max_steps, throw=False)
+        coeffs = scale * unit * sol.value
         steps = int(sol.stats['num_steps'])
         loss = float(jnp.sum(res(coeffs) ** 2))
         seconds = time.perf_counter() - t1
