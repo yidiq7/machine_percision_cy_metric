@@ -128,10 +128,55 @@ def test_zero_correction_gives_the_base_volume():
     print(f"  v at a correction of 0 against the base: {worst:.2e}")
 
 
+def test_mixed_form_matches_fp64():
+    """r and its tangent from the mixed form against the plain FP64 form.
+
+    The mixed form keeps ddbar log p_0 in dd at the dd point, and its tangent
+    comes from `weights`, so both differ from FP64 autodiff by round-off only.
+    """
+    from quartic import dd_metric
+    flags = (analytic.END_DD, analytic.GRAM_DD, analytic.H_LOW, sections.PREPARE_DD)
+    analytic.END_DD, analytic.GRAM_DD, analytic.H_LOW = True, True, True
+    sections.PREPARE_DD = True
+    try:
+        lay0 = sections.layout(6)
+        theta0 = near_fs(lay0, 6)
+        lay_c = sections.layout(8, normalize=False)
+        batch = dict(BATCH)
+        batch.update(dd_metric.point_extras(batch['points']))
+        rng = np.random.default_rng(7)
+        mats0 = sections.prepare(lay0, theta0)
+        state = correction.states(lambda z: correction.base_state(lay0, mats0, z),
+                                  batch['points'], 25)
+        coeffs = jnp.asarray(rng.normal(size=lay_c.n_theta))
+        # Scale the correction so that psi is 1e-3 of the base metric.
+        unit = correction.residual_fn(lay_c, batch, state, 25, 8 / 6, False)
+        size = float(jnp.abs(jax.jvp(unit, (0.0 * coeffs,), (coeffs,))[1]).max())
+        coeffs = coeffs * (1e-3 / size)
+        tangent = jnp.asarray(rng.normal(size=lay_c.n_theta)) * (1e-3 / size)
+
+        parts0 = analytic.point_matrices(lay0, theta0)
+        xs = (batch['points'], (batch['points_hi'], batch['points_lo'], batch['patch']))
+        state_dd, phi_dd = jax.jit(lambda x: jax.lax.map(
+            lambda a: correction.base_state_dd(lay0, parts0, a[0], a[1]), x,
+            batch_size=25))(xs)
+        mixed = correction.residual_fn_mixed(lay_c, batch, state_dd, phi_dd, 25, 8 / 6)
+        r_fp, t_fp = jax.jvp(unit, (coeffs,), (tangent,))
+        r_mx, t_mx = jax.jit(lambda c, d: jax.jvp(mixed, (c,), (d,)))(coeffs, tangent)
+        gap_r = rel(r_mx, r_fp)
+        gap_t = rel(t_mx, t_fp)
+    finally:
+        (analytic.END_DD, analytic.GRAM_DD, analytic.H_LOW,
+         sections.PREPARE_DD) = flags
+    assert gap_r < 1e-12 and gap_t < 1e-10, (gap_r, gap_t)
+    print(f"  mixed form against FP64: r {gap_r:.2e}, tangent {gap_t:.2e}")
+
+
 if __name__ == "__main__":
     for fn in (test_psi_parts_match_autodiff, test_base_state_matches_autodiff,
                test_base_weight_at_fs_is_the_fs_weight,
-               test_zero_correction_gives_the_base_volume):
+               test_zero_correction_gives_the_base_volume,
+               test_mixed_form_matches_fp64):
         print(fn.__name__)
         fn()
     print("\nall correction tests pass")
