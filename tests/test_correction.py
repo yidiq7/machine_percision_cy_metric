@@ -88,20 +88,26 @@ def test_base_state_matches_autodiff():
 
 
 def test_base_weight_at_fs_is_the_fs_weight():
-    """At theta_FS, p_0^(k/k_0) = abs(z)^(2k), so the two weights give one psi."""
+    """At theta_FS, p_0^(k/k_0) = abs(z)^(2k) on X, so the two weights give one psi.
+
+    The equality holds on X only, so the Hessians agree along X and not on C^4:
+    compare R ddbar psi R^dag, as the metric uses it.
+    """
     lay0 = sections.layout(4)
     mats0 = sections.prepare(lay0, sections.fubini_study_theta(lay0))
     lay_c = sections.layout(6, normalize=False)
     coeffs = jnp.asarray(np.random.default_rng(4).normal(size=lay_c.n_theta))
     cmats = sections.prepare_fp(lay_c, coeffs)
     worst = 0.0
-    for z in BATCH['points'][:4]:
+    for z, r in zip(BATCH['points'][:4], BATCH['restriction'][:4]):
         base = correction.psi_parts(lay_c, cmats, z, 1.5,
                                     *correction.base_state(lay0, mats0, z))
         fs = correction.psi_parts(lay_c, cmats, z, 6.0, *correction.fs_state(z))
-        worst = max(worst, *(rel(b, f) for b, f in zip(base, fs)))
+        along = [(b[0], f[0]), (r @ b[1], r @ f[1]),
+                 (r @ b[2] @ jnp.conj(r).T, r @ f[2] @ jnp.conj(r).T)]
+        worst = max(worst, *(rel(b, f) for b, f in along))
     assert worst < 1e-13, worst
-    print(f"  base weight at theta_FS against the FS weight: {worst:.2e}")
+    print(f"  base weight at theta_FS against the FS weight, along X: {worst:.2e}")
 
 
 def test_zero_correction_gives_the_base_volume():
