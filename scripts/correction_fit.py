@@ -27,7 +27,7 @@ import jax                                                  # noqa: E402
 import jax.numpy as jnp                                     # noqa: E402
 import optimistix as optx                                   # noqa: E402
 
-from quartic import analytic, correction, data, dd_metric, sections   # noqa: E402
+from quartic import analytic, correction, data, dd_metric, sections, whiten   # noqa: E402
 
 T0 = time.perf_counter()
 
@@ -65,7 +65,11 @@ def describe(name, rep):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--k0', type=int, required=True)
-    ap.add_argument('--theta', type=str, required=True, help='the plain theta at k0')
+    ap.add_argument('--theta', type=str, required=True, help='the theta of the base at k0')
+    ap.add_argument('--h-base', type=str, default=None,
+                    help='a plain theta at k0 whose H is added to the H of --theta, in dd')
+    ap.add_argument('--whiten-file', type=str, default=None,
+                    help='W and W^-1 of a whitened --theta, as the fit saved them')
     ap.add_argument('--chain', type=int, nargs='+', required=True)
     ap.add_argument('--n-fit', type=int, default=300_000)
     ap.add_argument('--seed', type=int, default=20261001)
@@ -87,12 +91,22 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
 
-    lay0 = sections.layout(args.k0)
+    plain = sections.layout(args.k0)
+    lay0 = plain if args.whiten_file is None else whiten.load_layout(args.k0,
+                                                                     args.whiten_file)
     theta0 = jnp.asarray(np.load(args.theta))
     side = Path(args.theta).with_suffix('.basis')
     if not side.exists() or side.read_text().strip() != lay0.fingerprint():
-        raise SystemExit('the basis of --theta is absent or not the plain basis at k0')
+        raise SystemExit('the basis of --theta is absent or not the basis of the base')
+    if args.h_base is not None:
+        side = Path(args.h_base).with_suffix('.basis')
+        if not side.exists() or side.read_text().strip() != plain.fingerprint():
+            raise SystemExit('the basis of --h-base is absent or not the plain basis')
+        base = jnp.asarray(np.load(args.h_base))
+        sections.H_BASE = jax.jit(lambda t: sections.base_matrices(plain, t))(base)
     parts0 = jax.jit(lambda t: analytic.point_matrices(lay0, t))(theta0)
+    # The base is in parts0 now, and no other H of this run takes it.
+    sections.H_BASE = None
 
     fit_set = load_points(args.n_fit, args.seed)
     hold = load_points(args.n_eval, args.eval_seed)
