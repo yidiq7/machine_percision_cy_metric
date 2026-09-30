@@ -117,6 +117,9 @@ def main():
     ap.add_argument('--chunk', type=int, default=1024)
     ap.add_argument('--fp64-b', action='store_true',
                     help='form b of the tangent in FP64 and not in dd')
+    ap.add_argument('--psi-dd', action='store_true',
+                    help='form psi with its Gram sums in dd in the primal')
+    ap.add_argument('--skip-zero', action='store_true', help='skip the SVD at C = 0')
     ap.add_argument('--out', type=str, default='runs_corr_share')
     args = ap.parse_args()
 
@@ -151,11 +154,13 @@ def main():
         lambda a: correction.base_state_dd(lay0, parts0, a[0], a[1]), x,
         batch_size=8192))(xs)
     res = correction.residual_fn_mixed(lay_c, fit_set, state, hi, args.chunk,
-                                       alpha, dd_b=not args.fp64_b)
+                                       alpha, dd_b=not args.fp64_b, psi_dd=args.psi_dd)
     say(f'k0 = {args.k0}, k1 = {args.k1}, n = {lay_c.n_theta}, {args.n_fit} points')
 
-    rows = {'zero': shares(res, jnp.zeros(lay_c.n_theta))}
-    describe('at C = 0, the base', rows['zero'])
+    rows = {}
+    if not args.skip_zero:
+        rows['zero'] = shares(res, jnp.zeros(lay_c.n_theta))
+        describe('at C = 0, the base', rows['zero'])
     if args.coeffs is not None:
         side = Path(args.coeffs).with_suffix('.basis')
         if not side.exists() or side.read_text().strip() != lay_c.fingerprint():
@@ -165,7 +170,7 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
-    tag = '_fp64b' if args.fp64_b else ''
+    tag = ('_fp64b' if args.fp64_b else '') + ('_psidd' if args.psi_dd else '')
     path = out_dir / f'share_k{args.k0}_k{args.k1}{tag}.json'
     path.write_text(json.dumps({'args': vars(args), 'rows': rows}, indent=1))
     say(f'saved to {path}')
