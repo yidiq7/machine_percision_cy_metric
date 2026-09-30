@@ -30,7 +30,8 @@ from . import analytic, dd, sections
 
 __all__ = ['fs_state', 'base_state', 'psi_parts', 'add_level', 'states',
            'volume_corrected', 'volumes', 'residual_fn', 'base_state_dd',
-           'volume_mixed', 'centered_fp', 'centered_dd', 'weights',
+           'volume_mixed', 'psi_hessian_dd', 'volume_mixed_dd', 'centered_fp',
+           'centered_dd', 'weights',
            'residual_fn_mixed', 'advance_mixed', 'chain_volume']
 
 
@@ -146,6 +147,46 @@ def volume_mixed(lay_c, cmats, extra, state, hi, alpha):
     return analytic._volume_from_phi_dd(total, z_dd, m, free, keep=True), psi_ij
 
 
+def psi_hessian_dd(lay_c, parts_c, z_dd, alpha, pot, hi):
+    """ddbar psi at one point in the centered form, with every sum in dd.
+
+    psi_ij = exp(-alpha Phi) (sum over blocks of b_j^* C b_i - alpha (sigma^* C sigma)
+    ddbar Phi), with b = dsigma - alpha (d Phi) sigma. C can hold large parts that
+    nearly vanish on X, so its Gram sums need dd. `parts_c` is
+    `sections.prepare_parts` of C, and `hi` holds ddbar Phi and d Phi in dd.
+    """
+    sig, dsig = analytic.section_vectors_dd(lay_c, None, z_dd=z_dd)
+    extras = analytic._gram_parts(lay_c, parts_c, sig, dsig)[4]
+    n_dd, _, store = extras
+    scale = dd.to_dd(jnp.asarray(alpha, jnp.float64))
+    ratio = analytic._cindex((analytic._mul(hi[1][0], scale),
+                              analytic._mul(hi[1][1], scale)), None, None, slice(None))
+    zero = dd.to_dd(jnp.zeros((4, 4)))
+    total = (zero, zero)
+    col = (slice(None), slice(None), None)
+    for (h_s, h_d), s_, ds in zip(store, sig, dsig):
+        b = dd.csub(ds, analytic._cmul(analytic._cindex(s_, *col), ratio))
+        h_b = dd.csub(h_d, analytic._cmul(analytic._cindex(h_s, *col), ratio))
+        b_conj = (b[0], dd.neg(b[1]))
+        left = analytic._cindex(h_b, slice(None), slice(None), slice(None), None)
+        right = analytic._cindex(b_conj, slice(None), slice(None), None, slice(None))
+        total = dd.cadd(total, analytic._creduce_lead(analytic._cmul(left, right), 2))
+    n_alpha = analytic._mul(n_dd, scale)
+    total = dd.csub(total, (analytic._mul(hi[0][0], n_alpha),
+                            analytic._mul(hi[0][1], n_alpha)))
+    w = dd.to_dd(jnp.exp(-alpha * pot))
+    return analytic._mul(total[0], w), analytic._mul(total[1], w)
+
+
+def volume_mixed_dd(lay_c, parts_c, extra, state, hi, alpha):
+    """v as a dd pair for Phi + psi, and ddbar psi rounded, with psi in dd."""
+    z_dd, m, free = analytic._dd_point(extra)
+    psi_dd = psi_hessian_dd(lay_c, parts_c, z_dd, alpha, state[0], hi)
+    total = dd.cadd(hi[0], psi_dd)
+    return (analytic._volume_from_phi_dd(total, z_dd, m, free, keep=True),
+            dd.cto_fp(psi_dd))
+
+
 def centered_fp(lay_c, z, alpha, pot_i):
     """sigma and b = dsigma - alpha (d Phi) sigma of each group, in FP64."""
     sig, dsig = analytic.section_vectors(lay_c, z)
@@ -189,18 +230,24 @@ def weights(sig, bs, restriction, state, psi_ij, v, alpha):
     return tuple(out)
 
 
-def residual_fn_mixed(lay_c, batch, state, hi, chunk, alpha, dd_b=True):
+def residual_fn_mixed(lay_c, batch, state, hi, chunk, alpha, dd_b=True, psi_dd=False):
     """sqrt(w) f with v and f in dd, and an FP64 tangent from `weights`.
 
     `batch` carries the dd points of `dd_metric.point_extras`. The tangent pass
     forms W again for each point, so the linearization keeps no W. `dd_b` forms
-    b in dd, which the small singular directions of J need.
+    b in dd, which the small singular directions of J need. `psi_dd` forms psi
+    with its Gram sums in dd, through `psi_hessian_dd`.
     """
     mass = batch['mass'] / jnp.sum(batch['mass'])
     root = jnp.sqrt(mass)
     extra = (batch['points_hi'], batch['points_lo'], batch['patch'])
 
     def primal(c):
+        if psi_dd:
+            parts_c = sections.prepare_parts(lay_c, c)
+            return jax.lax.map(
+                lambda a: volume_mixed_dd(lay_c, parts_c, a[0], a[1], a[2], alpha),
+                (extra, state, hi), batch_size=chunk)
         cmats = sections.prepare_fp(lay_c, c)
         return jax.lax.map(
             lambda a: volume_mixed(lay_c, cmats, a[0], a[1], a[2], alpha),

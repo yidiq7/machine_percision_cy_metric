@@ -162,9 +162,9 @@ def test_mixed_form_matches_fp64():
             batch_size=25))(xs)
         r_fp, t_fp = jax.jvp(unit, (coeffs,), (tangent,))
         gaps = []
-        for dd_b in (True, False):
+        for dd_b, psi_dd in ((True, False), (False, False), (True, True)):
             mixed = correction.residual_fn_mixed(lay_c, batch, state_dd, hi, 25, 8 / 6,
-                                                 dd_b=dd_b)
+                                                 dd_b=dd_b, psi_dd=psi_dd)
             r_mx, t_mx = jax.jit(lambda c, d: jax.jvp(mixed, (c,), (d,)))(coeffs, tangent)
             gaps.append((rel(r_mx, r_fp), rel(t_mx, t_fp)))
     finally:
@@ -173,7 +173,8 @@ def test_mixed_form_matches_fp64():
     for gap_r, gap_t in gaps:
         assert gap_r < 1e-12 and gap_t < 1e-10, gaps
     print(f"  mixed form against FP64: r {gaps[0][0]:.2e}, tangent with b in dd "
-          f"{gaps[0][1]:.2e}, with b in FP64 {gaps[1][1]:.2e}")
+          f"{gaps[0][1]:.2e}, with b in FP64 {gaps[1][1]:.2e}; with psi in dd: r "
+          f"{gaps[2][0]:.2e}, tangent {gaps[2][1]:.2e}")
 
 
 if __name__ == "__main__":
