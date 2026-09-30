@@ -75,6 +75,8 @@ def main():
     ap.add_argument('--report-chunk', type=int, default=8192)
     ap.add_argument('--max-steps', type=int, default=200)
     ap.add_argument('--verbose', action='store_true', help='print every LM step')
+    ap.add_argument('--fp64-b', action='store_true',
+                    help='form b of the tangent in FP64 and not in dd')
     ap.add_argument('--out', type=str, default='runs_corr')
     args = ap.parse_args()
 
@@ -101,7 +103,7 @@ def main():
 
     xs = (fit_set['points_hi'],
           (fit_set['points_hi'], fit_set['points_lo'], fit_set['patch']))
-    state, phi_dd = jax.jit(lambda x: jax.lax.map(
+    state, hi = jax.jit(lambda x: jax.lax.map(
         lambda a: correction.base_state_dd(lay0, parts0, a[0], a[1]), x,
         batch_size=args.report_chunk))(xs)
 
@@ -109,8 +111,8 @@ def main():
     for level, k1 in enumerate(args.chain, start=1):
         lay_c = sections.layout(k1, normalize=False)
         alpha = k1 / args.k0
-        res = correction.residual_fn_mixed(lay_c, fit_set, state, phi_dd, args.chunk,
-                                           alpha)
+        res = correction.residual_fn_mixed(lay_c, fit_set, state, hi, args.chunk,
+                                           alpha, dd_b=not args.fp64_b)
         zero = jnp.zeros(lay_c.n_theta)
         t1 = time.perf_counter()
         norms = jax.jit(lambda c: jnp.linalg.norm(jax.jacfwd(res)(c), axis=0))(zero)
@@ -145,8 +147,8 @@ def main():
                                         'fit': rep_fit, 'hold': rep_hold}
         (out_dir / f'corr_k{args.k0}.json').write_text(
             json.dumps({'args': vars(args), 'rows': rows}, indent=1))
-        state, phi_dd = correction.advance_mixed(lay_c, cmats, fit_set, state, phi_dd,
-                                                 alpha, args.report_chunk)
+        state, hi = correction.advance_mixed(lay_c, cmats, fit_set, state, hi, alpha,
+                                             args.report_chunk)
     say(f'saved to {out_dir}')
 
 

@@ -157,19 +157,23 @@ def test_mixed_form_matches_fp64():
 
         parts0 = analytic.point_matrices(lay0, theta0)
         xs = (batch['points'], (batch['points_hi'], batch['points_lo'], batch['patch']))
-        state_dd, phi_dd = jax.jit(lambda x: jax.lax.map(
+        state_dd, hi = jax.jit(lambda x: jax.lax.map(
             lambda a: correction.base_state_dd(lay0, parts0, a[0], a[1]), x,
             batch_size=25))(xs)
-        mixed = correction.residual_fn_mixed(lay_c, batch, state_dd, phi_dd, 25, 8 / 6)
         r_fp, t_fp = jax.jvp(unit, (coeffs,), (tangent,))
-        r_mx, t_mx = jax.jit(lambda c, d: jax.jvp(mixed, (c,), (d,)))(coeffs, tangent)
-        gap_r = rel(r_mx, r_fp)
-        gap_t = rel(t_mx, t_fp)
+        gaps = []
+        for dd_b in (True, False):
+            mixed = correction.residual_fn_mixed(lay_c, batch, state_dd, hi, 25, 8 / 6,
+                                                 dd_b=dd_b)
+            r_mx, t_mx = jax.jit(lambda c, d: jax.jvp(mixed, (c,), (d,)))(coeffs, tangent)
+            gaps.append((rel(r_mx, r_fp), rel(t_mx, t_fp)))
     finally:
         (analytic.END_DD, analytic.GRAM_DD, analytic.H_LOW,
          sections.PREPARE_DD) = flags
-    assert gap_r < 1e-12 and gap_t < 1e-10, (gap_r, gap_t)
-    print(f"  mixed form against FP64: r {gap_r:.2e}, tangent {gap_t:.2e}")
+    for gap_r, gap_t in gaps:
+        assert gap_r < 1e-12 and gap_t < 1e-10, gaps
+    print(f"  mixed form against FP64: r {gaps[0][0]:.2e}, tangent with b in dd "
+          f"{gaps[0][1]:.2e}, with b in FP64 {gaps[1][1]:.2e}")
 
 
 if __name__ == "__main__":

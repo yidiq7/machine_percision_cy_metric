@@ -84,6 +84,8 @@ def main():
     ap.add_argument('--n-fit', type=int, default=300_000)
     ap.add_argument('--seed', type=int, default=20261001)
     ap.add_argument('--chunk', type=int, default=1024)
+    ap.add_argument('--fp64-b', action='store_true',
+                    help='form b of the tangent in FP64 and not in dd')
     ap.add_argument('--out', type=str, default='runs_corr_share')
     args = ap.parse_args()
 
@@ -104,11 +106,11 @@ def main():
     fit_set = load_points(args.n_fit, args.seed)
     xs = (fit_set['points_hi'],
           (fit_set['points_hi'], fit_set['points_lo'], fit_set['patch']))
-    state, phi_dd = jax.jit(lambda x: jax.lax.map(
+    state, hi = jax.jit(lambda x: jax.lax.map(
         lambda a: correction.base_state_dd(lay0, parts0, a[0], a[1]), x,
         batch_size=8192))(xs)
-    res = correction.residual_fn_mixed(lay_c, fit_set, state, phi_dd, args.chunk,
-                                       alpha)
+    res = correction.residual_fn_mixed(lay_c, fit_set, state, hi, args.chunk,
+                                       alpha, dd_b=not args.fp64_b)
     say(f'k0 = {args.k0}, k1 = {args.k1}, n = {lay_c.n_theta}, {args.n_fit} points')
 
     rows = {'zero': shares(res, jnp.zeros(lay_c.n_theta))}
@@ -122,7 +124,8 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
-    path = out_dir / f'share_k{args.k0}_k{args.k1}.json'
+    tag = '_fp64b' if args.fp64_b else ''
+    path = out_dir / f'share_k{args.k0}_k{args.k1}{tag}.json'
     path.write_text(json.dumps({'args': vars(args), 'rows': rows}, indent=1))
     say(f'saved to {path}')
 

@@ -30,8 +30,8 @@ from . import analytic, dd, sections
 
 __all__ = ['fs_state', 'base_state', 'psi_parts', 'add_level', 'states',
            'volume_corrected', 'volumes', 'residual_fn', 'base_state_dd',
-           'volume_mixed', 'weights', 'residual_fn_mixed', 'advance_mixed',
-           'chain_volume']
+           'volume_mixed', 'centered_fp', 'centered_dd', 'weights',
+           'residual_fn_mixed', 'advance_mixed', 'chain_volume']
 
 
 def fs_state(z):
@@ -119,56 +119,82 @@ def residual_fn(lay_c, batch, state, chunk, alpha, fs_weight, basis=None):
 
 
 def base_state_dd(lay0, mats0, z, extra):
-    """The state of log p_0 at the dd point, and ddbar log p_0 as a complex dd value.
+    """The state of log p_0 at the dd point, and (ddbar log p_0, d log p_0) in dd.
 
     The Gram stage and the centered form run in the dd path of `analytic`, so its
     flags must select END_DD and GRAM_DD, and `mats0` is `analytic.point_matrices`.
+    The dd pair is the `hi` state of the mixed form.
     """
     z_dd, _, _ = analytic._dd_point(extra)
     sig, dsig, _, _ = analytic._section_vectors(lay0, z, z_dd=z_dd)
     p, p_i, _, _, extras = analytic._gram_parts(lay0, mats0, sig, dsig)
     phi_dd = analytic._phi_stage5_dd(extras, sig, dsig, keep=True)
-    return (jnp.log(p), p_i / p, dd.cto_fp(phi_dd)), phi_dd
+    p_dd, p_i_dd, _ = extras
+    inv_p = dd.reciprocal(p_dd)
+    a_dd = (analytic._mul(p_i_dd[0], inv_p), analytic._mul(p_i_dd[1], inv_p))
+    return (jnp.log(p), p_i / p, dd.cto_fp(phi_dd)), (phi_dd, a_dd)
 
 
-def volume_mixed(lay_c, cmats, extra, state, phi_dd, alpha):
+def volume_mixed(lay_c, cmats, extra, state, hi, alpha):
     """v as a dd pair for Phi + psi, and ddbar psi, with psi in FP64 at the dd point.
 
-    `phi_dd` is ddbar Phi in dd. The weight of psi is exp(alpha Phi).
+    `hi` holds ddbar Phi and d Phi in dd. The weight of psi is exp(alpha Phi).
     """
     z_dd, m, free = analytic._dd_point(extra)
     _, _, psi_ij = psi_parts(lay_c, cmats, extra[0], alpha, *state)
-    total = dd.cadd(phi_dd, dd.cto_dd(psi_ij))
+    total = dd.cadd(hi[0], dd.cto_dd(psi_ij))
     return analytic._volume_from_phi_dd(total, z_dd, m, free, keep=True), psi_ij
 
 
-def weights(lay_c, z, restriction, state, psi_ij, v, alpha):
+def centered_fp(lay_c, z, alpha, pot_i):
+    """sigma and b = dsigma - alpha (d Phi) sigma of each group, in FP64."""
+    sig, dsig = analytic.section_vectors(lay_c, z)
+    return sig, tuple(ds - alpha * jnp.einsum('bi,k->bik', s, pot_i)
+                      for s, ds in zip(sig, dsig))
+
+
+def centered_dd(lay_c, z_dd, alpha, a_dd):
+    """sigma and b = dsigma - alpha (d Phi) sigma of each group, from dd, rounded once.
+
+    b cancels by approximately k / abs(z_a), so it is formed in dd from the dd
+    sections and d Phi in dd. alpha enters as the FP64 value that the primal uses.
+    """
+    sig, dsig = analytic.section_vectors_dd(lay_c, None, z_dd=z_dd)
+    scale = dd.to_dd(jnp.asarray(alpha, jnp.float64))
+    ratio = analytic._cindex((analytic._mul(a_dd[0], scale),
+                              analytic._mul(a_dd[1], scale)), None, None, slice(None))
+    col = (slice(None), slice(None), None)
+    bs = tuple(dd.cto_fp(dd.csub(ds, analytic._cmul(analytic._cindex(s_, *col), ratio)))
+               for s_, ds in zip(sig, dsig))
+    return tuple(dd.cto_fp(s_) for s_ in sig), bs
+
+
+def weights(sig, bs, restriction, state, psi_ij, v, alpha):
     """W_b of each block, so that dv = sum over blocks of <dC_b, W_b>, in FP64.
 
     With b = dsigma - alpha (d Phi) sigma, K = R^dag g^-1 R and t = tr(K ddbar Phi),
     the quotient rule and Jacobi's formula give
     W = v exp(-alpha Phi) Re(b K b^* - alpha t sigma sigma^*).
     """
-    pot, pot_i, pot_ij = state
-    sig, dsig = analytic.section_vectors(lay_c, z)
+    pot, _, pot_ij = state
     g = restriction @ (pot_ij + psi_ij) @ jnp.conj(restriction).T
     k_mat = jnp.conj(restriction).T @ jnp.linalg.inv(g) @ restriction
     trace = jnp.einsum('lk,kl->', k_mat, pot_ij)
     scale = v * jnp.exp(-alpha * pot)
     out = []
-    for s, ds in zip(sig, dsig):
-        b = ds - alpha * jnp.einsum('bi,k->bik', s, pot_i)
+    for s, b in zip(sig, bs):
         w = jnp.einsum('bik,lk,bjl->bij', b, k_mat, jnp.conj(b))
         w = w - alpha * trace * jnp.einsum('bi,bj->bij', s, jnp.conj(s))
         out.append(scale * jnp.real(w))
     return tuple(out)
 
 
-def residual_fn_mixed(lay_c, batch, state, phi_dd, chunk, alpha):
+def residual_fn_mixed(lay_c, batch, state, hi, chunk, alpha, dd_b=True):
     """sqrt(w) f with v and f in dd, and an FP64 tangent from `weights`.
 
     `batch` carries the dd points of `dd_metric.point_extras`. The tangent pass
-    forms W again for each point, so the linearization keeps no W.
+    forms W again for each point, so the linearization keeps no W. `dd_b` forms
+    b in dd, which the small singular directions of J need.
     """
     mass = batch['mass'] / jnp.sum(batch['mass'])
     root = jnp.sqrt(mass)
@@ -178,7 +204,7 @@ def residual_fn_mixed(lay_c, batch, state, phi_dd, chunk, alpha):
         cmats = sections.prepare_fp(lay_c, c)
         return jax.lax.map(
             lambda a: volume_mixed(lay_c, cmats, a[0], a[1], a[2], alpha),
-            (extra, state, phi_dd), batch_size=chunk)
+            (extra, state, hi), batch_size=chunk)
 
     @jax.custom_jvp
     def res(c):
@@ -195,25 +221,30 @@ def residual_fn_mixed(lay_c, batch, state, phi_dd, chunk, alpha):
 
         @jax.checkpoint
         def one(a):
-            z, rest, st, ps, vv = a
-            return analytic.volume_tangent(weights(lay_c, z, rest, st, ps, vv, alpha),
+            ex, rest, st, h, ps, vv = a
+            if dd_b:
+                sig, bs = centered_dd(lay_c, analytic._dd_point(ex)[0], alpha, h[1])
+            else:
+                sig, bs = centered_fp(lay_c, ex[0], alpha, st[1])
+            return analytic.volume_tangent(weights(sig, bs, rest, st, ps, vv, alpha),
                                            dmats)
-        dv = jax.lax.map(one, (batch['points_hi'], batch['restriction'], state, psi,
-                               v_fp), batch_size=chunk)
+        dv = jax.lax.map(one, (extra, batch['restriction'], state, hi, psi, v_fp),
+                         batch_size=chunk)
         mean = jnp.sum(mass * v_fp)
         df = dv / mean - v_fp * jnp.sum(mass * dv) / mean ** 2
         return root * f, root * df
     return res
 
 
-def advance_mixed(lay_c, cmats, batch, state, phi_dd, alpha, chunk):
-    """The state of Phi + psi and ddbar (Phi + psi) in dd, at every point of `batch`."""
+def advance_mixed(lay_c, cmats, batch, state, hi, alpha, chunk):
+    """The state of Phi + psi, and its `hi` part in dd, at every point of `batch`."""
     def one(a):
-        z, st, ph = a
+        z, st, h = a
         parts = psi_parts(lay_c, cmats, z, alpha, *st)
-        return add_level(st, parts), dd.cadd(ph, dd.cto_dd(parts[2]))
+        return add_level(st, parts), (dd.cadd(h[0], dd.cto_dd(parts[2])),
+                                      dd.cadd(h[1], dd.cto_dd(parts[1])))
     return jax.jit(lambda x: jax.lax.map(one, x, batch_size=chunk))(
-        (batch['points_hi'], state, phi_dd))
+        (batch['points_hi'], state, hi))
 
 
 def chain_volume(lay0, mats0, levels, z, extra):
@@ -221,7 +252,7 @@ def chain_volume(lay0, mats0, levels, z, extra):
 
     Each entry of `levels` is (lay_c, cmats, alpha), in the order of the fit.
     """
-    state, phi_dd = base_state_dd(lay0, mats0, z, extra)
+    state, (phi_dd, _) = base_state_dd(lay0, mats0, z, extra)
     for lay_c, cmats, alpha in levels:
         parts = psi_parts(lay_c, cmats, extra[0], alpha, *state)
         state = add_level(state, parts)
