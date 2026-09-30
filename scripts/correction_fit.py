@@ -129,6 +129,9 @@ def main():
     sections.PREPARE_DD = True
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
+    # psi in dd holds the Gram stage of the level for each point, so a report of
+    # a level must take the block of the fit: 8192 points at degree 34 need 181 GB.
+    level_chunk = min(args.report_chunk, args.chunk) if args.psi_dd else args.report_chunk
 
     plain = sections.layout(args.k0)
     lay0 = plain if args.whiten_file is None else whiten.load_layout(args.k0,
@@ -167,7 +170,7 @@ def main():
             cmats = sections.prepare_fp(lay_c, coeffs)
             parts_c = sections.prepare_parts(lay_c, coeffs) if args.psi_dd else None
             levels.append((lay_c, cmats, parts_c, k1 / args.k0))
-            rep = report(lay0, parts0, levels, hold, args.report_chunk)
+            rep = report(lay0, parts0, levels, hold, level_chunk)
             say(describe(f'level {level} at k = {k1} from {path}, hold-out', rep))
             print(regions_text(rep), flush=True)
             rows[f'level_{level}_k{k1}'] = {'hold': rep, 'loaded': path}
@@ -222,8 +225,8 @@ def main():
         cmats = sections.prepare_fp(lay_c, coeffs)
         parts_c = sections.prepare_parts(lay_c, coeffs) if args.psi_dd else None
         levels.append((lay_c, cmats, parts_c, alpha))
-        rep_fit = report(lay0, parts0, levels, fit_set, args.report_chunk)
-        rep_hold = report(lay0, parts0, levels, hold, args.report_chunk)
+        rep_fit = report(lay0, parts0, levels, fit_set, level_chunk)
+        rep_hold = report(lay0, parts0, levels, hold, level_chunk)
         say(describe(f'level {level}, fit set', rep_fit))
         say(describe(f'level {level}, hold-out', rep_hold))
         print(regions_text(rep_hold), flush=True)
@@ -233,7 +236,7 @@ def main():
         (out_dir / f'corr_k{args.k0}.json').write_text(
             json.dumps({'args': vars(args), 'rows': rows}, indent=1))
         state, hi = correction.advance_mixed(lay_c, cmats, fit_set, state, hi, alpha,
-                                             args.report_chunk, parts_c=parts_c)
+                                             level_chunk, parts_c=parts_c)
     say(f'saved to {out_dir}')
 
 
