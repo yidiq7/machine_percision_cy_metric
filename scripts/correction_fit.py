@@ -109,6 +109,8 @@ def main():
     ap.add_argument('--verbose', action='store_true', help='print every LM step')
     ap.add_argument('--fp64-b', action='store_true',
                     help='form b of the tangent in FP64 and not in dd')
+    ap.add_argument('--psi-dd', action='store_true',
+                    help='form psi with its Gram sums in dd, in the fit and the report')
     ap.add_argument('--load', type=str, nargs='+', default=None,
                     help='saved coefficients of the levels of --chain, in place of a fit')
     ap.add_argument('--out', type=str, default='runs_corr')
@@ -154,8 +156,10 @@ def main():
             side = Path(path).with_suffix('.basis')
             if not side.exists() or side.read_text().strip() != lay_c.fingerprint():
                 raise SystemExit(f'the basis of {path} is absent or not the layout at {k1}')
-            cmats = sections.prepare_fp(lay_c, jnp.asarray(np.load(path)))
-            levels.append((lay_c, cmats, k1 / args.k0))
+            coeffs = jnp.asarray(np.load(path))
+            cmats = sections.prepare_fp(lay_c, coeffs)
+            parts_c = sections.prepare_parts(lay_c, coeffs) if args.psi_dd else None
+            levels.append((lay_c, cmats, parts_c, k1 / args.k0))
             rep = report(lay0, parts0, levels, hold, args.report_chunk)
             say(describe(f'level {level} at k = {k1} from {path}, hold-out', rep))
             print(regions_text(rep), flush=True)
@@ -176,7 +180,8 @@ def main():
         lay_c = sections.layout(k1, normalize=False)
         alpha = k1 / args.k0
         res = correction.residual_fn_mixed(lay_c, fit_set, state, hi, args.chunk,
-                                           alpha, dd_b=not args.fp64_b)
+                                           alpha, dd_b=not args.fp64_b,
+                                           psi_dd=args.psi_dd)
         zero = jnp.zeros(lay_c.n_theta)
         t1 = time.perf_counter()
         norms = jax.jit(lambda c: jnp.linalg.norm(jax.jacfwd(res)(c), axis=0))(zero)
@@ -201,7 +206,8 @@ def main():
         np.save(stem.with_suffix('.npy'), np.asarray(coeffs))
         stem.with_suffix('.basis').write_text(lay_c.fingerprint() + '\n')
         cmats = sections.prepare_fp(lay_c, coeffs)
-        levels.append((lay_c, cmats, alpha))
+        parts_c = sections.prepare_parts(lay_c, coeffs) if args.psi_dd else None
+        levels.append((lay_c, cmats, parts_c, alpha))
         rep_fit = report(lay0, parts0, levels, fit_set, args.report_chunk)
         rep_hold = report(lay0, parts0, levels, hold, args.report_chunk)
         say(describe(f'level {level}, fit set', rep_fit))
@@ -213,7 +219,7 @@ def main():
         (out_dir / f'corr_k{args.k0}.json').write_text(
             json.dumps({'args': vars(args), 'rows': rows}, indent=1))
         state, hi = correction.advance_mixed(lay_c, cmats, fit_set, state, hi, alpha,
-                                             args.report_chunk)
+                                             args.report_chunk, parts_c=parts_c)
     say(f'saved to {out_dir}')
 
 

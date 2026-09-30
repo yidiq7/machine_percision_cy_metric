@@ -283,26 +283,36 @@ def residual_fn_mixed(lay_c, batch, state, hi, chunk, alpha, dd_b=True, psi_dd=F
     return res
 
 
-def advance_mixed(lay_c, cmats, batch, state, hi, alpha, chunk):
-    """The state of Phi + psi, and its `hi` part in dd, at every point of `batch`."""
+def advance_mixed(lay_c, cmats, batch, state, hi, alpha, chunk, parts_c=None):
+    """The state of Phi + psi, and its `hi` part in dd, at every point of `batch`.
+
+    With `parts_c`, ddbar psi comes from `psi_hessian_dd`.
+    """
+    extra = (batch['points_hi'], batch['points_lo'], batch['patch'])
+
     def one(a):
-        z, st, h = a
-        parts = psi_parts(lay_c, cmats, z, alpha, *st)
-        return add_level(st, parts), (dd.cadd(h[0], dd.cto_dd(parts[2])),
+        ex, st, h = a
+        parts = psi_parts(lay_c, cmats, ex[0], alpha, *st)
+        psi_ij = (dd.cto_dd(parts[2]) if parts_c is None else psi_hessian_dd(
+            lay_c, parts_c, analytic._dd_point(ex)[0], alpha, st[0], h))
+        return add_level(st, parts), (dd.cadd(h[0], psi_ij),
                                       dd.cadd(h[1], dd.cto_dd(parts[1])))
-    return jax.jit(lambda x: jax.lax.map(one, x, batch_size=chunk))(
-        (batch['points_hi'], state, hi))
+    return jax.jit(lambda x: jax.lax.map(one, x, batch_size=chunk))((extra, state, hi))
 
 
 def chain_volume(lay0, mats0, levels, z, extra):
     """v as a dd pair at one point for log p_0 plus every level of `levels`.
 
-    Each entry of `levels` is (lay_c, cmats, alpha), in the order of the fit.
+    Each entry of `levels` is (lay_c, cmats, parts_c, alpha), in the order of the
+    fit. With `parts_c`, from `sections.prepare_parts`, ddbar psi comes from
+    `psi_hessian_dd`; with None, from the FP64 form.
     """
-    state, (phi_dd, _) = base_state_dd(lay0, mats0, z, extra)
-    for lay_c, cmats, alpha in levels:
-        parts = psi_parts(lay_c, cmats, extra[0], alpha, *state)
-        state = add_level(state, parts)
-        phi_dd = dd.cadd(phi_dd, dd.cto_dd(parts[2]))
     z_dd, m, free = analytic._dd_point(extra)
-    return analytic._volume_from_phi_dd(phi_dd, z_dd, m, free, keep=True)
+    state, hi = base_state_dd(lay0, mats0, z, extra)
+    for lay_c, cmats, parts_c, alpha in levels:
+        parts = psi_parts(lay_c, cmats, extra[0], alpha, *state)
+        psi_ij = (dd.cto_dd(parts[2]) if parts_c is None
+                  else psi_hessian_dd(lay_c, parts_c, z_dd, alpha, state[0], hi))
+        state = add_level(state, parts)
+        hi = (dd.cadd(hi[0], psi_ij), dd.cadd(hi[1], dd.cto_dd(parts[1])))
+    return analytic._volume_from_phi_dd(hi[0], z_dd, m, free, keep=True)
