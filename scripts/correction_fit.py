@@ -44,17 +44,45 @@ def load_points(n, seed):
     return batch
 
 
+EDGES = (0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.0)
+
+
 def report(lay0, parts0, levels, batch, chunk):
-    """mean abs(f), rms(f) and max abs(f) for the base and `levels`, with f in dd."""
+    """mean abs(f), rms(f) and max abs(f) for the base and `levels`, with f in dd.
+
+    `regions` splits the loss by bins of min abs(z_a) over max abs(z_a).
+    """
     xs = (batch['points_hi'], (batch['points_hi'], batch['points_lo'], batch['patch']))
     v = jax.jit(lambda x: jax.lax.map(
         lambda a: correction.chain_volume(lay0, parts0, levels, a[0], a[1]), x,
         batch_size=chunk))(xs)
     mass = batch['mass'] / jnp.sum(batch['mass'])
     f = analytic.residual_from_volumes(v, mass)
+    size = np.abs(np.asarray(batch['points_hi']))
+    ratio = size.min(axis=1) / size.max(axis=1)
+    w, ff = np.asarray(mass), np.asarray(f)
+    loss = float(np.sum(w * ff * ff))
+    regions = []
+    for low, high in zip(EDGES[:-1], EDGES[1:]):
+        take = (ratio >= low) & (ratio < high) if high < 1.0 else (ratio >= low)
+        wt = float(w[take].sum())
+        regions.append({'bin': [low, high], 'points': float(take.mean()), 'weight': wt,
+                        'loss_share': float(np.sum(w[take] * ff[take] ** 2)) / loss,
+                        'mape': float(np.sum(w[take] * np.abs(ff[take]))) / wt,
+                        'rms': float(np.sqrt(np.sum(w[take] * ff[take] ** 2) / wt))})
     return {'mape': float(jnp.sum(mass * jnp.abs(f))),
             'rms': float(jnp.sqrt(jnp.sum(mass * f * f))),
-            'max': float(jnp.max(jnp.abs(f)))}
+            'max': float(jnp.max(jnp.abs(f))), 'regions': regions}
+
+
+def regions_text(rep):
+    lines = []
+    for row in rep['regions']:
+        lines.append(f"    min/max abs(z) in {row['bin'][0]:.2f} to {row['bin'][1]:.2f}: "
+                     f"points {row['points']:.4f}, weight {row['weight']:.4f}, loss "
+                     f"{row['loss_share']:.3f}, mean abs(f) {row['mape']:.3e}, rms "
+                     f"{row['rms']:.3e}")
+    return '\n'.join(lines)
 
 
 def describe(name, rep):
@@ -81,6 +109,8 @@ def main():
     ap.add_argument('--verbose', action='store_true', help='print every LM step')
     ap.add_argument('--fp64-b', action='store_true',
                     help='form b of the tangent in FP64 and not in dd')
+    ap.add_argument('--load', type=str, nargs='+', default=None,
+                    help='saved coefficients of the levels of --chain, in place of a fit')
     ap.add_argument('--out', type=str, default='runs_corr')
     args = ap.parse_args()
 
@@ -114,6 +144,26 @@ def main():
         f'{args.seed}, {args.n_eval} hold-out points of seed {args.eval_seed}')
     rows = {'base': report(lay0, parts0, [], hold, args.report_chunk)}
     say(describe('the base on the hold-out', rows['base']))
+    print(regions_text(rows['base']), flush=True)
+    if args.load is not None:
+        if len(args.load) != len(args.chain):
+            raise SystemExit('--load needs one file for each level of --chain')
+        levels = []
+        for level, (k1, path) in enumerate(zip(args.chain, args.load), start=1):
+            lay_c = sections.layout(k1, normalize=False)
+            side = Path(path).with_suffix('.basis')
+            if not side.exists() or side.read_text().strip() != lay_c.fingerprint():
+                raise SystemExit(f'the basis of {path} is absent or not the layout at {k1}')
+            cmats = sections.prepare_fp(lay_c, jnp.asarray(np.load(path)))
+            levels.append((lay_c, cmats, k1 / args.k0))
+            rep = report(lay0, parts0, levels, hold, args.report_chunk)
+            say(describe(f'level {level} at k = {k1} from {path}, hold-out', rep))
+            print(regions_text(rep), flush=True)
+            rows[f'level_{level}_k{k1}'] = {'hold': rep, 'loaded': path}
+        (out_dir / f'corr_k{args.k0}_loaded.json').write_text(
+            json.dumps({'args': vars(args), 'rows': rows}, indent=1))
+        say(f'saved to {out_dir}')
+        return
 
     xs = (fit_set['points_hi'],
           (fit_set['points_hi'], fit_set['points_lo'], fit_set['patch']))
@@ -156,6 +206,7 @@ def main():
         rep_hold = report(lay0, parts0, levels, hold, args.report_chunk)
         say(describe(f'level {level}, fit set', rep_fit))
         say(describe(f'level {level}, hold-out', rep_hold))
+        print(regions_text(rep_hold), flush=True)
         rows[f'level_{level}_k{k1}'] = {'steps': steps, 'seconds': seconds,
                                         'loss0': loss0, 'loss': loss,
                                         'fit': rep_fit, 'hold': rep_hold}
