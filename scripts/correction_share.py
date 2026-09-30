@@ -44,16 +44,38 @@ def load_points(n, seed):
     return batch
 
 
-def shares(res, c):
+def lambda_scan(res, c, norms, s, vt, coef, total):
+    """The LM step at each damping from the SVD, and its predicted and true decrease.
+
+    In the scaled coordinates the step is -V diag(s / (s^2 + lambda)) U^T r, and
+    the linear model predicts the loss sum over i of coef_i^2 (lambda / (s_i^2 + lambda))^2.
+    """
+    rows = []
+    for exp in range(-2, -34, -2):
+        lam = float(s[0]) ** 2 * 10.0 ** exp
+        step = -(vt.T @ (s / (s ** 2 + lam) * coef)) / norms
+        kept = jnp.sum((coef * lam / (s ** 2 + lam)) ** 2)
+        predicted = float(jnp.sum(coef ** 2) - kept)
+        true = total - float(jnp.sum(res(c + step) ** 2))
+        rows.append({'lambda_over_smax2': 10.0 ** exp, 'predicted': predicted / total,
+                     'true': true / total,
+                     'rho': true / predicted if predicted > 0 else float('nan'),
+                     'step': float(jnp.linalg.norm(step * norms))})
+    return rows
+
+
+def shares(res, c, scan=False):
     """Singular values of the column-scaled J at c, and where norm(r)^2 lies."""
     r = res(c)
     jac = jax.jit(jax.jacfwd(res))(c)
     norms = jnp.linalg.norm(jac, axis=0)
     q, rr = jnp.linalg.qr(jac / norms)
-    u, s, _ = jnp.linalg.svd(rr)
-    proj = np.asarray(u.T @ (q.T @ r)) ** 2
-    s = np.asarray(s)
+    u, s, vt = jnp.linalg.svd(rr)
+    coef = u.T @ (q.T @ r)
     total = float(r @ r)
+    rows = lambda_scan(res, c, norms, s, vt, coef, total) if scan else []
+    proj = np.asarray(coef) ** 2
+    s = np.asarray(s)
     rel = s / s[0]
     decades = {}
     for top in range(0, -20, -1):
@@ -63,7 +85,8 @@ def shares(res, c):
                                                'share': float(proj[mask].sum() / total)}
     return {'loss': total, 's_max': float(s[0]), 's_min': float(s[-1]),
             'cond': float(s[0] / s[-1]), 'in_range': float(proj.sum() / total),
-            'outside': float(1.0 - proj.sum() / total), 'decades': decades}
+            'outside': float(1.0 - proj.sum() / total), 'decades': decades,
+            'scan': rows}
 
 
 def describe(name, out):
@@ -73,6 +96,10 @@ def describe(name, out):
     for key, val in out['decades'].items():
         print(f"    s over s_max in {key}: {val['count']:>5} directions, share "
               f"{val['share']:.3e}", flush=True)
+    for row in out['scan']:
+        print(f"    lambda/s_max^2 {row['lambda_over_smax2']:.0e}: predicted "
+              f"{row['predicted']:+.3e}, true {row['true']:+.3e}, rho {row['rho']:+.3f}, "
+              f"step {row['step']:.2e}", flush=True)
 
 
 def main():
@@ -133,7 +160,7 @@ def main():
         side = Path(args.coeffs).with_suffix('.basis')
         if not side.exists() or side.read_text().strip() != lay_c.fingerprint():
             raise SystemExit('the basis of --coeffs is absent or not the layout at k1')
-        rows['level'] = shares(res, jnp.asarray(np.load(args.coeffs)))
+        rows['level'] = shares(res, jnp.asarray(np.load(args.coeffs)), scan=True)
         describe('at the saved level', rows['level'])
 
     out_dir = Path(args.out)
