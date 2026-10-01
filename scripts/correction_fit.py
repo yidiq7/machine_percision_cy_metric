@@ -115,6 +115,8 @@ def main():
                     help='form each row of J from tau and beta in dd')
     ap.add_argument('--init', type=str, default=None,
                     help='saved coefficients of the first level, as the start of LM')
+    ap.add_argument('--whiten-level', action='store_true',
+                    help='whiten the sections of each level in L2(X), as --whiten does for HN')
     ap.add_argument('--unit', type=float, default=1.0,
                     help='run LM in the scaled coordinates over this unit, so that its '
                          'start at lambda = 1 is lambda = 1/unit^2 for them')
@@ -187,7 +189,8 @@ def main():
 
     levels = []
     for level, k1 in enumerate(args.chain, start=1):
-        lay_c = sections.layout(k1, normalize=False)
+        lay_c = (whiten.whitened_layout(k1) if args.whiten_level
+                 else sections.layout(k1, normalize=False))
         alpha = k1 / args.k0
         res = correction.residual_fn_mixed(lay_c, fit_set, state, hi, args.chunk,
                                            alpha, dd_b=not args.fp64_b,
@@ -222,6 +225,9 @@ def main():
         stem = out_dir / f'corr_k{args.k0}_level{level}_k{k1}'
         np.save(stem.with_suffix('.npy'), np.asarray(coeffs))
         stem.with_suffix('.basis').write_text(lay_c.fingerprint() + '\n')
+        if args.whiten_level:
+            # W of a whitened level moves between processes, so it goes with the level.
+            whiten.save_whitening(lay_c, str(stem) + '_whiten.npz')
         cmats = sections.prepare_fp(lay_c, coeffs)
         parts_c = sections.prepare_parts(lay_c, coeffs) if args.psi_dd else None
         levels.append((lay_c, cmats, parts_c, alpha))
