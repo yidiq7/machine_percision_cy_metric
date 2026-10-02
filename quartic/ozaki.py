@@ -6,7 +6,7 @@ two grid slices is a sum of integers times one unit with at most 2 BITS + log2(K
 bits, so an FP64 matrix product of two grid slices is exact in any order of
 summation. A product with a rest slice rounds, but the rest is below 2^-(2 BITS)
 of the largest entry, so that error is below 2^-(2 BITS + 53) of it. The 9 slice
-products are added in dd. The grids come from `floor`, and no step is an
+products are added in dd. The grids come from `trunc`, and no step is an
 identity that the simplifier of XLA can remove.
 """
 from __future__ import annotations
@@ -34,7 +34,9 @@ def _slices(x, axis):
     out, rest = [], x
     for p in range(1, SLICES):
         grid = unit * 2.0 ** (-BITS * p)
-        part = jnp.floor(rest / grid) * grid
+        # Truncation keeps the sign of the rest, so rest - part takes bits of rest only
+        # and is exact; floor of a small negative rest would need 60 bits.
+        part = jnp.trunc(rest / grid) * grid
         out.append(part)
         rest = rest - part
     out.append(rest)
