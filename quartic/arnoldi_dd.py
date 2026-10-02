@@ -53,7 +53,7 @@ def _multiplier_values_dd(entries, z):
     z_dd = dd.cto_dd(z)                                                   # (N, 4)
     pw = [dd.cto_dd(jnp.ones(z.shape, jnp.complex128))]
     for _ in range(top):
-        pw.append(analytic._cmul(pw[-1], z_dd))
+        pw.append(dd.cmul(pw[-1], z_dd))
     pw = jtu.tree_map(lambda *xs: jnp.stack(xs, axis=1), *pw)            # (N, top+1, 4)
     cols = jnp.arange(4)
 
@@ -61,19 +61,19 @@ def _multiplier_values_dd(entries, z):
         part = jtu.tree_map(lambda a: a[:, jnp.asarray(exps), cols], pw)  # (N, E, P, 4)
         out = analytic._cindex(part, Ellipsis, 0)
         for c in range(1, 4):
-            out = analytic._cmul(out, analytic._cindex(part, Ellipsis, c))
+            out = dd.cmul(out, analytic._cindex(part, Ellipsis, c))
         return out
-    m = analytic._cmul(monomial(ea), (lambda v: (v[0], dd.neg(v[1])))(monomial(eb)))
+    m = dd.cmul(monomial(ea), (lambda v: (v[0], dd.neg(v[1])))(monomial(eb)))
     s = dd.sum_dd(*m[0], axis=-1)                                         # (N, E), real
-    r2 = dd.add(dd.sum_dd(*analytic._mul(z_dd[0], z_dd[0]), axis=-1),
-                dd.sum_dd(*analytic._mul(z_dd[1], z_dd[1]), axis=-1))     # (N,)
+    r2 = dd.add(dd.sum_dd(*dd.mul(z_dd[0], z_dd[0]), axis=-1),
+                dd.sum_dd(*dd.mul(z_dd[1], z_dd[1]), axis=-1))     # (N,)
     inv = dd.reciprocal(r2)
     pows = [dd.to_dd(jnp.ones_like(r2[0]))]
     for _ in range(int(degs.max())):
-        pows.append(analytic._mul(pows[-1], inv))
+        pows.append(dd.mul(pows[-1], inv))
     stack = (jnp.stack([p[0] for p in pows], axis=1), jnp.stack([p[1] for p in pows], axis=1))
     rho = jtu.tree_map(lambda a: a[:, jnp.asarray(degs)], stack)          # (N, E)
-    return analytic._mul(s, rho)
+    return dd.mul(s, rho)
 
 
 @jax.jit
@@ -87,16 +87,16 @@ def _pick_dd(cols, coef, cand, weight, alive, idx, ncur):
     extra = jtu.tree_map(lambda a: a[:, 0], extra)                        # (room,)
     proj_old = ozaki.matmul(cols, jtu.tree_map(lambda a: a[:, None], extra))
     col = dd.add(c, dd.neg(jtu.tree_map(lambda a: a[:, 0], proj_old)))
-    norm = _sqrt_dd(dd.dot_dd_fp(analytic._mul(col, col), weight, axis=0))
+    norm = _sqrt_dd(dd.dot_dd_fp(dd.mul(col, col), weight, axis=0))
     inv = dd.reciprocal(norm)
-    newcol = analytic._mul(col, inv)
+    newcol = dd.mul(col, inv)
     vec = dd.add(take(coef, idx, 1), extra)
     cols = jtu.tree_map(lambda a, x: jax.lax.dynamic_update_slice(a, x[:, None], (0, ncur)),
                         cols, newcol)
     wn = dd.mul_dd_fp(newcol, weight)
     proj = ozaki.matmul(jtu.tree_map(lambda a: a[None, :], wn), cand)     # (1, C)
     proj = jtu.tree_map(lambda a: jnp.where(alive, a[0], 0.0), proj)
-    outer = analytic._mul(jtu.tree_map(lambda a: a[:, None], newcol),
+    outer = dd.mul(jtu.tree_map(lambda a: a[:, None], newcol),
                           jtu.tree_map(lambda a: a[None, :], proj))
     cand = dd.add(cand, dd.neg(outer))
     coef = jtu.tree_map(lambda a, x: jax.lax.dynamic_update_slice(a, x[None], (ncur, 0)),
@@ -153,7 +153,7 @@ def build_joint_dd(k, z, scale, mu, d_max=12, tol=1e-9, n_by_degree=None, verbos
         shift, scale_y = np.asarray(mean)[keep], np.asarray(std)[keep]
         inv = dd.reciprocal(dd.to_dd(jnp.asarray(scale_y)))
         mvals = jtu.tree_map(lambda a: a[:, keep], mvals)
-        mvals = analytic._mul(dd.add(mvals, dd.to_dd(-jnp.broadcast_to(
+        mvals = dd.mul(dd.add(mvals, dd.to_dd(-jnp.broadcast_to(
             jnp.asarray(shift), mvals[0].shape))), jtu.tree_map(lambda a: a[None], inv))
     degs = np.array([d for d, _, _ in entries])
     norm0 = float(jnp.sqrt(jnp.sum(weight)))
@@ -172,7 +172,7 @@ def build_joint_dd(k, z, scale, mu, d_max=12, tol=1e-9, n_by_degree=None, verbos
         worst = 1.0
         if pairs:
             es, ts = (jnp.asarray([pair[i] for pair in pairs]) for i in (0, 1))
-            cand = analytic._mul(jtu.tree_map(lambda a: a[:, es], mvals),
+            cand = dd.mul(jtu.tree_map(lambda a: a[:, es], mvals),
                                  jtu.tree_map(lambda a: a[:, ts], cols))
             size = jnp.sqrt(jnp.sum(weight[:, None] * cand[0] ** 2, axis=0))
             budget = len(pairs) if want is None else max(want - ncur, 0)
@@ -267,7 +267,7 @@ def joint_jets_dd(basis, h_lo, y_jets):
             col = jtu.tree_map(lambda x: x[:, t], hb)                      # (m,)
             acc = dd.dot_dd_fp(out, col[0][None, :], axis=1)
             acc = dd.add(acc, dd.to_dd(out[0] @ col[1]))
-            new = analytic._mul(dd.add(jtu.tree_map(lambda x: x[:, t], rest), dd.neg(acc)),
+            new = dd.mul(dd.add(jtu.tree_map(lambda x: x[:, t], rest), dd.neg(acc)),
                                 jtu.tree_map(lambda x: x[t], inv_b))
             return jtu.tree_map(lambda arr, x: arr.at[:, t].set(x), out, new)
         out = jax.lax.fori_loop(0, m, step, tuple(jnp.zeros((13, m)) for _ in range(2)))

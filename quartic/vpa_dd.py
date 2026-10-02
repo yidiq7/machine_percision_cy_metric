@@ -6,7 +6,8 @@ from terms of the size of k that cancel, so those functions need dd. A jet of a
 real function F at a point is (F, D_k F, D_k Dbar_l F), with D_k = T_k . d for
 the two rows T_k of the restriction matrix, all in complex dd. The multipliers
 come from their monomials in closed form, and the recurrence of
-`arnoldi.run_recurrence` then runs on jets.
+`arnoldi.run_recurrence` then runs on jets. Every product is the exact `dd.mul`:
+the recurrence amplifies the 2^-79 of `dd.mul_fast` by about 3 for each degree.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ def _conj(a):
 
 def _creal(a, x):
     """A complex dd value times a real dd value."""
-    return analytic._mul(a[0], x), analytic._mul(a[1], x)
+    return dd.mul(a[0], x), dd.mul(a[1], x)
 
 
 def _csum(a, axis):
@@ -43,14 +44,14 @@ def _outer(a, b):
     """(a_k conj(b_l)) for complex dd vectors a, b with the last axis 2, as (..., 2, 2)."""
     left = analytic._cindex(a, Ellipsis, slice(None), None)
     right = _conj(analytic._cindex(b, Ellipsis, None, slice(None)))
-    return analytic._cmul(left, right)
+    return dd.cmul(left, right)
 
 
 def jet_mul(f, g):
     """The jet of F G from the jets of two real functions F and G."""
     fv, fd, fh = f
     gv, gd, gh = g
-    v = analytic._mul(fv, gv)
+    v = dd.mul(fv, gv)
     d = dd.cadd(_creal(fd, _ex(gv, 0)), _creal(gd, _ex(fv, 0)))
     h = dd.cadd(dd.cadd(_creal(fh, _ex(gv, 0, 0)), _creal(gh, _ex(fv, 0, 0))),
                 dd.cadd(_outer(fd, gd), _outer(gd, fd)))
@@ -59,13 +60,13 @@ def jet_mul(f, g):
 
 def _radius_jets(z_dd, rest):
     """|z|^2 as a real dd value, D_k |z|^2 and D_k Dbar_l |z|^2, at one point."""
-    r2 = dd.add(dd.sum_dd(*analytic._mul(z_dd[0], z_dd[0]), axis=0),
-                dd.sum_dd(*analytic._mul(z_dd[1], z_dd[1]), axis=0))
+    r2 = dd.add(dd.sum_dd(*dd.mul(z_dd[0], z_dd[0]), axis=0),
+                dd.sum_dd(*dd.mul(z_dd[1], z_dd[1]), axis=0))
     zbar = _conj(analytic._cindex(z_dd, None, slice(None)))
-    d = _csum(analytic._cmul(rest, zbar), axis=-1)                          # (2,)
+    d = _csum(dd.cmul(rest, zbar), axis=-1)                          # (2,)
     left = analytic._cindex(rest, slice(None), None, slice(None))
     right = _conj(analytic._cindex(rest, None, slice(None), slice(None)))
-    h = _csum(analytic._cmul(left, right), axis=-1)                         # (2, 2)
+    h = _csum(dd.cmul(left, right), axis=-1)                         # (2, 2)
     return r2, d, h
 
 
@@ -75,7 +76,7 @@ def _inverse_power_jets(r2, d_r2, h_r2, degs):
     top = int(np.max(degs))
     pows = [dd.to_dd(jnp.ones(()))]
     for _ in range(top + 2):
-        pows.append(analytic._mul(pows[-1], inv))
+        pows.append(dd.mul(pows[-1], inv))
     stack = (jnp.stack([p[0] for p in pows]), jnp.stack([p[1] for p in pows]))
     idx = jnp.asarray(degs)
     rho = jtu.tree_map(lambda a: a[idx], stack)                             # r2^-d
@@ -110,7 +111,7 @@ def multiplier_jets(entries, z_dd, rest):
     top = int(max(ea.max(), eb.max()))
     pw = [dd.cto_dd(jnp.ones(4, jnp.complex128))]
     for _ in range(top):
-        pw.append(analytic._cmul(pw[-1], z_dd))
+        pw.append(dd.cmul(pw[-1], z_dd))
     pw = jtu.tree_map(lambda *xs: jnp.stack(xs), *pw)                       # (top+1, 4)
     cols = jnp.arange(4)
 
@@ -118,22 +119,22 @@ def multiplier_jets(entries, z_dd, rest):
         part = jtu.tree_map(lambda a: a[jnp.asarray(exps), cols], pw)      # (E, P, 4)
         out = analytic._cindex(part, Ellipsis, 0)
         for c in range(1, 4):
-            out = analytic._cmul(out, analytic._cindex(part, Ellipsis, c))
+            out = dd.cmul(out, analytic._cindex(part, Ellipsis, c))
         return out
-    m = analytic._cmul(monomial(ea), _conj(monomial(eb)))                  # (E, P)
-    tz = analytic._cmul(rest, analytic._cindex(dd.creciprocal(z_dd), None, slice(None)))
+    m = dd.cmul(monomial(ea), _conj(monomial(eb)))                  # (E, P)
+    tz = dd.cmul(rest, analytic._cindex(dd.creciprocal(z_dd), None, slice(None)))
     tz_b = analytic._cindex(tz, None, None, slice(None), slice(None))      # (1, 1, 2, 4)
     alpha = _csum(analytic._cscale(tz_b, jnp.asarray(ea, jnp.float64)[:, :, None, :]), -1)
     beta = _csum(analytic._cscale(_conj(tz_b),
                                   jnp.asarray(eb, jnp.float64)[:, :, None, :]), -1)
     m_k = analytic._cindex(m, Ellipsis, None)
     s = _csum(m, axis=1)                                                    # (E,)
-    ds = _csum(analytic._cmul(m_k, alpha), axis=1)                          # (E, 2)
-    dbs = _csum(analytic._cmul(m_k, beta), axis=1)                          # (E, 2)
+    ds = _csum(dd.cmul(m_k, alpha), axis=1)                          # (E, 2)
+    dbs = _csum(dd.cmul(m_k, beta), axis=1)                          # (E, 2)
     al = analytic._cindex(alpha, Ellipsis, slice(None), None)
     be = analytic._cindex(beta, Ellipsis, None, slice(None))
-    hs = _csum(analytic._cmul(analytic._cindex(m, Ellipsis, None, None),
-                              analytic._cmul(al, be)), axis=1)              # (E, 2, 2)
+    hs = _csum(dd.cmul(analytic._cindex(m, Ellipsis, None, None),
+                              dd.cmul(al, be)), axis=1)              # (E, 2, 2)
     half = jnp.asarray(0.5)
     f_v = s[0]
     f_d = analytic._cscale(dd.cadd(ds, _conj(dbs)), half)
@@ -149,7 +150,7 @@ def basis_multiplier_jets(basis, z_dd, rest):
     if basis.shift is None:
         return v, d, h
     inv = dd.reciprocal(dd.to_dd(jnp.asarray(basis.scale)))
-    v = analytic._mul(dd.add(v, dd.to_dd(-jnp.asarray(basis.shift))), inv)
+    v = dd.mul(dd.add(v, dd.to_dd(-jnp.asarray(basis.shift))), inv)
     return v, _creal(d, _ex(inv, 0)), _creal(h, _ex(inv, 0, 0))
 
 
@@ -162,16 +163,16 @@ def weight_jets(hi, z_dd, rest, alpha, k1):
     r2, d_r2, h_r2 = _radius_jets(z_dd, rest)
     inv = dd.reciprocal(r2)
     a = (a_dd[0], a_dd[1])
-    ta = _csum(analytic._cmul(rest, analytic._cindex(a, None, slice(None))), axis=-1)
+    ta = _csum(dd.cmul(rest, analytic._cindex(a, None, slice(None))), axis=-1)
     left = analytic._cindex(rest, slice(None), None, slice(None), None)
     mid = analytic._cindex(phi_dd, None, None, slice(None), slice(None))
     right = _conj(analytic._cindex(rest, None, slice(None), None, slice(None)))
-    tpt = dd_metric._creduce_last_two(analytic._cmul(analytic._cmul(left, mid), right))
+    tpt = dd_metric._creduce_last_two(dd.cmul(dd.cmul(left, mid), right))
     scale = dd.to_dd(jnp.asarray(alpha, jnp.float64))
     d_l = dd.csub(analytic._cscale(_creal(d_r2, _ex(inv, 0)), jnp.asarray(float(k1))),
                   _creal(ta, _ex(scale, 0)))
     fs = dd.csub(_creal(h_r2, _ex(inv, 0, 0)),
-                 _creal(_outer(d_r2, d_r2), _ex(analytic._mul(inv, inv), 0, 0)))
+                 _creal(_outer(d_r2, d_r2), _ex(dd.mul(inv, inv), 0, 0)))
     h_l = dd.csub(analytic._cscale(fs, jnp.asarray(float(k1))),
                   _creal(tpt, _ex(scale, 0, 0)))
     return d_l, h_l
@@ -203,7 +204,7 @@ def low_jets(basis, n_low, y_jets):
         acc_d = tuple(dd.dot_dd_fp(part, col[:, None], axis=0) for part in jets[1])
         acc_h = tuple(dd.dot_dd_fp(part, col[:, None, None], axis=0) for part in jets[2])
         r = take(inv_h, t)
-        new = (analytic._mul(dd.add(grown[0], dd.neg(acc_v)), r),
+        new = (dd.mul(dd.add(grown[0], dd.neg(acc_v)), r),
                _creal(dd.csub(grown[1], acc_d), _ex(r, 0)),
                _creal(dd.csub(grown[2], acc_h), _ex(r, 0, 0)))
         return jtu.tree_map(lambda arr, x: arr.at[t].set(x), jets, new)
