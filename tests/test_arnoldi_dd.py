@@ -103,9 +103,31 @@ def test_hessians_match_fp64():
     print(f"  the dd Hessians match FP64 autodiff to {worst:.1e}")
 
 
+def test_weight_dd_matches_mpmath():
+    """W = (|z|^2 p^(-1/k0))^k1 in dd, under jax.jit, against mpmath at the same dd inputs."""
+    mp.mp.dps = 60
+    rng = np.random.default_rng(3)
+    p_hi = rng.uniform(1e9, 1e11, 6)
+    p_lo = p_hi * rng.uniform(-1e-16, 1e-16, 6)
+    r_hi = rng.uniform(0.5, 2.0, 6)
+    r_lo = r_hi * rng.uniform(-1e-16, 1e-16, 6)
+    worst = 0.0
+    for k0, k1 in ((28, 36), (28, 48), (12, 20)):
+        got = jax.jit(lambda a, b, c, d: arnoldi_dd.vpa_dd.weight_dd(
+            (a, b), (c, d), k0, k1))(p_hi, p_lo, r_hi, r_lo)
+        for i in range(6):
+            p = mp.mpf(float(p_hi[i])) + mp.mpf(float(p_lo[i]))
+            r = mp.mpf(float(r_hi[i])) + mp.mpf(float(r_lo[i]))
+            want = (r * p ** (mp.mpf(-1) / k0)) ** k1
+            have = mp.mpf(float(got[0][i])) + mp.mpf(float(got[1][i]))
+            worst = max(worst, float(abs(have / want - 1)))
+    assert worst < 1e-29, worst
+    print(f"  the dd weight matches mpmath to {worst:.1e}")
+
+
 if __name__ == "__main__":
-    for fn in (test_values_match_mpmath, test_basis_is_orthonormal_on_its_sample,
-               test_hessians_match_fp64):
+    for fn in (test_weight_dd_matches_mpmath, test_values_match_mpmath,
+               test_basis_is_orthonormal_on_its_sample, test_hessians_match_fp64):
         print(fn.__name__)
         fn()
     print("\nall arnoldi_dd tests pass")

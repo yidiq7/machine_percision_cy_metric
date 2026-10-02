@@ -294,7 +294,7 @@ def joint_hessians_dd(basis, h_lo, uinv, z_dd, rest, hi, alpha, weight):
     """R ddbar(W q_t) R^dag for every function of the level in complex dd, (n, 2, 2).
 
     `rest` is the dd restriction matrix, `hi` the dd state of the base and `weight`
-    the FP64 value of W = w |z|^(2k), a factor common to every function.
+    the value of W = w |z|^(2k), a factor common to every function, in FP64 or dd.
     """
     q_v, q_d, q_h = joint_jets_dd(basis, h_lo,
                                   vpa_dd.basis_multiplier_jets(basis, z_dd, rest), uinv)
@@ -304,4 +304,7 @@ def joint_hessians_dd(basis, h_lo, uinv, z_dd, rest, hi, alpha, weight):
     lead = dd.cadd(dd.cadd(q_h, vpa_dd._outer(q_d, d_lb)), vpa_dd._outer(d_lb, q_d))
     rest_term = vpa_dd._creal(dd.cadd(h_lb, analytic._cindex(vpa_dd._outer(d_l, d_l), None)),
                               vpa_dd._ex(q_v, 0, 0))
-    return analytic._cscale(dd.cadd(lead, rest_term), weight)
+    total = dd.cadd(lead, rest_term)
+    if isinstance(weight, tuple):
+        return vpa_dd._creal(total, weight)
+    return analytic._cscale(total, weight)

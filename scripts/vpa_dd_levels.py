@@ -36,7 +36,7 @@ import correction_fit as cf                                 # noqa: E402
 import vpa_dd_fit as vdf                                    # noqa: E402
 import vpa_fit as vf                                        # noqa: E402
 from quartic import (analytic, arnoldi, arnoldi_dd, correction, data, dd,  # noqa: E402
-                     dd_metric, fit, metric, sections)
+                     dd_metric, fit, metric, sections, vpa_dd)
 
 T0 = time.perf_counter()
 
@@ -47,13 +47,14 @@ def say(text):
 
 @dataclasses.dataclass
 class Level:
+    k0: int
     k1: int
     alpha: float
     basis: arnoldi.JointBasis
     h_lo: np.ndarray
     uinv: tuple
     null: tuple            # (n_low, gamma, b0), or None
-    weight_fn: object      # w = p0^(-alpha) at an FP64 point
+    weight_fn: object      # w = p0^(-alpha) at an FP64 point, for the build and psi_N
 
 
 def truncated(basis, h_lo, uinv, n):
@@ -69,16 +70,20 @@ def truncated(basis, h_lo, uinv, n):
 
 
 def point_hessians(lay0, parts0, levels, hs, a):
-    """The base in dd at one point and the dd Hessians of every level, psi_N in place."""
+    """The base in dd at one point and the dd Hessians of every level, psi_N in place.
+
+    The weight W of each level comes in dd, so that the sums of two levels keep
+    their digits where they cancel.
+    """
     z, rest, extra = a
-    state, hi = correction.base_state_dd(lay0, parts0, z, extra)
+    state, hi, p_dd = correction.base_state_dd(lay0, parts0, z, extra, with_p=True)
     z_dd, m, free = analytic._dd_point(extra)
     rest_dd, _ = dd_metric._restriction_dd(z_dd, m, free)
-    r2 = jnp.sum(jnp.abs(z) ** 2)
+    r2 = vpa_dd._radius_jets(z_dd, rest_dd)[0]
     ps = []
     for lev, (h, hl) in zip(levels, hs):
         basis = dataclasses.replace(lev.basis, h=h)
-        scale = lev.weight_fn(z) * r2 ** lev.k1
+        scale = vpa_dd.weight_dd(p_dd, r2, lev.k0, lev.k1)
         p = arnoldi_dd.joint_hessians_dd(basis, hl, lev.uinv, z_dd, rest_dd, hi, lev.alpha,
                                          scale)
         ps.append(vdf.with_null(p, lev.null)[0])
@@ -181,7 +186,7 @@ def build_level(k0, k1, lay0, mats0, build, check, counts, args, out_dir):
         null = (len(gamma), gamma, int(np.argmax(np.abs(gamma))))
         say(f'k1 = {k1}: loaded from {src}: dimension {basis.h.shape[0]}, psi_N from the '
             f'first {null[0]} functions replaces function {null[2]}')
-        return Level(k1, alpha, basis, h_lo, uinv, null, weight_fn), {'loaded': str(src)}
+        return Level(k0, k1, alpha, basis, h_lo, uinv, null, weight_fn), {'loaded': str(src)}
 
     t1 = time.perf_counter()
     r2 = jnp.sum(jnp.abs(build['points']) ** 2, axis=1)
@@ -240,7 +245,7 @@ def build_level(k0, k1, lay0, mats0, build, check, counts, args, out_dir):
         say(f'k1 = {k1}: Gram on {args.n_check} independent points in '
             f'{time.perf_counter() - t1:.0f}s: eigenvalues {eig[0]:.4f} to {eig[-1]:.4f}')
         del vals
-    return Level(k1, alpha, basis, h_lo, uinv, null, weight_fn), row
+    return Level(k0, k1, alpha, basis, h_lo, uinv, null, weight_fn), row
 
 
 def main():
@@ -268,6 +273,8 @@ def main():
     ap.add_argument('--chunk', type=int, default=256)
     ap.add_argument('--block', type=int, default=65_536,
                     help='points in one call of the compiled residual program')
+    ap.add_argument('--cutoffs', type=float, nargs='+', default=[0.0],
+                    help='cutoffs of s / s_max of the scaled J; 0 keeps every direction')
     ap.add_argument('--null-degree', type=int, default=9)
     ap.add_argument('--gram', action='store_true',
                     help='also report the Gram eigenvalues of each built basis')
@@ -349,30 +356,38 @@ def main():
             rows_sub = lrows[:, jnp.asarray(cols)]
         q, r, norms = factor(rows_sub, f0, mass, m0)
         del rows_sub
-        spec, sols, predicted, step = solve(q, r, norms, r0, [0.0])
+        spec, sols, predicted, step = solve(q, r, norms, r0, args.cutoffs)
         del q, r
         say(f"levels {name}: {len(cols)} functions, QR and SVD in "
             f"{time.perf_counter() - t1:.0f}s; columns scaled, cond {spec['cond_scaled']:.3e}, "
             f"the 4 smallest s / s_max {['%.2e' % x for x in spec['smallest']]}; share "
-            f"outside the range of J {spec['outside']:.3e}, linear model loss "
-            f"{predicted[0]:.4e}")
+            f"outside the range of J {spec['outside']:.3e}")
         for key, (count, share) in spec['shares'].items():
             print(f'    s / s_max in {key}: {count} values, share of the loss {share:.3e}',
                   flush=True)
-        c = np.zeros(total)
-        c[cols] = sols[:, 0]
-        coeffs.append(c)
-        labels.append(name)
-        preds.append(predicted[0])
-        steps[name] = (cols, step)
-        record['solutions'].append({'levels': sub, 'label': name, 'spectrum': spec,
-                                    'predicted_loss': predicted[0]})
+        for j, tau in enumerate(args.cutoffs):
+            label = name if tau == 0.0 else f'{name}, cutoff {tau:.0e}'
+            c = np.zeros(total)
+            c[cols] = sols[:, j]
+            print(f'    {label}: linear model loss {predicted[j]:.4e}', flush=True)
+            for k in sub:
+                lev = levels[args.k1.index(k)]
+                part = c[columns[k]]
+                psi_n = part[lev.null[2]] if lev.null is not None else float('nan')
+                print(f'        level {k}: norm of c {np.linalg.norm(part):.3e}, coefficient '
+                      f'of psi_N {psi_n:.6f}', flush=True)
+            coeffs.append(c)
+            labels.append(label)
+            preds.append(predicted[j])
+            steps[label] = (cols, step, tau)
+            record['solutions'].append({'levels': sub, 'label': label, 'cutoff': tau,
+                                        'spectrum': spec, 'predicted_loss': predicted[j]})
     del lrows
     coeffs = np.stack(coeffs, axis=1)
 
     program = residual_program(lay0, parts0, levels, args.chunk)
     t1 = time.perf_counter()
-    f_fit = vdf.residuals(program, coeffs, fit_set, args.block)
+    f_fit = np.array(vdf.residuals(program, coeffs, fit_set, args.block))
     say(f'the fit set in dd in {time.perf_counter() - t1:.0f}s')
     fits = {}
     for i, label in enumerate(labels):
@@ -382,18 +397,25 @@ def main():
               f"{got['mape']:.4e}, loss {got['loss']:.4e} against the linear model "
               f"{preds[i]:.4e}", flush=True)
     root = jnp.sqrt(mass)
+    best = np.array([fits[label][0]['loss'] for label in labels])
     for it in range(1, args.refine + 1):
         t1 = time.perf_counter()
+        trial = coeffs.copy()
         for i, label in enumerate(labels[1:], start=1):
-            cols, step = steps[label]
-            coeffs[cols, i] += step(root * jnp.asarray(f_fit[:, i]), 0.0)
-        f_fit = vdf.residuals(program, coeffs, fit_set, args.block)
+            cols, step, tau = steps[label]
+            trial[cols, i] += step(root * jnp.asarray(f_fit[:, i]), tau)
+        f_new = vdf.residuals(program, trial, fit_set, args.block)
         say(f'refinement {it} in {time.perf_counter() - t1:.0f}s')
         for i, label in enumerate(labels[1:], start=1):
-            got = vf.summary(f_fit[:, i], fit_set)
+            got = vf.summary(f_new[:, i], fit_set)
             fits[label].append(got)
-            print(f"    {label}: fit set sigma {got['mape']:.4e}, loss {got['loss']:.4e}",
-                  flush=True)
+            # A step from an ill-conditioned J can raise the loss; such a column keeps
+            # its earlier coefficients.
+            kept = got['loss'] < best[i]
+            if kept:
+                coeffs[:, i], f_fit[:, i], best[i] = trial[:, i], f_new[:, i], got['loss']
+            print(f"    {label}: fit set sigma {got['mape']:.4e}, loss {got['loss']:.4e}"
+                  f"{'' if kept else ', not kept'}", flush=True)
     del steps
     tag = f"k0_{args.k0}_" + '_'.join(str(k) for k in args.k1)
     np.save(out_dir / f'vpa_levels_coeffs_{tag}.npy', coeffs)

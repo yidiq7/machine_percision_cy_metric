@@ -119,12 +119,12 @@ def residual_fn(lay_c, batch, state, chunk, alpha, fs_weight, basis=None):
     return res
 
 
-def base_state_dd(lay0, mats0, z, extra):
+def base_state_dd(lay0, mats0, z, extra, with_p=False):
     """The state of log p_0 at the dd point, and (ddbar log p_0, d log p_0) in dd.
 
     The Gram stage and the centered form run in the dd path of `analytic`, so its
     flags must select END_DD and GRAM_DD, and `mats0` is `analytic.point_matrices`.
-    The dd pair is the `hi` state of the mixed form.
+    The dd pair is the `hi` state of the mixed form. With `with_p`, p_0 in dd follows.
     """
     z_dd, _, _ = analytic._dd_point(extra)
     sig, dsig, _, _ = analytic._section_vectors(lay0, z, z_dd=z_dd)
@@ -133,7 +133,8 @@ def base_state_dd(lay0, mats0, z, extra):
     p_dd, p_i_dd, _ = extras
     inv_p = dd.reciprocal(p_dd)
     a_dd = (analytic._mul(p_i_dd[0], inv_p), analytic._mul(p_i_dd[1], inv_p))
-    return (jnp.log(p), p_i / p, dd.cto_fp(phi_dd)), (phi_dd, a_dd)
+    out = (jnp.log(p), p_i / p, dd.cto_fp(phi_dd)), (phi_dd, a_dd)
+    return out + (p_dd,) if with_p else out
 
 
 def volume_mixed(lay_c, cmats, extra, state, hi, alpha):

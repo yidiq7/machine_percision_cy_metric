@@ -19,7 +19,7 @@ import numpy as np
 from . import analytic, arnoldi, dd, dd_metric
 
 __all__ = ['jet_mul', 'multiplier_jets', 'basis_multiplier_jets', 'weight_jets',
-           'low_jets', 'low_hessians']
+           'weight_dd', 'low_jets', 'low_hessians']
 
 
 def _conj(a):
@@ -176,6 +176,30 @@ def weight_jets(hi, z_dd, rest, alpha, k1):
     h_l = dd.csub(analytic._cscale(fs, jnp.asarray(float(k1))),
                   _creal(tpt, _ex(scale, 0, 0)))
     return d_l, h_l
+
+
+def _power(x, n):
+    """x^n for a real dd value x and an integer n >= 1, by repeated squares."""
+    out, base = None, x
+    while True:
+        if n & 1:
+            out = base if out is None else dd.mul(out, base)
+        n >>= 1
+        if not n:
+            return out
+        base = dd.mul(base, base)
+
+
+def weight_dd(p_dd, r2, k0, k1):
+    """W = |z|^(2 k1) p_0^(-k1/k0) in dd, from p_0 and |z|^2 in dd.
+
+    t = p_0^(-1/k0) comes from one Newton step t (1 + (1 - p_0 t^k0) / k0) on the
+    FP64 root, which squares its relative error, and then W = (|z|^2 t)^k1.
+    """
+    t = dd.to_dd(p_dd[0] ** (-1.0 / k0))
+    gap = dd.add(dd.to_dd(jnp.ones_like(p_dd[0])), dd.neg(dd.mul(p_dd, _power(t, k0))))
+    t = dd.add(t, dd.mul(t, dd.mul_dd_fp(gap, jnp.asarray(1.0 / k0))))
+    return _power(dd.mul(r2, t), k1)
 
 
 def low_jets(basis, n_low, y_jets):
