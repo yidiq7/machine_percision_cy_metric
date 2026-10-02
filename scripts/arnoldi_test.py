@@ -155,15 +155,23 @@ def main():
         else:
             r2 = jnp.sum(jnp.abs(build['points']) ** 2, axis=1)
             mu_build = build['mass'] / jnp.sum(build['mass'])
-            basis = arnoldi.build_joint(k1, np.asarray(build['points']),
-                                        np.asarray(w_build * r2 ** k1), np.asarray(mu_build),
-                                        d_max=args.d_max, n_target=lay_c.n_theta)
+            lays = {j: sections.layout(j, normalize=False) for j in range(1, k1 + 1)}
+            basis, trace = arnoldi.build_joint(
+                k1, np.asarray(build['points']), np.asarray(w_build * r2 ** k1),
+                np.asarray(mu_build), d_max=args.d_max,
+                n_by_degree={j: lay.n_theta for j, lay in lays.items()}, layouts=lays)
             report = {'dim': int(basis.h.shape[0]), 'n_theta': lay_c.n_theta,
-                      'n_multipliers': len(basis.entries),
-                      'top_degree': int(basis.degrees.max())}
+                      'n_multipliers': len(basis.entries), 'n_seeds': len(basis.seeds),
+                      'trace': trace}
             say(f"k1 = {k1}: joint V+A basis in {time.perf_counter() - t1:.0f}s: dimension "
                 f"{report['dim']} of n = {lay_c.n_theta}, {report['n_multipliers']} "
-                f"multipliers of degree <= {args.d_max}, highest degree {report['top_degree']}")
+                f"multipliers of degree <= {args.d_max}, {report['n_seeds']} seeds")
+            for row in trace:
+                if row['seeded'] or row['worst_product_ratio'] < 1e-3:
+                    print(f"    degree {row['degree']}: {row['dim']} of {row['want']}, "
+                          f"{row['from_products']} from products (worst ratio "
+                          f"{row['worst_product_ratio']:.1e}), {row['seeded']} seeds "
+                          f"(worst ratio {row['worst_seed_ratio']:.1e})", flush=True)
             if report['dim'] < lay_c.n_theta:
                 rows[f'k1_{k1}'] = {'report': report}
                 continue

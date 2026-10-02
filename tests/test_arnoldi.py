@@ -101,21 +101,25 @@ def test_restricted_hessian_matches_psi_parts():
     print(f"  the restricted Hessian matches psi_parts to {worst:.1e}")
 
 
-def joint():
+def joint(d_max=8):
     lay0, mats0, weight = base()
     lay_c = sections.layout(K1, normalize=False)
     z = SAMPLE['points']
     r2 = jnp.sum(jnp.abs(z) ** 2, axis=1)
     scale = jax.vmap(weight)(z) * r2 ** K1
-    basis = arnoldi.build_joint(K1, np.asarray(z), np.asarray(scale),
-                                np.asarray(SAMPLE['mass'] / jnp.sum(SAMPLE['mass'])),
-                                n_target=lay_c.n_theta)
-    return weight, lay_c, basis
+    lays = {j: sections.layout(j, normalize=False) for j in range(1, K1 + 1)}
+    basis, trace = arnoldi.build_joint(
+        K1, np.asarray(z), np.asarray(scale),
+        np.asarray(SAMPLE['mass'] / jnp.sum(SAMPLE['mass'])), d_max=d_max,
+        n_by_degree={j: lay.n_theta for j, lay in lays.items()}, layouts=lays)
+    return weight, lay_c, basis, trace
 
 
 def test_joint_reaches_the_dimension_and_is_orthonormal():
-    weight, lay_c, basis = joint()
+    weight, lay_c, basis, trace = joint()
     assert basis.h.shape[0] == lay_c.n_theta, (basis.h.shape, lay_c.n_theta)
+    for row in trace:
+        assert row['dim'] == row['want'], row
     z = SAMPLE['points']
     vals = arnoldi.joint_values(basis, z, jax.vmap(weight)(z))
     mu = SAMPLE['mass'] / jnp.sum(SAMPLE['mass'])
@@ -127,8 +131,24 @@ def test_joint_reaches_the_dimension_and_is_orthonormal():
           f"orthonormal on the sample to {gap:.1e}")
 
 
+def test_joint_with_seeds_matches_the_build():
+    """With d_max = 2 the products fall short, and the seeds fill the gap."""
+    weight, lay_c, basis, trace = joint(d_max=2)
+    assert basis.h.shape[0] == lay_c.n_theta, (basis.h.shape, lay_c.n_theta)
+    assert sum(row['seeded'] for row in trace) > 0, trace
+    z = SAMPLE['points']
+    vals = arnoldi.joint_values(basis, z, jax.vmap(weight)(z))
+    mu = SAMPLE['mass'] / jnp.sum(SAMPLE['mass'])
+    gram = vals.T @ (mu[:, None] * vals)
+    gap = float(jnp.abs(gram - jnp.eye(gram.shape[0])).max())
+    assert gap < 1e-10, gap
+    print(f"  with d_max = 2: {sum(row['seeded'] for row in trace)} seeds, worst seed "
+          f"ratio {min(row['worst_seed_ratio'] for row in trace):.1e}, orthonormal on "
+          f"the sample to {gap:.1e}")
+
+
 def test_joint_spans_the_product_basis():
-    weight, lay_c, basis = joint()
+    weight, lay_c, basis, _ = joint()
     z = TEST['points']
     w = jax.vmap(weight)(z)
     vals = np.asarray(arnoldi.joint_values(basis, z, w))
@@ -148,6 +168,7 @@ if __name__ == "__main__":
                test_basis_spans_the_product_basis,
                test_restricted_hessian_matches_psi_parts,
                test_joint_reaches_the_dimension_and_is_orthonormal,
+               test_joint_with_seeds_matches_the_build,
                test_joint_spans_the_product_basis):
         print(fn.__name__)
         fn()
