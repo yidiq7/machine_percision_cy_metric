@@ -659,10 +659,15 @@ def _fp(v):
 
 
 def residual_from_volumes(v, weights):
-    """f = v/<v> - 1 from v in FP64, or from a dd pair in dd with f rounded once."""
+    """f = v/<v> - 1 from v in FP64, or from a dd pair in dd with f rounded once.
+
+    <v> = sum w v / sum w: weights divided by their FP64 sum add up to 1 only to
+    about 1e-16, and that offset would move every f by the same amount.
+    """
     if not isinstance(v, tuple):
-        return v / jnp.sum(weights * v) - 1.0
-    mean = dd.dot_dd_fp(v, weights, axis=0)
+        return v * jnp.sum(weights, axis=0) / jnp.sum(weights * v, axis=0) - 1.0
+    mean = dd.mul(dd.dot_dd_fp(v, weights, axis=0),
+                  dd.reciprocal(dd.sum_fp(weights, axis=0)))
     ratio = dd.mul(v, dd.reciprocal(mean))
     return dd.to_fp(dd.add(ratio, dd.to_dd(-jnp.ones_like(v[0]))))
 
