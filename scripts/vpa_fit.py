@@ -69,8 +69,25 @@ def point_inputs(batch):
             (batch['points_hi'], batch['points_lo'], batch['patch']))
 
 
-def fit_rows(lay0, parts0, basis, weight_fn, batch, chunk):
-    """v_0 as a dd pair and the rows L of dv/dc at every point, as (N,) and (N, n)."""
+def null_hessian(lev, null, z, z_dd, m, free, hi, weight_fn, alpha):
+    """R ddbar psi_N R^dag in complex dd, and the dd Hessians of the low functions.
+
+    psi_N = sum over b < n_low of gamma_b G_b, the function of the low part that is
+    closest to 1 on X. The sum runs in dd, so the cancellation in its Hessian is exact.
+    """
+    n_low, gamma, _ = null
+    rest_dd, _ = dd_metric._restriction_dd(z_dd, m, free)
+    scale = weight_fn(z) * jnp.sum(jnp.abs(z) ** 2) ** lev.k
+    low = vpa_dd.low_hessians(lev, n_low, z_dd, rest_dd, hi, alpha, scale)
+    g = jnp.asarray(gamma)[:, None, None]
+    return tuple(dd.dot_dd_fp(comp, g, axis=0) for comp in low), low
+
+
+def fit_rows(lay0, parts0, basis, weight_fn, batch, chunk, alpha=None, null=None):
+    """v_0 as a dd pair and the rows L of dv/dc at every point, as (N,) and (N, n).
+
+    With `null` = (n_low, gamma, b0), column b0 is the row of psi_N in place of G_b0.
+    """
     def one(a, h):
         z, rest, extra = a
         lev = dataclasses.replace(basis, h=h)
@@ -79,17 +96,21 @@ def fit_rows(lay0, parts0, basis, weight_fn, batch, chunk):
         v0 = analytic._volume_from_phi_dd(hi[0], z_dd, m, free, keep=True)
         g0 = rest @ state[2] @ jnp.conj(rest).T
         p = arnoldi.joint_hessians(lev, z, rest, weight_fn)                  # (n, 2, 2)
+        if null is not None:
+            p_n, _ = null_hessian(lev, null, z, z_dd, m, free, hi, weight_fn, alpha)
+            p = p.at[null[2]].set(dd.cto_fp(p_n))
         rows = jnp.real(jnp.einsum('kl,blk->b', jnp.linalg.inv(g0), p))
         return v0, dd.to_fp(v0) * rows
     return jax.jit(lambda x, h: jax.lax.map(lambda a: one(a, h), x, batch_size=chunk))(
         point_inputs(batch), jnp.asarray(basis.h))
 
 
-def residuals(lay0, parts0, basis, weight_fn, coeffs, batch, chunk, alpha, n_low=0):
+def residuals(lay0, parts0, basis, weight_fn, coeffs, batch, chunk, alpha, n_low=0,
+              null=None):
     """f in dd, rounded once, at every point for each column of coeffs, as (N, n_c).
 
     The first `n_low` functions take their Hessians from `vpa_dd` in dd, and the
-    others from FP64 autodiff.
+    others from FP64 autodiff. With `null`, coefficient b0 multiplies psi_N.
     """
     def one(a, cc, h):
         z, rest, extra = a
@@ -97,7 +118,9 @@ def residuals(lay0, parts0, basis, weight_fn, coeffs, batch, chunk, alpha, n_low
         _, hi = correction.base_state_dd(lay0, parts0, z, extra)
         z_dd, m, free = analytic._dd_point(extra)
         p = arnoldi.joint_hessians(lev, z, rest, weight_fn)                  # (n, 2, 2)
-        if n_low:
+        if null is not None:
+            p_n, low = null_hessian(lev, null, z, z_dd, m, free, hi, weight_fn, alpha)
+        elif n_low:
             rest_dd, _ = dd_metric._restriction_dd(z_dd, m, free)
             scale = weight_fn(z) * jnp.sum(jnp.abs(z) ** 2) ** basis.k
             low = vpa_dd.low_hessians(lev, n_low, z_dd, rest_dd, hi, alpha, scale)
@@ -105,8 +128,12 @@ def residuals(lay0, parts0, basis, weight_fn, coeffs, batch, chunk, alpha, n_low
         def volume(c):
             delta = jnp.einsum('bkl,b->kl', p[n_low:], c[n_low:])
             if n_low:
-                part = tuple(dd.dot_dd_fp(comp, c[:n_low, None, None], axis=0)
+                c_low = c[:n_low] if null is None else c[:n_low].at[null[2]].set(0.0)
+                part = tuple(dd.dot_dd_fp(comp, c_low[:, None, None], axis=0)
                              for comp in low)
+                if null is not None:
+                    k = c[null[2]]
+                    part = dd.cadd(part, (dd.mul_dd_fp(p_n[0], k), dd.mul_dd_fp(p_n[1], k)))
                 delta = dd.cadd(part, dd.cto_dd(delta))
             return analytic._volume_from_phi_dd(hi[0], z_dd, m, free, keep=True,
                                                 delta=delta)
@@ -206,6 +233,9 @@ def main():
     ap.add_argument('--dd-degree', type=int, default=0,
                     help='the functions of degree up to this, and before the first seed, '
                          'take their Hessians in dd in the evaluation')
+    ap.add_argument('--null', action='store_true',
+                    help='replace the low function closest to psi_N by psi_N, the function '
+                         'of the low part closest to 1, with its Hessian summed in dd')
     ap.add_argument('--refine', type=int, default=0,
                     help='steps of -J^+ r from the residual in dd after the solve')
     ap.add_argument('--out', type=str, default='runs_vpa')
@@ -287,8 +317,28 @@ def main():
         say(f'k1 = {k1}: Gram of the basis on {args.n_check} independent points: '
             f'eigenvalues {eig[0]:.4f} to {eig[-1]:.4f}')
 
+        n_low, null = 0, None
+        if args.dd_degree > 0:
+            seeded = np.nonzero(np.asarray(basis.seed_slot) >= 0)[0]
+            n_low = min(counts[args.dd_degree], int(seeded[0]) if len(seeded) else n)
+            say(f'k1 = {k1}: the first {n_low} functions take their Hessians in dd')
+        row['n_low'] = n_low
+        if args.null:
+            if not n_low:
+                raise SystemExit('--null needs --dd-degree')
+            low = vals[:, :n_low] * jnp.sqrt(mu)[:, None]
+            gamma = np.asarray(jnp.linalg.lstsq(low, jnp.sqrt(mu))[0])
+            b0 = int(np.argmax(np.abs(gamma)))
+            gap = float(jnp.linalg.norm(low @ gamma - jnp.sqrt(mu)))
+            null = (n_low, gamma, b0)
+            row['null'] = {'gamma': gamma.tolist(), 'b0': b0, 'rms_gap': gap}
+            say(f'k1 = {k1}: psi_N from the first {n_low} functions replaces function {b0}; '
+                f'rms of psi_N - 1 on the check points {gap:.3e}; gamma '
+                f'{["%.3e" % g for g in gamma[:6]]}')
+        del vals
+
         t1 = time.perf_counter()
-        v0, lrows = fit_rows(lay0, parts0, basis, weight_fn, fit_set, args.chunk)
+        v0, lrows = fit_rows(lay0, parts0, basis, weight_fn, fit_set, args.chunk, alpha, null)
         mass = fit_set['mass'] / jnp.sum(fit_set['mass'])
         f0 = analytic.residual_from_volumes(v0, mass)
         m0 = float(dd.to_fp(dd.dot_dd_fp(v0, mass, axis=0)))
@@ -298,6 +348,8 @@ def main():
         say(f'k1 = {k1}: rows of J at {args.n_fit} points in {time.perf_counter() - t1:.0f}s')
 
         mapped = None
+        if args.map is not None and null is not None:
+            raise SystemExit('--map takes the plain V+A coordinates, so not with --null')
         if args.map is not None:
             path = args.map[args.k1.index(k1)]
             lay_p = sections.layout(k1, normalize=False)
@@ -340,12 +392,6 @@ def main():
               f"{spec['smallest_vector_top']}, step along it {spec['smallest_step']:.3e}",
               flush=True)
 
-        n_low = 0
-        if args.dd_degree > 0:
-            seeded = np.nonzero(np.asarray(basis.seed_slot) >= 0)[0]
-            n_low = min(counts[args.dd_degree], int(seeded[0]) if len(seeded) else n)
-            say(f'k1 = {k1}: the first {n_low} functions take their Hessians in dd')
-        row['n_low'] = n_low
         coeffs = np.concatenate([np.zeros((n, 1)), sols], axis=1)
         labels = ['base'] + [f'cutoff {tau:.0e}' for tau in args.cutoffs]
         predicted = list(predicted)
@@ -355,7 +401,7 @@ def main():
             predicted.append(row['mapped']['predicted_loss'])
         t1 = time.perf_counter()
         f_fit = residuals(lay0, parts0, basis, weight_fn, coeffs, fit_set, args.chunk,
-                          alpha, n_low)
+                          alpha, n_low, null)
         say(f'k1 = {k1}: the fit set in dd in {time.perf_counter() - t1:.0f}s')
         row['solutions'] = []
         for i, label in enumerate(labels):
@@ -373,7 +419,7 @@ def main():
             for i, tau in enumerate(args.cutoffs):
                 coeffs[:, 1 + i] += step(res[:, 1 + i], tau)
             f_fit = residuals(lay0, parts0, basis, weight_fn, coeffs, fit_set, args.chunk,
-                              alpha, n_low)
+                              alpha, n_low, null)
             say(f'k1 = {k1}: refinement {it} in {time.perf_counter() - t1:.0f}s')
             for i, tau in enumerate(args.cutoffs):
                 got = summary(f_fit[:, 1 + i], fit_set)
@@ -385,7 +431,7 @@ def main():
 
         t1 = time.perf_counter()
         f_hold = residuals(lay0, parts0, basis, weight_fn, coeffs, hold, args.chunk,
-                           alpha, n_low)
+                           alpha, n_low, null)
         say(f'k1 = {k1}: the hold-out in dd in {time.perf_counter() - t1:.0f}s')
         for i, label in enumerate(labels):
             got = summary(f_hold[:, i], hold)
