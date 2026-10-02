@@ -5,8 +5,10 @@ V+A basis of the level on a sample, stores R ddbar G R^dag of every basis
 function at the fit and hold-out points, and runs LM on the stored values:
 g = R ddbar(log p_0) R^dag + sum_b c_b P_b, v = det(g) / OmegaOmegabar. It
 reports the checks of the build, the orthonormality on an independent sample,
-cond(J) at c = 0, the size of c and sigma, and the same for the product basis
-on the same points.
+cond(J) at c = 0, and the size of c and sigma for LM with and without the
+columns of J scaled. It does the same for the product basis on the same points,
+and it puts the product optimum into the V+A coordinates by least squares on
+the values of psi, to test that the two models agree.
 
 Usage, on the GPU node:
     uv run --extra gpu python -u scripts/arnoldi_test.py --k0 12 --k1 16 20
@@ -81,10 +83,13 @@ def sigma_of(r, batch):
 def spectrum(jac):
     norms = np.linalg.norm(jac, axis=0)
     raw = np.linalg.svd(jac, compute_uv=False)
-    scaled = np.linalg.svd(jac / norms, compute_uv=False)
+    _, scaled, vt = np.linalg.svd(jac / norms, full_matrices=False)
+    low = np.abs(vt[-1])
+    top = np.argsort(low)[::-1][:4]
     return {'cond_raw': float(raw[0] / raw[-1]), 'cond_scaled': float(scaled[0] / scaled[-1]),
             'smallest_scaled': [float(s) for s in scaled[-4:] / scaled[0]],
-            'column_norms': [float(norms.min()), float(norms.max())]}
+            'column_norms': [float(norms.min()), float(norms.max())],
+            'smallest_vector_top': [[int(i), float(low[i])] for i in top]}
 
 
 def lm(res, n, max_steps, scale=None):
@@ -191,20 +196,28 @@ def main():
             f"{time.perf_counter() - t1:.0f}s")
 
         res = residual_from_stored(g0_fit, p_fit, fit_set)
+        res_hold = residual_from_stored(g0_hold, p_hold, hold)
         n = lay_c.n_theta
         jac = np.asarray(jax.jit(jax.jacfwd(res))(jnp.zeros(n)))
         spec = spectrum(jac)
-        t1 = time.perf_counter()
-        coeffs, steps = lm(jax.jit(res), n, args.max_steps)
-        mape, rms, top = sigma_of(residual_from_stored(g0_hold, p_hold, hold)(coeffs), hold)
-        fit_mape = sigma_of(res(coeffs), fit_set)[0]
         say(f"k1 = {k1}, V+A: cond(J) at 0 {spec['cond_raw']:.3e} (columns scaled "
-            f"{spec['cond_scaled']:.3e}), {steps} steps, {time.perf_counter() - t1:.0f}s, "
-            f"sigma {mape:.4e} on the hold-out, {fit_mape:.4e} on the fit set, rms "
-            f"{rms:.3e}, max {top:.3e}, norm of c {float(jnp.linalg.norm(coeffs)):.3e}")
+            f"{spec['cond_scaled']:.3e}); the 4 smallest scaled singular values over the "
+            f"largest {['%.2e' % s for s in spec['smallest_scaled']]}; largest components "
+            f"of that singular vector {spec['smallest_vector_top']}")
         row = {'report': report, 'gram_eig': [float(eig[0]), float(eig[-1])],
-               'vpa': {'spec': spec, 'steps': steps, 'sigma': mape, 'sigma_fit': fit_mape,
-                       'rms': rms, 'max': top, 'norm_c': float(jnp.linalg.norm(coeffs))}}
+               'vpa_spec': spec}
+        # LM in the plain V+A coordinates, and with each column of J scaled to 1.
+        for label, scale in (('vpa', None),
+                             ('vpa_scaled', jnp.asarray(1.0 / np.linalg.norm(jac, axis=0)))):
+            t1 = time.perf_counter()
+            coeffs, steps = lm(jax.jit(res), n, args.max_steps, scale=scale)
+            mape, rms, top = sigma_of(res_hold(coeffs), hold)
+            fit_mape = sigma_of(res(coeffs), fit_set)[0]
+            say(f"k1 = {k1}, {label}: {steps} steps, {time.perf_counter() - t1:.0f}s, "
+                f"sigma {mape:.4e} on the hold-out, {fit_mape:.4e} on the fit set, rms "
+                f"{rms:.3e}, max {top:.3e}, norm of c {float(jnp.linalg.norm(coeffs)):.3e}")
+            row[label] = {'steps': steps, 'sigma': mape, 'sigma_fit': fit_mape, 'rms': rms,
+                          'max': top, 'norm_c': float(jnp.linalg.norm(coeffs))}
 
         # The product basis on the same points, with each column of J scaled to 1.
         state_fit = correction.states(lambda z: correction.base_state(lay0, mats0, z),
@@ -230,6 +243,26 @@ def main():
             f"{float(jnp.linalg.norm(coeffs_p)):.3e}")
         row['product'] = {'spec': spec_p, 'steps': steps_p, 'sigma': mape_p,
                           'norm_c': float(jnp.linalg.norm(coeffs_p))}
+
+        # The product optimum in the V+A coordinates: psi on the fit set, in weighted
+        # least squares, then sigma from the stored P on the hold-out.
+        psi_fit = jax.jit(lambda cm, x: jax.lax.map(
+            lambda a: correction.psi_parts(lay_c, cm, a[0], alpha, *a[1])[0], x,
+            batch_size=args.chunk))(cmats, (fit_set['points'], state_fit))
+        vals_fit = values_fn(basis, fit_set['points'], jax.vmap(weight_fn)(fit_set['points']))
+        root = np.sqrt(np.asarray(fit_set['mass'] / jnp.sum(fit_set['mass'])))
+        lhs, rhs = root[:, None] * np.asarray(vals_fit), root * np.asarray(psi_fit)
+        c_map, *_ = np.linalg.lstsq(lhs, rhs, rcond=None)
+        miss = float(np.linalg.norm(lhs @ c_map - rhs) / np.linalg.norm(rhs))
+        mape_m, rms_m, top_m = sigma_of(res_hold(jnp.asarray(c_map)), hold)
+        say(f"k1 = {k1}, product optimum in V+A coordinates: L2 norm of psi "
+            f"{float(np.linalg.norm(rhs)):.3e}, relative miss {miss:.1e}, norm of c "
+            f"{float(np.linalg.norm(c_map)):.3e}, largest components "
+            f"{[[int(i), float(c_map[i])] for i in np.argsort(np.abs(c_map))[::-1][:3]]}, "
+            f"sigma from the stored P {mape_m:.4e} on the hold-out, rms {rms_m:.3e}")
+        row['mapped'] = {'psi_norm': float(np.linalg.norm(rhs)), 'miss': miss,
+                         'norm_c': float(np.linalg.norm(c_map)), 'sigma': mape_m,
+                         'rms': rms_m, 'max': top_m}
         rows[f'k1_{k1}'] = row
 
     out_dir = Path(args.out)
