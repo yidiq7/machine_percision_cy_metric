@@ -56,14 +56,17 @@ def test_orbits_have_the_right_dimensions():
 
 
 def test_basis_is_orthonormal_on_its_sample():
-    _, _, weight, _, basis, _ = built()
+    """The QR over the orbits amplifies the rounding by its condition number."""
+    _, _, weight, _, basis, report = built()
     z = SAMPLE['points']
     vals = arnoldi.values(basis, z, jax.vmap(weight)(z))
     mu = SAMPLE['mass'] / jnp.sum(SAMPLE['mass'])
     gram = vals.T @ (mu[:, None] * vals)
     gap = float(jnp.abs(gram - jnp.eye(gram.shape[0])).max())
-    assert gap < 1e-12, gap
-    print(f"  the recurrence reproduces an orthonormal basis on the sample: {gap:.1e}")
+    bound = 1e-14 * max(1.0, report['cond_across_orbits'])
+    assert gap < bound, (gap, bound)
+    print(f"  the recurrence reproduces an orthonormal basis on the sample: {gap:.1e}, "
+          f"against a bound of {bound:.1e}")
 
 
 def test_basis_spans_the_product_basis():
