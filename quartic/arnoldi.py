@@ -38,8 +38,8 @@ __all__ = ['PAIRS', 'OrbitRecurrence', 'Basis', 'multipliers', 'permuted',
            'block_factor', 'run_recurrence', 'build_orbit', 'build_basis',
            'orbit_images', 'values', 'restricted_hessian_of',
            'restricted_hessians', 'dictionary', 'dictionary_values', 'JointBasis',
-           'seed_values', 'seed_values_all', 'build_joint', 'joint_values',
-           'joint_hessians']
+           'seed_values', 'seed_values_all', 'build_joint', 'save_joint',
+           'load_joint', 'joint_values', 'joint_hessians']
 
 # The six products v_a conj(v_b) with a <= b, in a fixed order.
 PAIRS = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
@@ -491,6 +491,31 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
                        seed_slot=np.array(slots), seeds=tuple(seeds),
                        layouts=tuple((j, layouts[j]) for j in seed_degrees))
     return basis, trace
+
+
+def save_joint(path, basis):
+    """The arrays of a joint basis, so that another process can use the same one."""
+    np.savez(path, k=basis.k, h=basis.h, parents=basis.parents, mults=basis.mults,
+             degrees=basis.degrees, seed_slot=basis.seed_slot,
+             seeds=np.array(basis.seeds, dtype=np.int64).reshape(-1, 2),
+             entry_d=np.array([d for d, _, _ in basis.entries]),
+             entry_a=np.array([a for _, a, _ in basis.entries]).reshape(-1, 4),
+             entry_b=np.array([b for _, _, b in basis.entries]).reshape(-1, 4))
+
+
+def load_joint(path):
+    """A joint basis from `save_joint`, with the plain layouts of its seeds."""
+    from . import sections
+    arr = np.load(path)
+    seeds = tuple((int(j), int(a)) for j, a in arr['seeds'])
+    degrees = sorted({j for j, _ in seeds})
+    entries = tuple((int(d), np.array(a), np.array(b))
+                    for d, a, b in zip(arr['entry_d'], arr['entry_a'], arr['entry_b']))
+    return JointBasis(k=int(arr['k']), entries=entries, parents=arr['parents'],
+                      mults=arr['mults'], degrees=arr['degrees'], h=arr['h'], alpha=0.0,
+                      seed_slot=arr['seed_slot'], seeds=seeds,
+                      layouts=tuple((j, sections.layout(j, normalize=False))
+                                    for j in degrees))
 
 
 def joint_values(basis, z, weight):

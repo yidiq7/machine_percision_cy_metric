@@ -64,16 +64,6 @@ class Layouts(dict):
         return self[j]
 
 
-def save_basis(path, basis):
-    """The arrays of a joint basis, so that another process can use the same one."""
-    np.savez(path, k=basis.k, h=basis.h, parents=basis.parents, mults=basis.mults,
-             degrees=basis.degrees, seed_slot=basis.seed_slot,
-             seeds=np.array(basis.seeds, dtype=np.int64).reshape(-1, 2),
-             entry_d=np.array([d for d, _, _ in basis.entries]),
-             entry_a=np.array([a for _, a, _ in basis.entries]).reshape(-1, 4),
-             entry_b=np.array([b for _, _, b in basis.entries]).reshape(-1, 4))
-
-
 def point_inputs(batch):
     return (batch['points_hi'], batch['restriction'],
             (batch['points_hi'], batch['points_lo'], batch['patch']))
@@ -282,7 +272,7 @@ def main():
                       f"{row['from_products']} from products (worst ratio "
                       f"{row['worst_product_ratio']:.1e}), {row['seeded']} seeds (worst "
                       f"ratio {row['worst_seed_ratio']:.1e})", flush=True)
-        save_basis(out_dir / f'vpa_basis_k0_{args.k0}_k1_{k1}.npz', basis)
+        arnoldi.save_joint(out_dir / f'vpa_basis_k0_{args.k0}_k1_{k1}.npz', basis)
         row = {'n': n, 'n_theta': counts[k1], 'trace': trace}
         if n < counts[k1]:
             rows[f'k1_{k1}'] = row
