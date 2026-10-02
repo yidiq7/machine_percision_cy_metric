@@ -36,7 +36,7 @@ import correction_fit as cf                                 # noqa: E402
 import vpa_dd_fit as vdf                                    # noqa: E402
 import vpa_fit as vf                                        # noqa: E402
 from quartic import (analytic, arnoldi, arnoldi_dd, correction, data, dd,  # noqa: E402
-                     dd_metric, fit, metric, sections, vpa_dd)
+                     dd_metric, fit, joint_dd, metric, sections, vpa_dd)
 
 T0 = time.perf_counter()
 
@@ -69,11 +69,13 @@ def truncated(basis, h_lo, uinv, n):
     return lev, h_lo[:n, :n], uinv[:blocks]
 
 
-def point_hessians(lay0, parts0, levels, hs, a):
-    """The base in dd at one point and the dd Hessians of every level, psi_N in place.
+def point_hessians(lay0, parts0, levels, hs, a, joint=None):
+    """The base in dd at one point and the dd Hessians of every column of the fit.
 
     The weight W of each level comes in dd, so that the sums of two levels keep
-    their digits where they cancel.
+    their digits where they cancel. Without `joint` the columns are the functions
+    of each level with its psi_N in place; with it they are the joint functions,
+    with psi_N of the first level in place of joint function `joint[1]`.
     """
     z, rest, extra = a
     state, hi, p_dd = correction.base_state_dd(lay0, parts0, z, extra, with_p=True)
@@ -84,44 +86,83 @@ def point_hessians(lay0, parts0, levels, hs, a):
     for lev, (h, hl) in zip(levels, hs):
         basis = dataclasses.replace(lev.basis, h=h)
         scale = vpa_dd.weight_dd(p_dd, r2, lev.k0, lev.k1)
-        p = arnoldi_dd.joint_hessians_dd(basis, hl, lev.uinv, z_dd, rest_dd, hi, lev.alpha,
-                                         scale)
-        ps.append(vdf.with_null(p, lev.null)[0])
-    return state, hi, (z_dd, m, free), ps
+        ps.append(arnoldi_dd.joint_hessians_dd(basis, hl, lev.uinv, z_dd, rest_dd, hi,
+                                               lev.alpha, scale))
+    if joint is None:
+        cols = [vdf.with_null(p, lev.null)[0] for p, lev in zip(ps, levels)]
+        cols = jax.tree_util.tree_map(lambda *xs: jnp.concatenate(xs), *cols)
+    else:
+        jm, b0 = joint
+        cols = joint_dd.transform(jax.tree_util.tree_map(lambda *xs: jnp.concatenate(xs),
+                                                         *ps), jm)
+        p_n = vdf.with_null(ps[0], levels[0].null)[1]
+        cols = jax.tree_util.tree_map(lambda x, y: x.at[b0].set(y), cols, p_n)
+    return state, hi, (z_dd, m, free), cols
 
 
-def level_arrays(levels):
-    return tuple((jnp.asarray(lev.basis.h), jnp.asarray(lev.h_lo)) for lev in levels)
+def level_values_dd(lev, z, chunk):
+    """W q of every function of a level at FP64 points z, in dd with W in FP64, (N, n)."""
+    rest = dd.cto_dd(jnp.zeros((2, 4), jnp.complex128).at[0, 1].set(1.0).at[1, 2].set(1.0))
+    w = jax.jit(jax.vmap(lev.weight_fn))(z) * jnp.sum(jnp.abs(z) ** 2, axis=1) ** lev.k1
+
+    def one(a, h, hl):
+        p, scale = a
+        basis = dataclasses.replace(lev.basis, h=h)
+        jets = arnoldi_dd.joint_jets_dd(
+            basis, hl, vpa_dd.basis_multiplier_jets(basis, dd.cto_dd(p), rest), lev.uinv)
+        return dd.mul_dd_fp(jets[0], scale)
+    return jax.jit(lambda x, h, hl: jax.lax.map(lambda a: one(a, h, hl), x,
+                                                batch_size=chunk))(
+        (jnp.asarray(z), w), jnp.asarray(lev.basis.h), jnp.asarray(lev.h_lo))
 
 
-def fit_rows(lay0, parts0, levels, batch, chunk):
-    """v_0 as a dd pair and the rows L of dv/dc of all levels, rounded to FP64, (N, n)."""
-    def one(a, hs):
-        state, hi, (z_dd, m, free), ps = point_hessians(lay0, parts0, levels, hs, a)
+def level_arrays(levels, joint=None):
+    """The large arrays of the levels and of the joint map, as arguments of a program."""
+    hs = tuple((jnp.asarray(lev.basis.h), jnp.asarray(lev.h_lo)) for lev in levels)
+    if joint is None:
+        return hs, None
+    jm = joint[0]
+    return hs, (jnp.asarray(jm.h), jnp.asarray(jm.h_lo),
+                tuple(tuple(jnp.asarray(x) for x in inv) for inv in jm.uinv))
+
+
+def _with_arrays(joint, ja):
+    if joint is None:
+        return None
+    return dataclasses.replace(joint[0], h=ja[0], h_lo=ja[1], uinv=ja[2]), joint[1]
+
+
+def fit_rows(lay0, parts0, levels, batch, chunk, joint=None):
+    """v_0 as a dd pair and the rows L of dv/dc of all columns, rounded to FP64, (N, n)."""
+    def one(a, hs, ja):
+        state, hi, (z_dd, m, free), p = point_hessians(lay0, parts0, levels, hs, a,
+                                                       _with_arrays(joint, ja))
         v0 = analytic._volume_from_phi_dd(hi[0], z_dd, m, free, keep=True)
         rest = a[1]
         ginv = jnp.linalg.inv(rest @ state[2] @ jnp.conj(rest).T)
-        rows = [jnp.real(jnp.einsum('kl,blk->b', ginv, dd.cto_fp(p))) for p in ps]
-        return v0, dd.to_fp(v0) * jnp.concatenate(rows)
-    return jax.jit(lambda x, hs: jax.lax.map(lambda a: one(a, hs), x, batch_size=chunk))(
-        vf.point_inputs(batch), level_arrays(levels))
+        rows = jnp.real(jnp.einsum('kl,blk->b', ginv, dd.cto_fp(p)))
+        return v0, dd.to_fp(v0) * rows
+    hs, ja = level_arrays(levels, joint)
+    return jax.jit(lambda x, hs, ja: jax.lax.map(lambda a: one(a, hs, ja), x,
+                                                 batch_size=chunk))(
+        vf.point_inputs(batch), hs, ja)
 
 
-def residual_program(lay0, parts0, levels, chunk):
+def residual_program(lay0, parts0, levels, chunk, joint=None):
     """One compiled program: the volumes in dd at a block of points, for each column of c."""
-    def one(a, cc, hs):
-        _, hi, (z_dd, m, free), ps = point_hessians(lay0, parts0, levels, hs, a)
-        p = jax.tree_util.tree_map(lambda *xs: jnp.concatenate(xs), *ps)
+    def one(a, cc, hs, ja):
+        _, hi, (z_dd, m, free), p = point_hessians(lay0, parts0, levels, hs, a,
+                                                   _with_arrays(joint, ja))
 
         def volume(c):
             delta = tuple(dd.dot_dd_fp(comp, c[:, None, None], axis=0) for comp in p)
             return analytic._volume_from_phi_dd(hi[0], z_dd, m, free, keep=True,
                                                 delta=delta)
         return jax.vmap(volume)(cc.T)
-    program = jax.jit(lambda x, cc, hs: jax.lax.map(lambda a: one(a, cc, hs), x,
-                                                    batch_size=chunk))
-    hs = level_arrays(levels)
-    return lambda x, cc: program(x, cc, hs)
+    program = jax.jit(lambda x, cc, hs, ja: jax.lax.map(lambda a: one(a, cc, hs, ja), x,
+                                                        batch_size=chunk))
+    hs, ja = level_arrays(levels, joint)
+    return lambda x, cc: program(x, cc, hs, ja)
 
 
 @functools.partial(jax.jit, donate_argnums=0)
@@ -276,6 +317,13 @@ def main():
     ap.add_argument('--cutoffs', type=float, nargs='+', default=[0.0],
                     help='cutoffs of s / s_max of the scaled J; 0 keeps every direction')
     ap.add_argument('--null-degree', type=int, default=9)
+    ap.add_argument('--joint-basis', action='store_true',
+                    help='fit in one orthonormal basis of the levels, built in dd in the '
+                         'order of --k1; the solves are then the prefixes of that order')
+    ap.add_argument('--joint-tol', type=float, default=1e-15,
+                    help='a function whose new part is below this share of its norm '
+                         'does not enter the joint basis')
+    ap.add_argument('--joint-block', type=int, default=256)
     ap.add_argument('--gram', action='store_true',
                     help='also report the Gram eigenvalues of each built basis')
     ap.add_argument('--refine', type=int, default=2)
@@ -327,13 +375,43 @@ def main():
         lev, row = build_level(args.k0, k1, lay0, mats0, build, check, counts, args, out_dir)
         levels.append(lev)
         record['levels'][str(k1)] = row
-    sizes = [int(lev.basis.h.shape[0]) for lev in levels]
-    starts = np.concatenate([[0], np.cumsum(sizes)])
-    columns = {lev.k1: np.arange(starts[i], starts[i + 1]) for i, lev in enumerate(levels)}
-    total = int(starts[-1])
+    joint = None
+    if args.joint_basis:
+        t1 = time.perf_counter()
+        values = [level_values_dd(lev, build['points'], args.chunk) for lev in levels]
+        say(f'dd values of every level on the {args.n_build} build points in '
+            f'{time.perf_counter() - t1:.0f}s')
+        t1 = time.perf_counter()
+        jm = joint_dd.build(values, build['mass'] / jnp.sum(build['mass']), tol=args.joint_tol,
+                            block=args.joint_block, verbose=True)
+        del values
+        # psi_N of the first level takes the place of the joint function it loads most.
+        n_low, gamma, _ = levels[0].null
+        where = {int(b): t for t, b in enumerate(jm.sel) if jm.level[t] == 0}
+        load = sum(gamma[b] * jm.h[:, where[b]] for b in range(n_low))
+        b0 = int(np.argmax(np.abs(load)))
+        joint = (jm, b0)
+        counts_in = [int(np.sum(jm.level == i)) for i in range(len(levels))]
+        record['joint'] = {'entered': counts_in, 'b0': b0, 'load_b0': float(load[b0]),
+                           'ratio': np.sort(jm.ratio).tolist()}
+        say(f'joint map in {time.perf_counter() - t1:.0f}s: {counts_in} functions of the '
+            f'levels enter, smallest new part {jm.ratio.min():.3e}; psi_N of level '
+            f'{levels[0].k1} takes joint function {b0}')
+        prefix = np.cumsum(counts_in)
+        plans = [('+'.join(str(lev.k1) for lev in levels[:i + 1]) + ' joint',
+                  np.arange(prefix[i]), [lev.k1 for lev in levels[:i + 1]])
+                 for i in range(len(levels))]
+        total = int(prefix[-1])
+    else:
+        sizes = [int(lev.basis.h.shape[0]) for lev in levels]
+        starts = np.concatenate([[0], np.cumsum(sizes)])
+        columns = {lev.k1: np.arange(starts[i], starts[i + 1]) for i, lev in enumerate(levels)}
+        plans = [('+'.join(str(k) for k in sub), np.concatenate([columns[k] for k in sub]),
+                  sub) for sub in subsets]
+        total = int(starts[-1])
 
     t1 = time.perf_counter()
-    v0, lrows = fit_rows(lay0, parts0, levels, fit_set, args.chunk)
+    v0, lrows = fit_rows(lay0, parts0, levels, fit_set, args.chunk, joint)
     mass = fit_set['mass'] / jnp.sum(fit_set['mass'])
     f0 = analytic.residual_from_volumes(v0, mass)
     m0 = float(dd.to_fp(dd.dot_dd_fp(v0, mass, axis=0)))
@@ -341,14 +419,12 @@ def main():
     say(f'rows of J of {total} functions at {args.n_fit} points in '
         f'{time.perf_counter() - t1:.0f}s')
 
-    # The subset of all columns, if any, comes last and takes the buffer of the rows.
-    order = sorted(range(len(subsets)), key=lambda i: len(subsets[i]) == len(levels))
+    # The plan of all columns, if any, comes last and takes the buffer of the rows.
+    order = sorted(range(len(plans)), key=lambda i: len(plans[i][1]) == total)
     steps, coeffs, labels, preds = {}, [np.zeros(total)], ['base'], [float(r0 @ r0)]
     record['solutions'] = []
     for i in order:
-        sub = subsets[i]
-        cols = np.concatenate([columns[k] for k in sub])
-        name = '+'.join(str(k) for k in sub)
+        name, cols, sub = plans[i]
         t1 = time.perf_counter()
         if len(cols) == total:
             rows_sub, lrows = lrows, None
@@ -370,12 +446,15 @@ def main():
             c = np.zeros(total)
             c[cols] = sols[:, j]
             print(f'    {label}: linear model loss {predicted[j]:.4e}', flush=True)
-            for k in sub:
+            for k in ([] if joint is not None else sub):
                 lev = levels[args.k1.index(k)]
                 part = c[columns[k]]
                 psi_n = part[lev.null[2]] if lev.null is not None else float('nan')
                 print(f'        level {k}: norm of c {np.linalg.norm(part):.3e}, coefficient '
                       f'of psi_N {psi_n:.6f}', flush=True)
+            if joint is not None:
+                print(f'        norm of c {np.linalg.norm(c):.3e}, coefficient of psi_N '
+                      f'{c[joint[1]]:.6f}', flush=True)
             coeffs.append(c)
             labels.append(label)
             preds.append(predicted[j])
@@ -385,7 +464,7 @@ def main():
     del lrows
     coeffs = np.stack(coeffs, axis=1)
 
-    program = residual_program(lay0, parts0, levels, args.chunk)
+    program = residual_program(lay0, parts0, levels, args.chunk, joint)
     t1 = time.perf_counter()
     f_fit = np.array(vdf.residuals(program, coeffs, fit_set, args.block))
     say(f'the fit set in dd in {time.perf_counter() - t1:.0f}s')

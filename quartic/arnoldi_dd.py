@@ -18,8 +18,8 @@ import numpy as np
 
 from . import analytic, arnoldi, dd, ozaki, vpa_dd
 
-__all__ = ['multiplier_values_dd', 'build_joint_dd', 'block_inverses', 'joint_jets_dd',
-           'joint_hessians_dd']
+__all__ = ['multiplier_values_dd', 'build_joint_dd', 'upper_inverse', 'block_inverses',
+           'joint_jets_dd', 'joint_hessians_dd']
 
 
 def _sqrt_dd(x):
@@ -212,31 +212,35 @@ def build_joint_dd(k, z, scale, mu, d_max=12, tol=1e-9, n_by_degree=None, verbos
     return basis, h_lo, trace
 
 
+def upper_inverse(h, h_lo, a, b, dps=40):
+    """U^-1 in dd for the upper triangular block U = (h + h_lo)[a:b, a:b], by mpmath."""
+    import mpmath as mp
+    mp.mp.dps = dps
+    u = [[mp.mpf(float(h[i, k])) + mp.mpf(float(h_lo[i, k])) for k in range(a, b)]
+         for i in range(a, b)]
+    m = b - a
+    x = [[mp.mpf(0)] * m for _ in range(m)]
+    for col in range(m):
+        x[col][col] = 1 / u[col][col]
+        for row in range(col - 1, -1, -1):
+            acc = mp.fsum(u[row][k] * x[k][col] for k in range(row + 1, col + 1))
+            x[row][col] = -acc / u[row][row]
+    hi = np.array([[float(v) for v in r] for r in x])
+    lo = np.array([[float(v - mp.mpf(float(v))) for v in r] for r in x])
+    return hi, lo
+
+
 def block_inverses(basis, h_lo, dps=40):
     """U^-1 in dd for the upper triangular block U of h inside each degree, by mpmath.
 
     q_t h_tt + sum over s < t in the degree of h_st q_s is what remains of the
     candidate after the lower degrees, so the block of a degree is rest U^-1.
     """
-    import mpmath as mp
-    mp.mp.dps = dps
     degrees = np.asarray(basis.degrees)
     out = []
     for j in sorted(set(degrees.tolist()) - {0}):
         idx = np.nonzero(degrees == j)[0]
-        a, b = int(idx[0]), int(idx[-1]) + 1
-        u = [[mp.mpf(float(basis.h[i, k])) + mp.mpf(float(h_lo[i, k])) for k in range(a, b)]
-             for i in range(a, b)]
-        m = b - a
-        x = [[mp.mpf(0)] * m for _ in range(m)]
-        for col in range(m):
-            x[col][col] = 1 / u[col][col]
-            for row in range(col - 1, -1, -1):
-                acc = mp.fsum(u[row][k] * x[k][col] for k in range(row + 1, col + 1))
-                x[row][col] = -acc / u[row][row]
-        hi = np.array([[float(v) for v in r] for r in x])
-        lo = np.array([[float(v - mp.mpf(float(v))) for v in r] for r in x])
-        out.append((hi, lo))
+        out.append(upper_inverse(basis.h, h_lo, int(idx[0]), int(idx[-1]) + 1, dps))
     return tuple(out)
 
 
