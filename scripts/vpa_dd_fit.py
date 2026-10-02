@@ -43,14 +43,14 @@ def say(text):
     print(f'[{time.perf_counter() - T0:7.0f}s] {text}', flush=True)
 
 
-def point_state(lay0, parts0, basis, h_lo, weight_fn, alpha, a):
+def point_state(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, a):
     """The base in dd at one point and the dd Hessians of every function there."""
     z, rest, extra = a
     state, hi = correction.base_state_dd(lay0, parts0, z, extra)
     z_dd, m, free = analytic._dd_point(extra)
     rest_dd, _ = dd_metric._restriction_dd(z_dd, m, free)
     scale = weight_fn(z) * jnp.sum(jnp.abs(z) ** 2) ** basis.k
-    p = arnoldi_dd.joint_hessians_dd(basis, h_lo, z_dd, rest_dd, hi, alpha, scale)
+    p = arnoldi_dd.joint_hessians_dd(basis, h_lo, uinv, z_dd, rest_dd, hi, alpha, scale)
     return state, hi, (z_dd, m, free), p
 
 
@@ -65,11 +65,11 @@ def with_null(p, null):
     return jax.tree_util.tree_map(lambda x, y: x.at[b0].set(y), p, p_n), p_n
 
 
-def fit_rows(lay0, parts0, basis, h_lo, weight_fn, alpha, batch, chunk, null):
+def fit_rows(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, batch, chunk, null):
     """v_0 as a dd pair and the rows L of dv/dc rounded to FP64, as (N,) and (N, n)."""
     def one(a, h, hl):
         lev = dataclasses.replace(basis, h=h)
-        state, hi, (z_dd, m, free), p = point_state(lay0, parts0, lev, hl, weight_fn,
+        state, hi, (z_dd, m, free), p = point_state(lay0, parts0, lev, hl, uinv, weight_fn,
                                                     alpha, a)
         p, _ = with_null(p, null)
         v0 = analytic._volume_from_phi_dd(hi[0], z_dd, m, free, keep=True)
@@ -82,11 +82,12 @@ def fit_rows(lay0, parts0, basis, h_lo, weight_fn, alpha, batch, chunk, null):
         vf.point_inputs(batch), jnp.asarray(basis.h), jnp.asarray(h_lo))
 
 
-def residuals(lay0, parts0, basis, h_lo, weight_fn, alpha, coeffs, batch, chunk, null):
+def residuals(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, coeffs, batch, chunk,
+              null):
     """f in dd, rounded once, at every point for each column of coeffs, as (N, n_c)."""
     def one(a, cc, h, hl):
         lev = dataclasses.replace(basis, h=h)
-        _, hi, (z_dd, m, free), p = point_state(lay0, parts0, lev, hl, weight_fn,
+        _, hi, (z_dd, m, free), p = point_state(lay0, parts0, lev, hl, uinv, weight_fn,
                                                 alpha, a)
         p, _ = with_null(p, null)
 
@@ -102,7 +103,7 @@ def residuals(lay0, parts0, basis, h_lo, weight_fn, alpha, coeffs, batch, chunk,
     return np.asarray(analytic.residual_from_volumes(v, mass[:, None]))
 
 
-def dd_values(basis, h_lo, weight, z, chunk):
+def dd_values(basis, h_lo, uinv, weight, z, chunk):
     """W q of every function at FP64 points z, from the dd jets, rounded once."""
     rest = dd.cto_dd(jnp.zeros((2, 4), jnp.complex128).at[0, 1].set(1.0).at[1, 2].set(1.0))
 
@@ -110,7 +111,7 @@ def dd_values(basis, h_lo, weight, z, chunk):
         p, w = a
         lev = dataclasses.replace(basis, h=h)
         jets = arnoldi_dd.joint_jets_dd(
-            lev, hl, arnoldi_dd.vpa_dd.basis_multiplier_jets(lev, dd.cto_dd(p), rest))
+            lev, hl, arnoldi_dd.vpa_dd.basis_multiplier_jets(lev, dd.cto_dd(p), rest), uinv)
         return w * jnp.sum(jnp.abs(p) ** 2) ** basis.k * dd.to_fp(jets[0])
     return jax.jit(lambda x, h, hl: jax.lax.map(lambda a: one(a, h, hl), x,
                                                 batch_size=chunk))(
@@ -191,11 +192,15 @@ def main():
         say(f'k1 = {k1}: dd V+A basis in {time.perf_counter() - t1:.0f}s: dimension {n} of '
             f'{counts[k1]}, {len(basis.entries)} multipliers of degree <= {args.d_max}')
         arnoldi.save_joint(out_dir / f'vpa_dd_basis_k0_{args.k0}_k1_{k1}.npz', basis)
+        t1 = time.perf_counter()
+        uinv = arnoldi_dd.block_inverses(basis, h_lo)
+        say(f'k1 = {k1}: the inverses of the blocks in mpmath in {time.perf_counter() - t1:.0f}s')
         np.save(out_dir / f'vpa_dd_hlo_k0_{args.k0}_k1_{k1}.npy', h_lo)
         row = {'n': n, 'trace': trace}
 
         t1 = time.perf_counter()
-        vals = dd_values(basis, h_lo, weights(check['points']), check['points'], args.chunk)
+        vals = dd_values(basis, h_lo, uinv, weights(check['points']), check['points'],
+                         args.chunk)
         mu = check['mass'] / jnp.sum(check['mass'])
         eig = np.linalg.eigvalsh(np.asarray(vals.T @ (mu[:, None] * vals)))
         row['gram_eig'] = [float(eig[0]), float(eig[-1])]
@@ -216,7 +221,7 @@ def main():
         del vals
 
         t1 = time.perf_counter()
-        v0, lrows = fit_rows(lay0, parts0, basis, h_lo, weight_fn, alpha, fit_set,
+        v0, lrows = fit_rows(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, fit_set,
                              args.chunk, null)
         mass = fit_set['mass'] / jnp.sum(fit_set['mass'])
         f0 = analytic.residual_from_volumes(v0, mass)
@@ -238,8 +243,8 @@ def main():
         coeffs = np.concatenate([np.zeros((n, 1)), sols], axis=1)
         labels = ['base'] + [f'cutoff {tau:.0e}' for tau in args.cutoffs]
         t1 = time.perf_counter()
-        f_fit = residuals(lay0, parts0, basis, h_lo, weight_fn, alpha, coeffs, fit_set,
-                          args.chunk, null)
+        f_fit = residuals(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, coeffs,
+                          fit_set, args.chunk, null)
         say(f'k1 = {k1}: the fit set in dd in {time.perf_counter() - t1:.0f}s')
         row['solutions'] = []
         for i, label in enumerate(labels):
@@ -254,8 +259,8 @@ def main():
             res = root[:, None] * jnp.asarray(f_fit)
             for i, tau in enumerate(args.cutoffs):
                 coeffs[:, 1 + i] += step(res[:, 1 + i], tau)
-            f_fit = residuals(lay0, parts0, basis, h_lo, weight_fn, alpha, coeffs, fit_set,
-                              args.chunk, null)
+            f_fit = residuals(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, coeffs,
+                              fit_set, args.chunk, null)
             for i, tau in enumerate(args.cutoffs):
                 got = vf.summary(f_fit[:, 1 + i], fit_set)
                 row['solutions'][1 + i][f'fit_refined_{it}'] = got
@@ -265,8 +270,8 @@ def main():
         np.save(out_dir / f'vpa_dd_coeffs_k0_{args.k0}_k1_{k1}.npy', coeffs)
 
         t1 = time.perf_counter()
-        f_hold = residuals(lay0, parts0, basis, h_lo, weight_fn, alpha, coeffs, hold,
-                           args.chunk, null)
+        f_hold = residuals(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, coeffs,
+                           hold, args.chunk, null)
         say(f'k1 = {k1}: the hold-out in dd in {time.perf_counter() - t1:.0f}s')
         for i, label in enumerate(labels):
             got = vf.summary(f_hold[:, i], hold)

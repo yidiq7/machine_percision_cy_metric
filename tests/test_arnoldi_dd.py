@@ -45,18 +45,19 @@ def built():
     basis, h_lo, trace = arnoldi_dd.build_joint_dd(
         K1, np.asarray(z), jax.vmap(weight)(z) * r2 ** K1,
         SAMPLE['mass'] / jnp.sum(SAMPLE['mass']), d_max=12, n_by_degree=counts)
-    return lay0, mats0, weight, basis, h_lo, counts
+    return lay0, mats0, weight, basis, h_lo, arnoldi_dd.block_inverses(basis, h_lo)
 
 
 def test_values_match_mpmath():
     """The dd jets give q to dd accuracy, against the recurrence in mpmath."""
-    _, _, _, basis, h_lo, _ = built()
+    _, _, _, basis, h_lo, uinv = built()
     mp.mp.dps = 50
     worst = 0.0
     for z in TEST['points'][:3]:
         rest = dd.cto_dd(jnp.zeros((2, 4), jnp.complex128).at[0, 1].set(1.0).at[1, 2].set(1.0))
         jets = arnoldi_dd.joint_jets_dd(
-            basis, h_lo, arnoldi_dd.vpa_dd.basis_multiplier_jets(basis, dd.cto_dd(z), rest))
+            basis, h_lo, arnoldi_dd.vpa_dd.basis_multiplier_jets(basis, dd.cto_dd(z), rest),
+            uinv)
         hi_v, lo_v = np.asarray(jets[0][0]), np.asarray(jets[0][1])
         zm = [mp.mpc(complex(c).real, complex(c).imag) for c in np.asarray(z)]
         y_mp = vo.mp_multipliers(basis.entries, zm)
@@ -88,15 +89,15 @@ def test_basis_is_orthonormal_on_its_sample():
 
 def test_hessians_match_fp64():
     """R ddbar G R^dag in dd agrees with FP64 autodiff to the FP64 error of the latter."""
-    lay0, mats0, weight, basis, h_lo, _ = built()
+    lay0, mats0, weight, basis, h_lo, uinv = built()
     worst = 0.0
     for z, r in zip(TEST['points'][:3], TEST['restriction'][:3]):
         want = arnoldi.joint_hessians(basis, z, r, weight)
         state = correction.base_state(lay0, mats0, z)
         hi = (dd.cto_dd(state[2]), dd.cto_dd(state[1]))
         scale = weight(z) * jnp.sum(jnp.abs(z) ** 2) ** K1
-        got = dd.cto_fp(arnoldi_dd.joint_hessians_dd(basis, h_lo, dd.cto_dd(z), dd.cto_dd(r),
-                                                     hi, ALPHA, scale))
+        got = dd.cto_fp(arnoldi_dd.joint_hessians_dd(basis, h_lo, uinv, dd.cto_dd(z),
+                                                     dd.cto_dd(r), hi, ALPHA, scale))
         worst = max(worst, float(jnp.abs(got - want).max() / jnp.abs(want).max()))
     assert worst < 1e-8, worst
     print(f"  the dd Hessians match FP64 autodiff to {worst:.1e}")

@@ -18,7 +18,8 @@ import numpy as np
 
 from . import analytic, arnoldi, dd, ozaki, vpa_dd
 
-__all__ = ['multiplier_values_dd', 'build_joint_dd', 'joint_jets_dd', 'joint_hessians_dd']
+__all__ = ['multiplier_values_dd', 'build_joint_dd', 'block_inverses', 'joint_jets_dd',
+           'joint_hessians_dd']
 
 
 def _sqrt_dd(x):
@@ -209,17 +210,44 @@ def build_joint_dd(k, z, scale, mu, d_max=12, tol=1e-9, n_by_degree=None, verbos
     return basis, h_lo, trace
 
 
-def joint_jets_dd(basis, h_lo, y_jets):
+def block_inverses(basis, h_lo, dps=40):
+    """U^-1 in dd for the upper triangular block U of h inside each degree, by mpmath.
+
+    q_t h_tt + sum over s < t in the degree of h_st q_s is what remains of the
+    candidate after the lower degrees, so the block of a degree is rest U^-1.
+    """
+    import mpmath as mp
+    mp.mp.dps = dps
+    degrees = np.asarray(basis.degrees)
+    out = []
+    for j in sorted(set(degrees.tolist()) - {0}):
+        idx = np.nonzero(degrees == j)[0]
+        a, b = int(idx[0]), int(idx[-1]) + 1
+        u = [[mp.mpf(float(basis.h[i, k])) + mp.mpf(float(h_lo[i, k])) for k in range(a, b)]
+             for i in range(a, b)]
+        m = b - a
+        x = [[mp.mpf(0)] * m for _ in range(m)]
+        for col in range(m):
+            x[col][col] = 1 / u[col][col]
+            for row in range(col - 1, -1, -1):
+                acc = mp.fsum(u[row][k] * x[k][col] for k in range(row + 1, col + 1))
+                x[row][col] = -acc / u[row][row]
+        hi = np.array([[float(v) for v in r] for r in x])
+        lo = np.array([[float(v - mp.mpf(float(v))) for v in r] for r in x])
+        out.append((hi, lo))
+    return tuple(out)
+
+
+def joint_jets_dd(basis, h_lo, y_jets, uinv):
     """The jets of every q_t in dd at one point, from the jets of the multipliers.
 
     The functions of each degree form one block: their products y q_parent come
     from lower degrees, the part of the lower degrees is one `ozaki` product, and
-    a short loop inside the block does the rest.
+    the block is that rest times U^-1 from `block_inverses`, a second product.
     """
-    n = basis.h.shape[0]
     degrees = np.asarray(basis.degrees)
     h = (jnp.asarray(basis.h), jnp.asarray(h_lo))
-    inv_h = dd.reciprocal((jnp.diag(h[0]), jnp.diag(h[1])))
+    inv_h = dd.reciprocal((jnp.diag(h[0][:1, :1]), jnp.diag(h[1][:1, :1])))
     parents = np.maximum(np.asarray(basis.parents), 0)
     mults = np.maximum(np.asarray(basis.mults), 0)
 
@@ -233,8 +261,7 @@ def joint_jets_dd(basis, h_lo, y_jets):
 
     def unflat(mat):
         """The inverse of `flat`."""
-        pick = lambda i: (mat[0][i], mat[1][i])
-        v = pick(0)
+        v = (mat[0][0], mat[1][0])
         d = tuple(tuple(jnp.stack([mat[i][1 + 2 * part + c] for c in range(2)], axis=-1)
                         for i in range(2)) for part in range(2))
         hh = tuple(tuple(jnp.stack([jnp.stack([mat[i][5 + 4 * part + 2 * c + e]
@@ -243,47 +270,32 @@ def joint_jets_dd(basis, h_lo, y_jets):
                          for i in range(2)) for part in range(2))
         return v, d, hh
 
-    first = (inv_h[0][:1], inv_h[1][:1])
-    zero = lambda m: (dd.to_dd(jnp.zeros(m)), dd.cto_dd(jnp.zeros((m, 2), jnp.complex128)),
-                      dd.cto_dd(jnp.zeros((m, 2, 2), jnp.complex128)))
-    blocks = [flat(((first[0], first[1]),) + zero(1)[1:])]
-    starts = [0]
-    for j in sorted(set(degrees.tolist()) - {0}):
+    zero_d = dd.cto_dd(jnp.zeros((1, 2), jnp.complex128))
+    zero_h = dd.cto_dd(jnp.zeros((1, 2, 2), jnp.complex128))
+    blocks = [flat((inv_h, zero_d, zero_h))]
+    for block, j in enumerate(sorted(set(degrees.tolist()) - {0})):
         idx = np.nonzero(degrees == j)[0]
         a, b = int(idx[0]), int(idx[-1]) + 1
         assert np.all(idx == np.arange(a, b)), 'the functions of a degree must be contiguous'
         done = tuple(jnp.concatenate([blk[i] for blk in blocks], axis=1) for i in range(2))
-        jets_done = unflat(done)
         take = lambda tree, i: jtu.tree_map(lambda x: x[i], tree)
         grown = vpa_dd.jet_mul(take(y_jets, jnp.asarray(mults[a:b])),
-                               take(jets_done, jnp.asarray(parents[a:b])))
+                               take(unflat(done), jnp.asarray(parents[a:b])))
         lower = ozaki.matmul(done, (h[0][:a, a:b], h[1][:a, a:b]))         # (13, m)
         rest = dd.add(flat(grown), dd.neg(lower))
-        hb = (h[0][a:b, a:b], h[1][a:b, a:b])
-        inv_b = jtu.tree_map(lambda x: x[a:b], inv_h)
-        m = b - a
-
-        def step(t, out):
-            col = jtu.tree_map(lambda x: x[:, t], hb)                      # (m,)
-            acc = dd.dot_dd_fp(out, col[0][None, :], axis=1)
-            acc = dd.add(acc, dd.to_dd(out[0] @ col[1]))
-            new = dd.mul(dd.add(jtu.tree_map(lambda x: x[:, t], rest), dd.neg(acc)),
-                                jtu.tree_map(lambda x: x[t], inv_b))
-            return jtu.tree_map(lambda arr, x: arr.at[:, t].set(x), out, new)
-        out = jax.lax.fori_loop(0, m, step, tuple(jnp.zeros((13, m)) for _ in range(2)))
-        blocks.append(out)
-        starts.append(a)
+        blocks.append(ozaki.matmul(rest, tuple(jnp.asarray(x) for x in uinv[block])))
     done = tuple(jnp.concatenate([blk[i] for blk in blocks], axis=1) for i in range(2))
     return unflat(done)
 
 
-def joint_hessians_dd(basis, h_lo, z_dd, rest, hi, alpha, weight):
+def joint_hessians_dd(basis, h_lo, uinv, z_dd, rest, hi, alpha, weight):
     """R ddbar(W q_t) R^dag for every function of the level in complex dd, (n, 2, 2).
 
     `rest` is the dd restriction matrix, `hi` the dd state of the base and `weight`
     the FP64 value of W = w |z|^(2k), a factor common to every function.
     """
-    q_v, q_d, q_h = joint_jets_dd(basis, h_lo, vpa_dd.basis_multiplier_jets(basis, z_dd, rest))
+    q_v, q_d, q_h = joint_jets_dd(basis, h_lo,
+                                  vpa_dd.basis_multiplier_jets(basis, z_dd, rest), uinv)
     d_l, h_l = vpa_dd.weight_jets(hi, z_dd, rest, alpha, basis.k)
     d_lb = analytic._cindex(d_l, None)
     h_lb = analytic._cindex(h_l, None)
