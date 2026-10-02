@@ -1,0 +1,292 @@
+"""The joint V+A basis of a level, built and evaluated in dd.
+
+In FP64 the error of the recurrence grows by a factor of 2.8 to 3.2 for each
+degree, so the functions of degree 28 and more are noise, and the coefficients h
+that a build in FP64 finds there are noise too. Here the build and the
+evaluation run in dd, with the matrix products of `ozaki`. The multipliers come
+in dd from their monomials, and every function is a jet (q, D_k q, D_k Dbar_l q)
+along the rows of the restriction matrix, as in `vpa_dd`.
+"""
+from __future__ import annotations
+
+import time
+
+import jax
+import jax.numpy as jnp
+import jax.tree_util as jtu
+import numpy as np
+
+from . import analytic, arnoldi, dd, ozaki, vpa_dd
+
+__all__ = ['multiplier_values_dd', 'build_joint_dd', 'joint_jets_dd', 'joint_hessians_dd']
+
+
+def _sqrt_dd(x):
+    """sqrt of a positive dd value, by one Newton step on the FP64 root."""
+    s = dd.to_dd(jnp.sqrt(x[0]))
+    corr = dd.mul(dd.add(x, dd.neg(dd.mul(s, s))), dd.to_dd(0.5 / s[0]))
+    return dd.add(s, corr)
+
+
+def multiplier_values_dd(entries, z, chunk=500):
+    """Re(sum over pi of z_pi^A conj(z_pi)^B) / |z|^(2d) in dd at FP64 points z (N, 4).
+
+    Returns a dd pair of shape (N, E), in blocks of `chunk` points.
+    """
+    return jax.jit(lambda x: jax.lax.map(lambda p: _multiplier_values_dd(entries, p[None])[0],
+                                         x, batch_size=chunk))(jnp.asarray(z))
+
+
+def _multiplier_values_dd(entries, z):
+    """`multiplier_values_dd` for one block of points, as one array program."""
+    a_exp = np.stack([np.asarray(a) for _, a, _ in entries])
+    b_exp = np.stack([np.asarray(b) for _, _, b in entries])
+    degs = np.array([d for d, _, _ in entries])
+    n_e, n_p = len(entries), arnoldi.PERMS.shape[0]
+    ea = np.zeros((n_e, n_p, 4), np.int64)
+    eb = np.zeros((n_e, n_p, 4), np.int64)
+    for p, perm in enumerate(arnoldi.PERMS):
+        ea[:, p, perm] = a_exp
+        eb[:, p, perm] = b_exp
+    top = int(max(ea.max(), eb.max()))
+    z_dd = dd.cto_dd(z)                                                   # (N, 4)
+    pw = [dd.cto_dd(jnp.ones(z.shape, jnp.complex128))]
+    for _ in range(top):
+        pw.append(analytic._cmul(pw[-1], z_dd))
+    pw = jtu.tree_map(lambda *xs: jnp.stack(xs, axis=1), *pw)            # (N, top+1, 4)
+    cols = jnp.arange(4)
+
+    def monomial(exps):
+        part = jtu.tree_map(lambda a: a[:, jnp.asarray(exps), cols], pw)  # (N, E, P, 4)
+        out = analytic._cindex(part, Ellipsis, 0)
+        for c in range(1, 4):
+            out = analytic._cmul(out, analytic._cindex(part, Ellipsis, c))
+        return out
+    m = analytic._cmul(monomial(ea), (lambda v: (v[0], dd.neg(v[1])))(monomial(eb)))
+    s = dd.sum_dd(*m[0], axis=-1)                                         # (N, E), real
+    r2 = dd.add(dd.sum_dd(*analytic._mul(z_dd[0], z_dd[0]), axis=-1),
+                dd.sum_dd(*analytic._mul(z_dd[1], z_dd[1]), axis=-1))     # (N,)
+    inv = dd.reciprocal(r2)
+    pows = [dd.to_dd(jnp.ones_like(r2[0]))]
+    for _ in range(int(degs.max())):
+        pows.append(analytic._mul(pows[-1], inv))
+    stack = (jnp.stack([p[0] for p in pows], axis=1), jnp.stack([p[1] for p in pows], axis=1))
+    rho = jtu.tree_map(lambda a: a[:, jnp.asarray(degs)], stack)          # (N, E)
+    return analytic._mul(s, rho)
+
+
+@jax.jit
+def _pick_dd(cols, coef, cand, weight, alive, idx, ncur):
+    """One step of the pivoted Gram-Schmidt in dd, on arrays of fixed shape."""
+    take = lambda tree, i, ax: jtu.tree_map(lambda a: jnp.take(a, i, axis=ax), tree)
+    c = take(cand, idx, 1)                                                # (N,)
+    wc = dd.mul_dd_fp(c, weight)
+    extra = ozaki.matmul(jtu.tree_map(lambda a: a.T, cols), jtu.tree_map(
+        lambda a: a[:, None], wc))
+    extra = jtu.tree_map(lambda a: a[:, 0], extra)                        # (room,)
+    proj_old = ozaki.matmul(cols, jtu.tree_map(lambda a: a[:, None], extra))
+    col = dd.add(c, dd.neg(jtu.tree_map(lambda a: a[:, 0], proj_old)))
+    norm = _sqrt_dd(dd.dot_dd_fp(analytic._mul(col, col), weight, axis=0))
+    inv = dd.reciprocal(norm)
+    newcol = analytic._mul(col, inv)
+    vec = dd.add(take(coef, idx, 1), extra)
+    cols = jtu.tree_map(lambda a, x: jax.lax.dynamic_update_slice(a, x[:, None], (0, ncur)),
+                        cols, newcol)
+    wn = dd.mul_dd_fp(newcol, weight)
+    proj = ozaki.matmul(jtu.tree_map(lambda a: a[None, :], wn), cand)     # (1, C)
+    proj = jtu.tree_map(lambda a: jnp.where(alive, a[0], 0.0), proj)
+    outer = analytic._mul(jtu.tree_map(lambda a: a[:, None], newcol),
+                          jtu.tree_map(lambda a: a[None, :], proj))
+    cand = dd.add(cand, dd.neg(outer))
+    coef = jtu.tree_map(lambda a, x: jax.lax.dynamic_update_slice(a, x[None], (ncur, 0)),
+                        coef, proj)
+    rest = jnp.sqrt(jnp.sum(weight[:, None] * cand[0] ** 2, axis=0))
+    return cols, coef, cand, vec, norm, rest
+
+
+def _pivoted_dd(cols, ncur, weight, cand, size, budget, tol):
+    """`arnoldi._pivoted` in dd: cols, cand and the coefficients are dd pairs."""
+    w = weight[:, None]
+    t_cols = jtu.tree_map(lambda a: a.T, cols)
+    coef = ozaki.matmul(t_cols, dd.mul_dd_fp(cand, w))
+    cand = dd.add(cand, dd.neg(ozaki.matmul(cols, coef)))
+    again = ozaki.matmul(t_cols, dd.mul_dd_fp(cand, w))
+    cand = dd.add(cand, dd.neg(ozaki.matmul(cols, again)))
+    coef = dd.add(coef, again)
+    size_np = np.asarray(size)
+    rest = jnp.sqrt(jnp.sum(w * cand[0] ** 2, axis=0))
+    alive, picks = np.ones(cand[0].shape[1], bool), []
+    while alive.any() and len(picks) < budget:
+        rest_np = np.asarray(rest)
+        idx = int(np.argmax(np.where(alive, rest_np / size_np, -np.inf)))
+        if rest_np[idx] <= tol * size_np[idx]:
+            break
+        alive[idx] = False
+        cols, coef, cand, vec, norm, rest = _pick_dd(cols, coef, cand, weight,
+                                                     jnp.asarray(alive), idx, ncur)
+        vec = tuple(np.asarray(v)[:ncur] for v in vec)
+        norm = tuple(float(v) for v in norm)
+        picks.append((idx, vec, norm, norm[0] / size_np[idx]))
+        ncur += 1
+    return picks, cols, ncur
+
+
+def build_joint_dd(k, z, scale, mu, d_max=12, tol=1e-9, n_by_degree=None, verbose=False,
+                   center=True):
+    """`arnoldi.build_joint` in dd, with no seeds. h comes as h + h_lo.
+
+    The products must reach the HN count at every degree, so take d_max large
+    enough; 10 or more reached it at k = 24 with no seed.
+    """
+    entries = arnoldi.dictionary(d_max)
+    z = jnp.asarray(z)
+    mvals = multiplier_values_dd(entries, z)                              # (N, E) dd
+    weight = jnp.asarray(mu) * jnp.asarray(scale) ** 2
+    shift = scale_y = None
+    if center:
+        total = jnp.sum(weight)
+        mean = (weight @ mvals[0]) / total
+        std = jnp.sqrt((weight @ (mvals[0] - mean) ** 2) / total)
+        keep = np.nonzero(np.asarray(std) > 1e-12 * np.asarray(jnp.abs(mean)).max())[0]
+        entries = [entries[i] for i in keep]
+        shift, scale_y = np.asarray(mean)[keep], np.asarray(std)[keep]
+        inv = dd.reciprocal(dd.to_dd(jnp.asarray(scale_y)))
+        mvals = jtu.tree_map(lambda a: a[:, keep], mvals)
+        mvals = analytic._mul(dd.add(mvals, dd.to_dd(-jnp.broadcast_to(
+            jnp.asarray(shift), mvals[0].shape))), jtu.tree_map(lambda a: a[None], inv))
+    degs = np.array([d for d, _, _ in entries])
+    norm0 = float(jnp.sqrt(jnp.sum(weight)))
+    room = 1 if n_by_degree is None else n_by_degree[k]
+    first = dd.reciprocal(dd.to_dd(jnp.full(z.shape[0], norm0)))
+    cols = tuple(jnp.zeros((z.shape[0], room)).at[:, 0].set(x) for x in first)
+    ncur = 1
+    parents, mults, degrees = [-1], [-1], [0]
+    coefs, norms = [(np.zeros(0), np.zeros(0))], [(norm0, 0.0)]
+    trace, start = [], time.perf_counter()
+    for target in range(1, k + 1):
+        want = None if n_by_degree is None else n_by_degree[target]
+        before = ncur
+        pairs = [(int(e), t) for e in np.nonzero(degs <= target)[0]
+                 for t in range(len(degrees)) if degrees[t] == target - degs[e]]
+        worst = 1.0
+        if pairs:
+            es, ts = (jnp.asarray([pair[i] for pair in pairs]) for i in (0, 1))
+            cand = analytic._mul(jtu.tree_map(lambda a: a[:, es], mvals),
+                                 jtu.tree_map(lambda a: a[:, ts], cols))
+            size = jnp.sqrt(jnp.sum(weight[:, None] * cand[0] ** 2, axis=0))
+            budget = len(pairs) if want is None else max(want - ncur, 0)
+            picks, cols, ncur = _pivoted_dd(cols, ncur, weight, cand, size, budget, tol)
+            for idx, coef, norm, ratio in picks:
+                parents.append(pairs[idx][1])
+                mults.append(pairs[idx][0])
+                degrees.append(target)
+                coefs.append(coef)
+                norms.append(norm)
+                worst = min(worst, ratio)
+        trace.append({'degree': target, 'want': want, 'dim': int(ncur),
+                      'from_products': int(ncur - before), 'worst_product_ratio': worst,
+                      'candidates': len(pairs), 'seconds': time.perf_counter() - start})
+        if verbose:
+            print(f"    degree {target}: {ncur} of {want}, {len(pairs)} candidates, worst "
+                  f"ratio {worst:.1e}, {trace[-1]['seconds']:.0f}s", flush=True)
+        if want is not None and ncur < want:
+            raise ValueError(f'the products reach {ncur} of {want} at degree {target}; '
+                             'take a larger d_max')
+    n = ncur
+    h, h_lo = np.zeros((n, n)), np.zeros((n, n))
+    for t in range(n):
+        h[:t, t], h_lo[:t, t] = coefs[t]
+        h[t, t], h_lo[t, t] = norms[t]
+    used = sorted(set(m for m in mults if m >= 0))
+    remap = {m: i for i, m in enumerate(used)}
+    basis = arnoldi.JointBasis(
+        k=int(k), entries=tuple(entries[m] for m in used), parents=np.array(parents),
+        mults=np.array([remap[m] if m >= 0 else -1 for m in mults]),
+        degrees=np.array(degrees), h=h, alpha=0.0, seed_slot=-np.ones(n, np.int64),
+        seeds=(), layouts=(), shift=None if shift is None else shift[used],
+        scale=None if scale_y is None else scale_y[used])
+    return basis, h_lo, trace
+
+
+def joint_jets_dd(basis, h_lo, y_jets):
+    """The jets of every q_t in dd at one point, from the jets of the multipliers.
+
+    The functions of each degree form one block: their products y q_parent come
+    from lower degrees, the part of the lower degrees is one `ozaki` product, and
+    a short loop inside the block does the rest.
+    """
+    n = basis.h.shape[0]
+    degrees = np.asarray(basis.degrees)
+    h = (jnp.asarray(basis.h), jnp.asarray(h_lo))
+    inv_h = dd.reciprocal((jnp.diag(h[0]), jnp.diag(h[1])))
+    parents = np.maximum(np.asarray(basis.parents), 0)
+    mults = np.maximum(np.asarray(basis.mults), 0)
+
+    def flat(jets):
+        """A jet of shape (m,) as 13 real dd rows (13, m)."""
+        v, d, hh = jets
+        rows = [v] + [jtu.tree_map(lambda a: a[:, c], part) for part in d for c in range(2)]
+        rows += [jtu.tree_map(lambda a: a[:, c, e], part) for part in hh
+                 for c in range(2) for e in range(2)]
+        return tuple(jnp.stack([r[i] for r in rows]) for i in range(2))
+
+    def unflat(mat):
+        """The inverse of `flat`."""
+        pick = lambda i: (mat[0][i], mat[1][i])
+        v = pick(0)
+        d = tuple(tuple(jnp.stack([mat[i][1 + 2 * part + c] for c in range(2)], axis=-1)
+                        for i in range(2)) for part in range(2))
+        hh = tuple(tuple(jnp.stack([jnp.stack([mat[i][5 + 4 * part + 2 * c + e]
+                                               for e in range(2)], axis=-1)
+                                    for c in range(2)], axis=-2)
+                         for i in range(2)) for part in range(2))
+        return v, d, hh
+
+    first = (inv_h[0][:1], inv_h[1][:1])
+    zero = lambda m: (dd.to_dd(jnp.zeros(m)), dd.cto_dd(jnp.zeros((m, 2), jnp.complex128)),
+                      dd.cto_dd(jnp.zeros((m, 2, 2), jnp.complex128)))
+    blocks = [flat(((first[0], first[1]),) + zero(1)[1:])]
+    starts = [0]
+    for j in sorted(set(degrees.tolist()) - {0}):
+        idx = np.nonzero(degrees == j)[0]
+        a, b = int(idx[0]), int(idx[-1]) + 1
+        assert np.all(idx == np.arange(a, b)), 'the functions of a degree must be contiguous'
+        done = tuple(jnp.concatenate([blk[i] for blk in blocks], axis=1) for i in range(2))
+        jets_done = unflat(done)
+        take = lambda tree, i: jtu.tree_map(lambda x: x[i], tree)
+        grown = vpa_dd.jet_mul(take(y_jets, jnp.asarray(mults[a:b])),
+                               take(jets_done, jnp.asarray(parents[a:b])))
+        lower = ozaki.matmul(done, (h[0][:a, a:b], h[1][:a, a:b]))         # (13, m)
+        rest = dd.add(flat(grown), dd.neg(lower))
+        hb = (h[0][a:b, a:b], h[1][a:b, a:b])
+        inv_b = jtu.tree_map(lambda x: x[a:b], inv_h)
+        m = b - a
+
+        def step(t, out):
+            col = jtu.tree_map(lambda x: x[:, t], hb)                      # (m,)
+            acc = dd.dot_dd_fp(out, col[0][None, :], axis=1)
+            acc = dd.add(acc, dd.to_dd(out[0] @ col[1]))
+            new = analytic._mul(dd.add(jtu.tree_map(lambda x: x[:, t], rest), dd.neg(acc)),
+                                jtu.tree_map(lambda x: x[t], inv_b))
+            return jtu.tree_map(lambda arr, x: arr.at[:, t].set(x), out, new)
+        out = jax.lax.fori_loop(0, m, step, tuple(jnp.zeros((13, m)) for _ in range(2)))
+        blocks.append(out)
+        starts.append(a)
+    done = tuple(jnp.concatenate([blk[i] for blk in blocks], axis=1) for i in range(2))
+    return unflat(done)
+
+
+def joint_hessians_dd(basis, h_lo, z_dd, rest, hi, alpha, weight):
+    """R ddbar(W q_t) R^dag for every function of the level in complex dd, (n, 2, 2).
+
+    `rest` is the dd restriction matrix, `hi` the dd state of the base and `weight`
+    the FP64 value of W = w |z|^(2k), a factor common to every function.
+    """
+    q_v, q_d, q_h = joint_jets_dd(basis, h_lo, vpa_dd.basis_multiplier_jets(basis, z_dd, rest))
+    d_l, h_l = vpa_dd.weight_jets(hi, z_dd, rest, alpha, basis.k)
+    d_lb = analytic._cindex(d_l, None)
+    h_lb = analytic._cindex(h_l, None)
+    lead = dd.cadd(dd.cadd(q_h, vpa_dd._outer(q_d, d_lb)), vpa_dd._outer(d_lb, q_d))
+    rest_term = vpa_dd._creal(dd.cadd(h_lb, analytic._cindex(vpa_dd._outer(d_l, d_l), None)),
+                              vpa_dd._ex(q_v, 0, 0))
+    return analytic._cscale(dd.cadd(lead, rest_term), weight)
