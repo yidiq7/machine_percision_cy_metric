@@ -82,9 +82,8 @@ def fit_rows(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, batch, chunk, nu
         vf.point_inputs(batch), jnp.asarray(basis.h), jnp.asarray(h_lo))
 
 
-def residuals(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, coeffs, batch, chunk,
-              null):
-    """f in dd, rounded once, at every point for each column of coeffs, as (N, n_c)."""
+def residual_program(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, chunk, null):
+    """One compiled program: the volumes in dd at a block of points, for each column of c."""
     def one(a, cc, h, hl):
         lev = dataclasses.replace(basis, h=h)
         _, hi, (z_dd, m, free), p = point_state(lay0, parts0, lev, hl, uinv, weight_fn,
@@ -96,9 +95,28 @@ def residuals(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, coeffs, batch, 
             return analytic._volume_from_phi_dd(hi[0], z_dd, m, free, keep=True,
                                                 delta=delta)
         return jax.vmap(volume)(cc.T)
-    v = jax.jit(lambda x, cc, h, hl: jax.lax.map(lambda a: one(a, cc, h, hl), x,
-                                                 batch_size=chunk))(
-        vf.point_inputs(batch), jnp.asarray(coeffs), jnp.asarray(basis.h), jnp.asarray(h_lo))
+    program = jax.jit(lambda x, cc, h, hl: jax.lax.map(lambda a: one(a, cc, h, hl), x,
+                                                       batch_size=chunk))
+    return lambda x, cc: program(x, cc, jnp.asarray(basis.h), jnp.asarray(h_lo))
+
+
+def residuals(program, coeffs, batch, block):
+    """f in dd, rounded once, for each column of coeffs, as (N, n_c), in blocks of points.
+
+    Every block has `block` points, the last one padded with its own last point, so
+    the program compiles once for all point sets.
+    """
+    inputs = vf.point_inputs(batch)
+    total = batch['mass'].shape[0]
+    his, los = [], []
+    for start in range(0, total, block):
+        stop = min(start + block, total)
+        take = jnp.minimum(jnp.arange(start, start + block), stop - 1)
+        part = jax.tree_util.tree_map(lambda a: a[take], inputs)
+        v = program(part, jnp.asarray(coeffs))
+        his.append(v[0][:stop - start])
+        los.append(v[1][:stop - start])
+    v = (jnp.concatenate(his), jnp.concatenate(los))
     mass = batch['mass'] / jnp.sum(batch['mass'])
     return np.asarray(analytic.residual_from_volumes(v, mass[:, None]))
 
@@ -132,6 +150,8 @@ def main():
     ap.add_argument('--n-check', type=int, default=20_000)
     ap.add_argument('--d-max', type=int, default=12)
     ap.add_argument('--chunk', type=int, default=256)
+    ap.add_argument('--block', type=int, default=65_536,
+                    help='points in one call of the compiled residual program')
     ap.add_argument('--cutoffs', type=float, nargs='+', default=[1e-9, 1e-12, 0.0])
     ap.add_argument('--null-degree', type=int, default=0,
                     help='psi_N from the functions of degree <= this replaces the one '
@@ -242,9 +262,10 @@ def main():
 
         coeffs = np.concatenate([np.zeros((n, 1)), sols], axis=1)
         labels = ['base'] + [f'cutoff {tau:.0e}' for tau in args.cutoffs]
+        program = residual_program(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha,
+                                   args.chunk, null)
         t1 = time.perf_counter()
-        f_fit = residuals(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, coeffs,
-                          fit_set, args.chunk, null)
+        f_fit = residuals(program, coeffs, fit_set, args.block)
         say(f'k1 = {k1}: the fit set in dd in {time.perf_counter() - t1:.0f}s')
         row['solutions'] = []
         for i, label in enumerate(labels):
@@ -259,8 +280,7 @@ def main():
             res = root[:, None] * jnp.asarray(f_fit)
             for i, tau in enumerate(args.cutoffs):
                 coeffs[:, 1 + i] += step(res[:, 1 + i], tau)
-            f_fit = residuals(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, coeffs,
-                              fit_set, args.chunk, null)
+            f_fit = residuals(program, coeffs, fit_set, args.block)
             for i, tau in enumerate(args.cutoffs):
                 got = vf.summary(f_fit[:, 1 + i], fit_set)
                 row['solutions'][1 + i][f'fit_refined_{it}'] = got
@@ -270,8 +290,7 @@ def main():
         np.save(out_dir / f'vpa_dd_coeffs_k0_{args.k0}_k1_{k1}.npy', coeffs)
 
         t1 = time.perf_counter()
-        f_hold = residuals(lay0, parts0, basis, h_lo, uinv, weight_fn, alpha, coeffs,
-                           hold, args.chunk, null)
+        f_hold = residuals(program, coeffs, hold, args.block)
         say(f'k1 = {k1}: the hold-out in dd in {time.perf_counter() - t1:.0f}s')
         for i, label in enumerate(labels):
             got = vf.summary(f_hold[:, i], hold)
