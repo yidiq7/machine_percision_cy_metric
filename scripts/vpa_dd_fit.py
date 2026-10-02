@@ -247,6 +247,8 @@ def main():
             gap = float(jnp.linalg.norm(low @ gamma - jnp.sqrt(mu)))
             null = (n_low, gamma, b0)
             row['null'] = {'n_low': n_low, 'b0': b0, 'rms_gap': gap}
+            # gamma enters psi_N exactly, so a reuse of the level needs these very numbers.
+            np.save(out_dir / f'vpa_dd_gamma_k0_{args.k0}_k1_{k1}.npy', gamma)
             say(f'k1 = {k1}: psi_N from the first {n_low} functions replaces function {b0}; '
                 f'rms of psi_N - 1 on the check points {gap:.3e}')
         del vals
