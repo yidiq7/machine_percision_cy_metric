@@ -305,6 +305,8 @@ def main():
         t1 = time.perf_counter()
         f_hold = residuals(program, coeffs, hold, args.block)
         say(f'k1 = {k1}: the hold-out in dd in {time.perf_counter() - t1:.0f}s')
+        np.save(out_dir / f'vpa_dd_f_fit_k0_{args.k0}_k1_{k1}.npy', f_fit)
+        np.save(out_dir / f'vpa_dd_f_hold_k0_{args.k0}_k1_{k1}.npy', f_hold)
         for i, label in enumerate(labels):
             got = vf.summary(f_hold[:, i], hold)
             row['solutions'][i]['hold'] = got
