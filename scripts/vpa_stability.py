@@ -71,7 +71,8 @@ def main():
     ap.add_argument('--k0', type=int, default=12)
     ap.add_argument('--k1', type=int, default=24)
     ap.add_argument('--settings', type=str, nargs='+', default=['8:10000'],
-                    help='d_max:n_build for each build')
+                    help='d_max:n_build for each build, and :flat for q orthonormal in mu '
+                         'alone, without the weight of the level')
     ap.add_argument('--seed', type=int, default=20260813)
     ap.add_argument('--points', type=int, default=2)
     ap.add_argument('--dps', type=int, default=40)
@@ -101,12 +102,16 @@ def main():
     pick = list(range(args.points)) + list(np.argsort(ratio)[:args.points])
     table = {}
     for setting in args.settings:
-        d_max, n_build = (int(x) for x in setting.split(':'))
+        parts = setting.split(':')
+        d_max, n_build = int(parts[0]), int(parts[1])
+        flat = len(parts) > 2 and parts[2] == 'flat'
         build = sample(n_build, args.seed + 2000)
         r2 = jnp.sum(jnp.abs(build['points']) ** 2, axis=1)
+        scale = (jnp.ones(n_build) if flat
+                 else weights(build['points']) * r2 ** args.k1)
         t1 = time.perf_counter()
         basis, trace = arnoldi.build_joint(
-            args.k1, np.asarray(build['points']), weights(build['points']) * r2 ** args.k1,
+            args.k1, np.asarray(build['points']), scale,
             build['mass'] / jnp.sum(build['mass']), d_max=d_max, n_by_degree=counts,
             layouts=layouts)
         used = sorted({int(basis.entries[m][0]) for m in basis.mults if m >= 0})
