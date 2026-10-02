@@ -11,6 +11,7 @@ identity that the simplifier of XLA can remove.
 """
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 
 from . import dd
@@ -26,8 +27,10 @@ def _slices(x, axis):
     """x as the sum of SLICES parts, on power-of-2 grids of each row (axis=1) or column."""
     top = jnp.max(jnp.abs(x), axis=axis, keepdims=True)
     top = jnp.where(top > 0, top, 1.0)
-    # One more power of 2 keeps unit > top when log2 rounds down.
-    unit = jnp.exp2(jnp.ceil(jnp.log2(top)) + 1.0)
+    # The power of 2 above top, from the exponent bits: exp2 on the device is not exact.
+    bits = jax.lax.bitcast_convert_type(top, jnp.int64)
+    biased = (bits >> 52) & 0x7FF
+    unit = jax.lax.bitcast_convert_type((biased + 1) << 52, jnp.float64)
     out, rest = [], x
     for p in range(1, SLICES):
         grid = unit * 2.0 ** (-BITS * p)
