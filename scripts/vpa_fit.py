@@ -37,7 +37,8 @@ import jax                                                  # noqa: E402
 import jax.numpy as jnp                                     # noqa: E402
 
 import correction_fit as cf                                 # noqa: E402
-from quartic import analytic, arnoldi, correction, data, dd, fit, metric, sections  # noqa: E402
+from quartic import (analytic, arnoldi, correction, data, dd, dd_metric, fit,  # noqa: E402
+                     metric, sections, vpa_dd)
 
 T0 = time.perf_counter()
 
@@ -94,22 +95,49 @@ def fit_rows(lay0, parts0, basis, weight_fn, batch, chunk):
         point_inputs(batch), jnp.asarray(basis.h))
 
 
-def residuals(lay0, parts0, basis, weight_fn, coeffs, batch, chunk):
-    """f in dd, rounded once, at every point for each column of coeffs, as (N, n_c)."""
+def residuals(lay0, parts0, basis, weight_fn, coeffs, batch, chunk, alpha, n_low=0):
+    """f in dd, rounded once, at every point for each column of coeffs, as (N, n_c).
+
+    The first `n_low` functions take their Hessians from `vpa_dd` in dd, and the
+    others from FP64 autodiff.
+    """
     def one(a, cc, h):
         z, rest, extra = a
         lev = dataclasses.replace(basis, h=h)
         _, hi = correction.base_state_dd(lay0, parts0, z, extra)
         z_dd, m, free = analytic._dd_point(extra)
         p = arnoldi.joint_hessians(lev, z, rest, weight_fn)                  # (n, 2, 2)
-        deltas = jnp.einsum('bkl,bc->ckl', p, cc)
-        return jax.vmap(lambda d: analytic._volume_from_phi_dd(
-            hi[0], z_dd, m, free, keep=True, delta=d))(deltas)
+        if n_low:
+            rest_dd, _ = dd_metric._restriction_dd(z_dd, m, free)
+            scale = weight_fn(z) * jnp.sum(jnp.abs(z) ** 2) ** basis.k
+            low = vpa_dd.low_hessians(lev, n_low, z_dd, rest_dd, hi, alpha, scale)
+
+        def volume(c):
+            delta = jnp.einsum('bkl,b->kl', p[n_low:], c[n_low:])
+            if n_low:
+                part = tuple(dd.dot_dd_fp(comp, c[:n_low, None, None], axis=0)
+                             for comp in low)
+                delta = dd.cadd(part, dd.cto_dd(delta))
+            return analytic._volume_from_phi_dd(hi[0], z_dd, m, free, keep=True,
+                                                delta=delta)
+        return jax.vmap(volume)(cc.T)
     v = jax.jit(lambda x, cc, h: jax.lax.map(lambda a: one(a, cc, h), x,
                                              batch_size=chunk))(
         point_inputs(batch), jnp.asarray(coeffs), jnp.asarray(basis.h))
     mass = batch['mass'] / jnp.sum(batch['mass'])
     return np.asarray(analytic.residual_from_volumes(v, mass[:, None]))
+
+
+def product_values(lay_p, parts_p, weight_fn, batch, chunk):
+    """psi = w n at every point, with n = sigma^* C sigma from its Gram sums in dd."""
+    def one(a):
+        z, extra = a
+        z_dd, _, _ = analytic._dd_point(extra)
+        sig, dsig = analytic.section_vectors_dd(lay_p, None, z_dd=z_dd)
+        n_dd = analytic._gram_parts(lay_p, parts_p, sig, dsig)[4][0]
+        return weight_fn(z) * dd.to_fp(n_dd)
+    xs = (batch['points_hi'], (batch['points_hi'], batch['points_lo'], batch['patch']))
+    return jax.jit(lambda x: jax.lax.map(one, x, batch_size=chunk))(xs)
 
 
 def summary(f, batch):
@@ -177,6 +205,12 @@ def main():
                     help='the smallest s / s_max that each solution keeps')
     ap.add_argument('--max-steps', type=int, default=300,
                     help='LM steps of the HN fit at k0, without --theta')
+    ap.add_argument('--map', type=str, nargs='+', default=None,
+                    help='saved product-basis coefficients of each level of --k1, to put '
+                         'into the V+A coordinates by least squares on psi')
+    ap.add_argument('--dd-degree', type=int, default=0,
+                    help='the functions of degree up to this, and before the first seed, '
+                         'take their Hessians in dd in the evaluation')
     ap.add_argument('--out', type=str, default='runs_vpa')
     args = ap.parse_args()
 
@@ -266,6 +300,32 @@ def main():
         r0 = root * f0
         say(f'k1 = {k1}: rows of J at {args.n_fit} points in {time.perf_counter() - t1:.0f}s')
 
+        mapped = None
+        if args.map is not None:
+            path = args.map[args.k1.index(k1)]
+            lay_p = sections.layout(k1, normalize=False)
+            side = Path(path).with_suffix('.basis')
+            if not side.exists() or side.read_text().strip() != lay_p.fingerprint():
+                raise SystemExit(f'the basis of {path} is absent or not the layout at {k1}')
+            parts_p = sections.prepare_parts(lay_p, jnp.asarray(np.load(path)))
+            psi = product_values(lay_p, parts_p, weight_fn, fit_set, args.chunk)
+            vals = jax.jit(lambda z, w: arnoldi.joint_values(basis, z, w))(
+                fit_set['points_hi'], weights(fit_set['points_hi']))
+            q, r = jnp.linalg.qr(root[:, None] * vals)
+            mapped = np.asarray(jax.scipy.linalg.solve_triangular(r, q.T @ (root * psi)))
+            miss = float(jnp.linalg.norm(root * (vals @ mapped - psi))
+                         / jnp.linalg.norm(root * psi))
+            pred = float(jnp.sum((r0 + jac @ mapped) ** 2))
+            top = np.argsort(np.abs(mapped))[::-1][:6]
+            row['mapped'] = {'path': path, 'miss': miss, 'norm_c': float(np.linalg.norm(mapped)),
+                             'top': [[int(i), float(mapped[i])] for i in top],
+                             'predicted_loss': pred}
+            say(f"k1 = {k1}: the product level {path} in V+A coordinates: L2 norm of psi "
+                f"{float(jnp.linalg.norm(root * psi)):.3e}, relative miss {miss:.1e}, norm "
+                f"of c {np.linalg.norm(mapped):.3e}, largest components "
+                f"{row['mapped']['top']}, linear-model loss {pred:.4e}")
+            del vals, q, r
+
         t1 = time.perf_counter()
         spec, sols, predicted = solve(jac, r0, args.cutoffs)
         del jac, lrows
@@ -283,10 +343,22 @@ def main():
               f"{spec['smallest_vector_top']}, step along it {spec['smallest_step']:.3e}",
               flush=True)
 
+        n_low = 0
+        if args.dd_degree > 0:
+            seeded = np.nonzero(np.asarray(basis.seed_slot) >= 0)[0]
+            n_low = min(counts[args.dd_degree], int(seeded[0]) if len(seeded) else n)
+            say(f'k1 = {k1}: the first {n_low} functions take their Hessians in dd')
+        row['n_low'] = n_low
         coeffs = np.concatenate([np.zeros((n, 1)), sols], axis=1)
         labels = ['base'] + [f'cutoff {tau:.0e}' for tau in args.cutoffs]
+        predicted = list(predicted)
+        if mapped is not None:
+            coeffs = np.concatenate([coeffs, mapped[:, None]], axis=1)
+            labels.append('mapped product level')
+            predicted.append(row['mapped']['predicted_loss'])
         t1 = time.perf_counter()
-        f_fit = residuals(lay0, parts0, basis, weight_fn, coeffs, fit_set, args.chunk)
+        f_fit = residuals(lay0, parts0, basis, weight_fn, coeffs, fit_set, args.chunk,
+                          alpha, n_low)
         say(f'k1 = {k1}: the fit set in dd in {time.perf_counter() - t1:.0f}s')
         row['solutions'] = []
         for i, label in enumerate(labels):
@@ -300,7 +372,8 @@ def main():
         np.save(out_dir / f'vpa_coeffs_k0_{args.k0}_k1_{k1}.npy', coeffs)
 
         t1 = time.perf_counter()
-        f_hold = residuals(lay0, parts0, basis, weight_fn, coeffs, hold, args.chunk)
+        f_hold = residuals(lay0, parts0, basis, weight_fn, coeffs, hold, args.chunk,
+                           alpha, n_low)
         say(f'k1 = {k1}: the hold-out in dd in {time.perf_counter() - t1:.0f}s')
         for i, label in enumerate(labels):
             got = summary(f_hold[:, i], hold)

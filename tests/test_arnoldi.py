@@ -162,6 +162,26 @@ def test_joint_spans_the_product_basis():
     print(f"  every product basis function lies in the joint span, to {worst:.1e}")
 
 
+def test_low_hessians_match_fp64():
+    """The dd jets of the functions of the level give the FP64 Hessians, to round-off."""
+    from quartic import dd, vpa_dd
+    lay0, mats0, _ = base()
+    weight, _, basis, _ = joint()
+    n_low = int(basis.h.shape[0])
+    assert not np.any(np.asarray(basis.seed_slot) >= 0)
+    worst = 0.0
+    for z, r in zip(TEST['points'][:4], TEST['restriction'][:4]):
+        want = arnoldi.joint_hessians(basis, z, r, weight)
+        state = correction.base_state(lay0, mats0, z)
+        hi = (dd.cto_dd(state[2]), dd.cto_dd(state[1]))
+        scale = weight(z) * jnp.sum(jnp.abs(z) ** 2) ** K1
+        got = dd.cto_fp(vpa_dd.low_hessians(basis, n_low, dd.cto_dd(z), dd.cto_dd(r), hi,
+                                            ALPHA, scale))
+        worst = max(worst, float(jnp.abs(got - want).max() / jnp.abs(want).max()))
+    assert worst < 1e-10, worst
+    print(f"  the dd jets of all {n_low} functions match the FP64 Hessians to {worst:.1e}")
+
+
 if __name__ == "__main__":
     for fn in (test_orbits_have_the_right_dimensions,
                test_basis_is_orthonormal_on_its_sample,
@@ -169,7 +189,8 @@ if __name__ == "__main__":
                test_restricted_hessian_matches_psi_parts,
                test_joint_reaches_the_dimension_and_is_orthonormal,
                test_joint_with_seeds_matches_the_build,
-               test_joint_spans_the_product_basis):
+               test_joint_spans_the_product_basis,
+               test_low_hessians_match_fp64):
         print(fn.__name__)
         fn()
     print("\nall arnoldi tests pass")

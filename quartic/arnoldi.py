@@ -354,39 +354,56 @@ def seed_values_all(lay_j, z):
     return (vals / r2 ** lay_j.k).T
 
 
-def _pivoted(cols, weight, cand, size, budget, tol):
-    """Pivoted Gram-Schmidt of the candidates `cand` against `cols`, on the device.
+@jax.jit
+def _pick(cols, coef, cand, weight, alive, idx, ncur):
+    """One step of `_pivoted` on arrays of fixed shape, so that it compiles once."""
+    c = jnp.take(cand, idx, axis=1)
+    # A second pass against every column keeps the new one orthogonal.
+    extra = cols.T @ (weight * c)
+    col = c - cols @ extra
+    norm = jnp.sqrt(jnp.sum(weight * col ** 2))
+    newcol = col / norm
+    vec = jnp.take(coef, idx, axis=1) + extra
+    cols = jax.lax.dynamic_update_slice(cols, newcol[:, None], (0, ncur))
+    proj = jnp.where(alive, newcol @ (weight[:, None] * cand), 0.0)
+    cand = cand - jnp.outer(newcol, proj)
+    coef = jax.lax.dynamic_update_slice(coef, proj[None], (ncur, 0))
+    rest = jnp.sqrt(jnp.sum(weight[:, None] * cand ** 2, axis=0))
+    return cols, coef, cand, vec, norm, rest
 
-    Returns the picks as (index, coefficient vector, norm, ratio), at most
-    `budget` of them, and the new columns. The coefficients of each pick are on
+
+def _pivoted(cols, ncur, weight, cand, size, budget, tol):
+    """Pivoted Gram-Schmidt of the candidates `cand` against the first `ncur` columns.
+
+    `cols` has room for the new columns, and its other columns are zero. Returns
+    the picks as (index, coefficient vector, norm, ratio), at most `budget` of
+    them, the columns and their new count. The coefficients of each pick are on
     every column before it, so original = cols @ coef + norm * new column.
     """
-    cols, weight, cand, size = (jnp.asarray(a) for a in (cols, weight, cand, size))
+    if ncur + budget > cols.shape[1]:
+        cols = jnp.concatenate([cols, jnp.zeros((cols.shape[0], ncur + budget
+                                                 - cols.shape[1]))], axis=1)
     wc = weight[:, None]
     coef = cols.T @ (wc * cand)
     cand = cand - cols @ coef
     again = cols.T @ (wc * cand)
     cand = cand - cols @ again
     coef = coef + again
+    size_np = np.asarray(size)
+    rest = jnp.sqrt(jnp.sum(wc * cand ** 2, axis=0))
     alive, picks = np.ones(cand.shape[1], bool), []
     while alive.any() and len(picks) < budget:
-        rest = jnp.sqrt(jnp.sum(wc * cand ** 2, axis=0))
-        idx = int(np.argmax(np.where(alive, np.asarray(rest / size), -np.inf)))
-        if float(rest[idx]) <= tol * float(size[idx]):
+        rest_np = np.asarray(rest)
+        idx = int(np.argmax(np.where(alive, rest_np / size_np, -np.inf)))
+        if rest_np[idx] <= tol * size_np[idx]:
             break
         alive[idx] = False
-        # A second pass against every column keeps the new one orthogonal.
-        extra = cols.T @ (weight * cand[:, idx])
-        col = cand[:, idx] - cols @ extra
-        norm = jnp.sqrt(jnp.sum(weight * col ** 2))
-        newcol = col / norm
-        picks.append((idx, np.asarray(coef[:, idx] + extra), float(norm),
-                      float(norm / size[idx])))
-        cols = jnp.concatenate([cols, newcol[:, None]], axis=1)
-        proj = jnp.where(jnp.asarray(alive), newcol @ (wc * cand), 0.0)
-        cand = cand - jnp.outer(newcol, proj)
-        coef = jnp.concatenate([coef, proj[None]], axis=0)
-    return picks, cols
+        cols, coef, cand, vec, norm, rest = _pick(cols, coef, cand, weight,
+                                                  jnp.asarray(alive), idx, ncur)
+        norm = float(norm)
+        picks.append((idx, np.asarray(vec)[:ncur], norm, norm / size_np[idx]))
+        ncur += 1
+    return picks, cols, ncur
 
 
 def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=None):
@@ -405,12 +422,14 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
     degs = np.array([d for d, _, _ in entries])
     weight = jnp.asarray(mu) * jnp.asarray(scale) ** 2
     norm0 = float(jnp.sqrt(jnp.sum(weight)))
-    cols = jnp.full((z.shape[0], 1), 1.0 / norm0)
+    room = 1 if n_by_degree is None else n_by_degree[k]
+    cols = jnp.zeros((z.shape[0], room)).at[:, 0].set(1.0 / norm0)
+    ncur = 1
     parents, mults, degrees, coefs, norms = [-1], [-1], [0], [np.zeros(0)], [norm0]
     slots, seeds, trace = [-1], [], []
     for target in range(1, k + 1):
         want = None if n_by_degree is None else n_by_degree[target]
-        before = cols.shape[1]
+        before = ncur
         pairs = [(int(e), t) for e in np.nonzero(degs <= target)[0]
                  for t in range(len(degrees)) if degrees[t] == target - degs[e]]
         worst = 1.0
@@ -418,8 +437,8 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
             es, ts = (jnp.asarray([pair[i] for pair in pairs]) for i in (0, 1))
             cand = mvals[:, es] * cols[:, ts]
             size = jnp.sqrt(jnp.sum(weight[:, None] * cand ** 2, axis=0))
-            budget = len(pairs) if want is None else max(want - cols.shape[1], 0)
-            picks, cols = _pivoted(cols, weight, cand, size, budget, tol)
+            budget = len(pairs) if want is None else max(want - ncur, 0)
+            picks, cols, ncur = _pivoted(cols, ncur, weight, cand, size, budget, tol)
             for idx, coef, norm, ratio in picks:
                 parents.append(pairs[idx][1])
                 mults.append(pairs[idx][0])
@@ -428,12 +447,12 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
                 coefs.append(coef)
                 norms.append(norm)
                 worst = min(worst, ratio)
-        from_products = cols.shape[1] - before
+        from_products = ncur - before
         seeded, seed_worst = 0, 1.0
-        if want is not None and cols.shape[1] < want:
+        if want is not None and ncur < want:
             cand = seed_values_all(layouts[target], jnp.asarray(z))
             size = jnp.sqrt(jnp.sum(weight[:, None] * cand ** 2, axis=0))
-            picks, cols = _pivoted(cols, weight, cand, size, want - cols.shape[1], tol)
+            picks, cols, ncur = _pivoted(cols, ncur, weight, cand, size, want - ncur, tol)
             for idx, coef, norm, ratio in picks:
                 parents.append(-1)
                 mults.append(-1)
@@ -444,12 +463,12 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
                 norms.append(norm)
                 seed_worst = min(seed_worst, ratio)
             seeded = len(picks)
-        trace.append({'degree': target, 'want': want, 'dim': int(cols.shape[1]),
+        trace.append({'degree': target, 'want': want, 'dim': int(ncur),
                       'from_products': int(from_products), 'seeded': int(seeded),
                       'worst_product_ratio': float(worst),
                       'worst_seed_ratio': float(seed_worst)})
 
-    n = cols.shape[1]
+    n = ncur
     h = np.zeros((n, n))
     for t in range(n):
         h[:t, t] = coefs[t]

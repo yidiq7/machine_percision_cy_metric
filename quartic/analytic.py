@@ -607,7 +607,8 @@ def _volume_from_phi_dd(phi, z_dd, m, free, keep=False, delta=None):
 
     OmegaOmegabar is 1/abs(dP/dz_m)^2, so this is det(g|X) / OmegaOmegabar.
     `keep` returns the dd pair and not its FP64 rounding. `delta` is an optional
-    (2, 2) FP64 correction that is added to g = R phi R^dag before the determinant.
+    (2, 2) correction, FP64 or complex dd, that is added to g = R phi R^dag before
+    the determinant.
     """
     from . import dd_metric
     rest, grad = dd_metric._restriction_dd(z_dd, m, free)
@@ -617,7 +618,7 @@ def _volume_from_phi_dd(phi, z_dd, m, free, keep=False, delta=None):
     right = _cindex(rest_conj, None, slice(None), None, slice(None))
     g = dd_metric._creduce_last_two(_cmul(_cmul(left, mid), right))
     if delta is not None:
-        g = dd.cadd(g, dd.cto_dd(delta))
+        g = dd.cadd(g, delta if isinstance(delta, tuple) else dd.cto_dd(delta))
     det = dd.csub(_cmul(dd_metric._at(g, 0, 0), dd_metric._at(g, 1, 1)),
                   _cmul(dd_metric._at(g, 0, 1), dd_metric._at(g, 1, 0)))
     v = _mul(det[0], dd.cabs2(_cindex(grad, m)))
