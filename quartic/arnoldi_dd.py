@@ -134,13 +134,15 @@ def _pivoted_dd(cols, ncur, weight, cand, size, budget, tol):
 
 
 def build_joint_dd(k, z, scale, mu, d_max=12, tol=1e-9, n_by_degree=None, verbose=False,
-                   center=True):
+                   center=True, entries=None):
     """`arnoldi.build_joint` in dd, with no seeds. h comes as h + h_lo.
 
     The products must reach the HN count at every degree, so take d_max large
-    enough; 10 or more reached it at k = 24 with no seed.
+    enough; 10 or more reached it at k = 24 with no seed. `entries` limits the
+    multipliers, for example to those that a build in FP64 uses: the candidates in
+    dd at degree 36 with the whole dictionary of degree 12 need more than 100 GB.
     """
-    entries = arnoldi.dictionary(d_max)
+    entries = arnoldi.dictionary(d_max) if entries is None else list(entries)
     z = jnp.asarray(z)
     mvals = multiplier_values_dd(entries, z)                              # (N, E) dd
     weight = jnp.asarray(mu) * jnp.asarray(scale) ** 2

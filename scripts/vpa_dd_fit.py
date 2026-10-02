@@ -204,10 +204,21 @@ def main():
 
         t1 = time.perf_counter()
         r2 = jnp.sum(jnp.abs(build['points']) ** 2, axis=1)
+        scale_b = weights(build['points']) * r2 ** k1
+        mu_b = build['mass'] / jnp.sum(build['mass'])
+        # A build in FP64 finds the multipliers that the pivoting uses; the dd build
+        # then takes those only, so that its candidates fit in memory.
+        fp_basis, _ = arnoldi.build_joint(k1, np.asarray(build['points']), scale_b, mu_b,
+                                          d_max=args.d_max, n_by_degree=counts,
+                                          layouts=vf.Layouts(), center=True)
+        if fp_basis.seeds:
+            raise SystemExit('the FP64 build needs seeds; take a larger --d-max')
+        say(f'k1 = {k1}: FP64 build in {time.perf_counter() - t1:.0f}s, '
+            f'{len(fp_basis.entries)} multipliers used')
+        t1 = time.perf_counter()
         basis, h_lo, trace = arnoldi_dd.build_joint_dd(
-            k1, np.asarray(build['points']), weights(build['points']) * r2 ** k1,
-            build['mass'] / jnp.sum(build['mass']), d_max=args.d_max, n_by_degree=counts,
-            verbose=True)
+            k1, np.asarray(build['points']), scale_b, mu_b, d_max=args.d_max,
+            n_by_degree=counts, verbose=True, entries=fp_basis.entries)
         n = int(basis.h.shape[0])
         say(f'k1 = {k1}: dd V+A basis in {time.perf_counter() - t1:.0f}s: dimension {n} of '
             f'{counts[k1]}, {len(basis.entries)} multipliers of degree <= {args.d_max}')
