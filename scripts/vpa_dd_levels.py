@@ -100,20 +100,25 @@ def point_hessians(lay0, parts0, levels, hs, a, joint=None):
     return state, hi, (z_dd, m, free), cols
 
 
-def level_values_dd(lev, z, chunk):
-    """W q of every function of a level at FP64 points z, in dd with W in FP64, (N, n)."""
-    rest = dd.cto_dd(jnp.zeros((2, 4), jnp.complex128).at[0, 1].set(1.0).at[1, 2].set(1.0))
-    w = jax.jit(jax.vmap(lev.weight_fn))(z) * jnp.sum(jnp.abs(z) ** 2, axis=1) ** lev.k1
+def level_values_dd(lay0, parts0, lev, batch, chunk):
+    """W q of every function of a level in dd at the dd points of `batch`, W in dd, (N, n).
 
+    The joint map needs the values to dd accuracy: an FP64 W puts noise of 1e-16 on
+    each function, and that noise then reads as a new part of 1e-16.
+    """
     def one(a, h, hl):
-        p, scale = a
+        z, _, extra = a
+        _, _, p_dd = correction.base_state_dd(lay0, parts0, z, extra, with_p=True)
+        z_dd, m, free = analytic._dd_point(extra)
+        rest_dd, _ = dd_metric._restriction_dd(z_dd, m, free)
+        r2 = vpa_dd._radius_jets(z_dd, rest_dd)[0]
         basis = dataclasses.replace(lev.basis, h=h)
         jets = arnoldi_dd.joint_jets_dd(
-            basis, hl, vpa_dd.basis_multiplier_jets(basis, dd.cto_dd(p), rest), lev.uinv)
-        return dd.mul_dd_fp(jets[0], scale)
+            basis, hl, vpa_dd.basis_multiplier_jets(basis, z_dd, rest_dd), lev.uinv)
+        return dd.mul(jets[0], vpa_dd.weight_dd(p_dd, r2, lev.k0, lev.k1))
     return jax.jit(lambda x, h, hl: jax.lax.map(lambda a: one(a, h, hl), x,
                                                 batch_size=chunk))(
-        (jnp.asarray(z), w), jnp.asarray(lev.basis.h), jnp.asarray(lev.h_lo))
+        vf.point_inputs(batch), jnp.asarray(lev.basis.h), jnp.asarray(lev.h_lo))
 
 
 def level_arrays(levels, joint=None):
@@ -379,12 +384,13 @@ def main():
     joint = None
     if args.joint_basis:
         t1 = time.perf_counter()
-        values = [level_values_dd(lev, build['points'], args.chunk) for lev in levels]
-        say(f'dd values of every level on the {args.n_build} build points in '
+        jbuild = cf.load_points(args.n_build, args.build_seed)
+        values = [level_values_dd(lay0, parts0, lev, jbuild, args.chunk) for lev in levels]
+        say(f'dd values of every level at the {args.n_build} build points on X in dd in '
             f'{time.perf_counter() - t1:.0f}s')
         t1 = time.perf_counter()
-        jm = joint_dd.build(values, build['mass'] / jnp.sum(build['mass']), tol=args.joint_tol,
-                            block=args.joint_block, verbose=True)
+        jm = joint_dd.build(values, jbuild['mass'] / jnp.sum(jbuild['mass']),
+                            tol=args.joint_tol, block=args.joint_block, verbose=True)
         del values
         # psi_N of the first level takes the place of the joint function it loads most.
         n_low, gamma, _ = levels[0].null
