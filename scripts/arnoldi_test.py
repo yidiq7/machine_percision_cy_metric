@@ -38,11 +38,11 @@ def say(text):
     print(f'[{time.perf_counter() - T0:7.0f}s] {text}', flush=True)
 
 
-def stored_hessians(basis, batch, weight_fn, chunk):
+def stored_hessians(basis, batch, weight_fn, chunk, hess_fn=arnoldi.restricted_hessians):
     """P_b = R ddbar G_b R^dag at every point of `batch`, as (N, n, 2, 2)."""
     def one(a):
         z, rest = a
-        return arnoldi.restricted_hessians(basis, z, rest, weight_fn)
+        return hess_fn(basis, z, rest, weight_fn)
     return jax.jit(lambda x: jax.lax.map(one, x, batch_size=chunk))(
         (batch['points'], batch['restriction']))
 
@@ -106,6 +106,9 @@ def main():
     ap.add_argument('--seed', type=int, default=20260813)
     ap.add_argument('--chunk', type=int, default=256)
     ap.add_argument('--max-steps', type=int, default=300)
+    ap.add_argument('--method', choices=['joint', 'orbit'], default='joint',
+                    help='one recurrence over the whole invariant space, or one for each orbit')
+    ap.add_argument('--d-max', type=int, default=8, help='highest degree of a multiplier')
     ap.add_argument('--out', type=str, default='runs_arnoldi')
     args = ap.parse_args()
 
@@ -139,16 +142,34 @@ def main():
             return jnp.exp(-alpha * sections.log_potential_at(lay0, mats0, z))
         w_build = jax.vmap(weight_fn)(build['points'])
         t1 = time.perf_counter()
-        basis, report = arnoldi.build_basis(lay_c.structure, np.asarray(build['points']),
-                                            np.asarray(w_build), np.asarray(build['mass']),
-                                            alpha)
-        dims_ok = all(r['dim_q'] == r['dim_q_expected'] for r in report['orbits'])
-        gap = max(r['s_first_dropped'] / r['s_last_kept'] for r in report['orbits'])
-        say(f"k1 = {k1}: V+A basis of n = {lay_c.n_theta} in {time.perf_counter() - t1:.0f}s; "
-            f"full q spaces {dims_ok}, worst rank gap {gap:.1e}, cond across orbits "
-            f"{report['cond_across_orbits']:.3e}")
+        if args.method == 'orbit':
+            basis, report = arnoldi.build_basis(
+                lay_c.structure, np.asarray(build['points']), np.asarray(w_build),
+                np.asarray(build['mass']), alpha)
+            dims_ok = all(r['dim_q'] == r['dim_q_expected'] for r in report['orbits'])
+            gap = max(r['s_first_dropped'] / r['s_last_kept'] for r in report['orbits'])
+            say(f"k1 = {k1}: V+A basis of n = {lay_c.n_theta} in "
+                f"{time.perf_counter() - t1:.0f}s; full q spaces {dims_ok}, worst rank "
+                f"gap {gap:.1e}, cond across orbits {report['cond_across_orbits']:.3e}")
+            values_fn, hess_fn = arnoldi.values, arnoldi.restricted_hessians
+        else:
+            r2 = jnp.sum(jnp.abs(build['points']) ** 2, axis=1)
+            mu_build = build['mass'] / jnp.sum(build['mass'])
+            basis = arnoldi.build_joint(k1, np.asarray(build['points']),
+                                        np.asarray(w_build * r2 ** k1), np.asarray(mu_build),
+                                        d_max=args.d_max, n_target=lay_c.n_theta)
+            report = {'dim': int(basis.h.shape[0]), 'n_theta': lay_c.n_theta,
+                      'n_multipliers': len(basis.entries),
+                      'top_degree': int(basis.degrees.max())}
+            say(f"k1 = {k1}: joint V+A basis in {time.perf_counter() - t1:.0f}s: dimension "
+                f"{report['dim']} of n = {lay_c.n_theta}, {report['n_multipliers']} "
+                f"multipliers of degree <= {args.d_max}, highest degree {report['top_degree']}")
+            if report['dim'] < lay_c.n_theta:
+                rows[f'k1_{k1}'] = {'report': report}
+                continue
+            values_fn, hess_fn = arnoldi.joint_values, arnoldi.joint_hessians
 
-        vals = arnoldi.values(basis, check['points'], jax.vmap(weight_fn)(check['points']))
+        vals = values_fn(basis, check['points'], jax.vmap(weight_fn)(check['points']))
         mu = check['mass'] / jnp.sum(check['mass'])
         gram = np.asarray(vals.T @ (mu[:, None] * vals))
         eig = np.linalg.eigvalsh(gram)
@@ -156,8 +177,8 @@ def main():
             f"eigenvalues {eig[0]:.4f} to {eig[-1]:.4f}")
 
         t1 = time.perf_counter()
-        p_fit = stored_hessians(basis, fit_set, weight_fn, args.chunk)
-        p_hold = stored_hessians(basis, hold, weight_fn, 4 * args.chunk)
+        p_fit = stored_hessians(basis, fit_set, weight_fn, args.chunk, hess_fn)
+        p_hold = stored_hessians(basis, hold, weight_fn, 4 * args.chunk, hess_fn)
         say(f"k1 = {k1}: stored P at {args.n_fit} + {args.n_eval} points in "
             f"{time.perf_counter() - t1:.0f}s")
 
@@ -205,7 +226,7 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
-    path = out_dir / f'arnoldi_k0_{args.k0}.json'
+    path = out_dir / f'arnoldi_k0_{args.k0}_{args.method}.json'
     path.write_text(json.dumps({'args': vars(args), 'rows': rows}, indent=1))
     say(f'saved to {path}')
 

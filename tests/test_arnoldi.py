@@ -101,11 +101,54 @@ def test_restricted_hessian_matches_psi_parts():
     print(f"  the restricted Hessian matches psi_parts to {worst:.1e}")
 
 
+def joint():
+    lay0, mats0, weight = base()
+    lay_c = sections.layout(K1, normalize=False)
+    z = SAMPLE['points']
+    r2 = jnp.sum(jnp.abs(z) ** 2, axis=1)
+    scale = jax.vmap(weight)(z) * r2 ** K1
+    basis = arnoldi.build_joint(K1, np.asarray(z), np.asarray(scale),
+                                np.asarray(SAMPLE['mass'] / jnp.sum(SAMPLE['mass'])),
+                                n_target=lay_c.n_theta)
+    return weight, lay_c, basis
+
+
+def test_joint_reaches_the_dimension_and_is_orthonormal():
+    weight, lay_c, basis = joint()
+    assert basis.h.shape[0] == lay_c.n_theta, (basis.h.shape, lay_c.n_theta)
+    z = SAMPLE['points']
+    vals = arnoldi.joint_values(basis, z, jax.vmap(weight)(z))
+    mu = SAMPLE['mass'] / jnp.sum(SAMPLE['mass'])
+    gram = vals.T @ (mu[:, None] * vals)
+    gap = float(jnp.abs(gram - jnp.eye(gram.shape[0])).max())
+    assert gap < 1e-12, gap
+    print(f"  the joint recurrence reaches n = {lay_c.n_theta} with "
+          f"{len(basis.entries)} multipliers, highest degree {int(basis.degrees.max())}, "
+          f"orthonormal on the sample to {gap:.1e}")
+
+
+def test_joint_spans_the_product_basis():
+    weight, lay_c, basis = joint()
+    z = TEST['points']
+    w = jax.vmap(weight)(z)
+    vals = np.asarray(arnoldi.joint_values(basis, z, w))
+    worst = 0.0
+    for a in range(lay_c.n_theta):
+        cmats = sections.prepare_fp(lay_c, jnp.zeros(lay_c.n_theta).at[a].set(1.0))
+        col = np.asarray(w * jax.vmap(lambda p: sections.potential_at(lay_c, cmats, p))(z))
+        coef, *_ = np.linalg.lstsq(vals, col, rcond=None)
+        worst = max(worst, np.linalg.norm(vals @ coef - col) / np.linalg.norm(col))
+    assert worst < 1e-10, worst
+    print(f"  every product basis function lies in the joint span, to {worst:.1e}")
+
+
 if __name__ == "__main__":
     for fn in (test_orbits_have_the_right_dimensions,
                test_basis_is_orthonormal_on_its_sample,
                test_basis_spans_the_product_basis,
-               test_restricted_hessian_matches_psi_parts):
+               test_restricted_hessian_matches_psi_parts,
+               test_joint_reaches_the_dimension_and_is_orthonormal,
+               test_joint_spans_the_product_basis):
         print(fn.__name__)
         fn()
     print("\nall arnoldi tests pass")

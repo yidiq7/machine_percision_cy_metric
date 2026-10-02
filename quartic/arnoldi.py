@@ -24,6 +24,7 @@ repeats the build exactly and forms no large coefficient.
 """
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 import jax
@@ -35,7 +36,8 @@ from . import blocks
 __all__ = ['PAIRS', 'OrbitRecurrence', 'Basis', 'multipliers', 'permuted',
            'block_factor', 'run_recurrence', 'build_orbit', 'build_basis',
            'orbit_images', 'values', 'restricted_hessian_of',
-           'restricted_hessians']
+           'restricted_hessians', 'dictionary', 'dictionary_values', 'JointBasis',
+           'build_joint', 'joint_values', 'joint_hessians']
 
 # The six products v_a conj(v_b) with a <= b, in a fixed order.
 PAIRS = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
@@ -239,4 +241,134 @@ def restricted_hessians(basis, z, restriction, weight_fn):
     `weight_fn(z)` gives w at a point, so its derivatives enter too.
     """
     return restricted_hessian_of(lambda p: values(basis, p, weight_fn(p)), z,
+                                 restriction)
+
+
+# The joint recurrence over the whole invariant space of a level.
+#
+# The orbits of one level overlap on X: functions of different residues are all
+# positive and smooth there, and the QR across orbits had a condition number of
+# 1.1e5, 8.9e9 and 3.3e12 at k = 8, 16 and 20. So the recurrence must move
+# between residues. Each multiplier is itself invariant: the S_4 sum of a
+# balanced monomial prod_a z_a^A_a conj(z_a)^B_a with A_a = B_a mod 4 and
+# |A| = |B| = d, real part, over |z|^(2d). Every function of the recurrence is
+# then invariant, and the level is the span of the functions of degree <= k.
+
+
+def dictionary(d_max):
+    """The invariant multipliers of degree 1 to d_max, as (d, A, B) with A, B (4,).
+
+    One entry for each orbit of (A, B) under S_4 and the swap of A and B.
+    """
+    keys, out = set(), []
+    for d in range(1, d_max + 1):
+        pairs = [(a, b) for a in range(d + 1) for b in range(d + 1) if (a - b) % 4 == 0]
+        for combo in itertools.product(pairs, repeat=4):
+            if sum(c[0] for c in combo) != d or sum(c[1] for c in combo) != d:
+                continue
+            key = tuple(sorted(combo, reverse=True))
+            swap = tuple(sorted(((b, a) for a, b in combo), reverse=True))
+            key = min(key, swap)
+            if key in keys:
+                continue
+            keys.add(key)
+            out.append((d, np.array([c[0] for c in key]), np.array([c[1] for c in key])))
+    return out
+
+
+def dictionary_values(entries, z):
+    """Every multiplier of `entries` at points z (..., 4), as (..., n_entries)."""
+    zp = permuted(z)                                                 # (..., 24, 4)
+    top = max(max(int(a.max()), int(b.max())) for _, a, b in entries)
+    pw = [jnp.ones_like(zp)]
+    for _ in range(top):
+        pw.append(pw[-1] * zp)
+    pw = jnp.stack(pw, axis=-1)                                      # (..., 24, 4, top+1)
+    cpw = jnp.conj(pw)
+    r2 = jnp.sum(jnp.real(z) ** 2 + jnp.imag(z) ** 2, axis=-1)
+    outs = []
+    for d, a_exp, b_exp in entries:
+        term = jnp.ones(zp.shape[:-1], zp.dtype)
+        for c in range(4):
+            term = term * pw[..., c, int(a_exp[c])] * cpw[..., c, int(b_exp[c])]
+        outs.append(jnp.real(jnp.sum(term, axis=-1)) / r2 ** d)
+    return jnp.stack(outs, axis=-1)
+
+
+@dataclass(frozen=True)
+class JointBasis:
+    k: int
+    entries: tuple        # the multipliers (d, A, B) that the recurrence uses
+    parents: np.ndarray   # (n,) int, the parent of each q; -1 for q_0
+    mults: np.ndarray     # (n,) int, the index of the multiplier; -1 for q_0
+    degrees: np.ndarray   # (n,) int, the degree of each q
+    h: np.ndarray         # (n, n), h[l, t] for l < t, and h[t, t] the norm
+    alpha: float          # the weight is exp(-alpha Phi)
+
+
+def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_target=None):
+    """The joint recurrence of a level of degree k on a sample.
+
+    `scale` is w(z) |z|^(2k) at each sample point, so the functions of the level
+    are scale times q, and q is orthonormal in the inner product of mu scale^2.
+    Candidates are the products of a q of degree j with a multiplier of degree d,
+    for j + d <= k, in the order of j + d. The build stops at `n_target`.
+    Returns the recurrence and the dimension that it reached.
+    """
+    entries = dictionary(d_max)
+    mvals = np.asarray(dictionary_values(entries, jnp.asarray(z)))   # (N, n_entries)
+    degs = np.array([d for d, _, _ in entries])
+    weight = np.asarray(mu) * np.asarray(scale) ** 2
+    ones = np.ones(z.shape[0])
+    norm0 = np.sqrt(np.sum(weight * ones * ones))
+    cols = (ones / norm0)[:, None]
+    parents, mults, degrees, coefs, norms = [-1], [-1], [0], [np.zeros(0)], [norm0]
+    for target in range(1, k + 1):
+        for e in np.nonzero(degs <= target)[0]:
+            for parent in [t for t in range(len(degrees)) if degrees[t] == target - degs[e]]:
+                cand = mvals[:, e] * cols[:, parent]
+                size = np.sqrt(np.sum(weight * cand * cand))
+                cand, coef = _orthogonalize(cols, weight, cand)
+                rest = np.sqrt(np.sum(weight * cand * cand))
+                if rest <= tol * size:
+                    continue
+                cols = np.concatenate([cols, (cand / rest)[:, None]], axis=1)
+                parents.append(parent)
+                mults.append(int(e))
+                degrees.append(target)
+                coefs.append(coef)
+                norms.append(rest)
+                if n_target is not None and cols.shape[1] >= n_target:
+                    break
+            if n_target is not None and cols.shape[1] >= n_target:
+                break
+        if n_target is not None and cols.shape[1] >= n_target:
+            break
+    n = cols.shape[1]
+    h = np.zeros((n, n))
+    for t in range(n):
+        h[:t, t] = coefs[t]
+        h[t, t] = norms[t]
+    used = sorted(set(m for m in mults if m >= 0))
+    remap = {m: i for i, m in enumerate(used)}
+    return JointBasis(k=int(k), entries=tuple(entries[m] for m in used),
+                      parents=np.array(parents),
+                      mults=np.array([remap[m] if m >= 0 else -1 for m in mults]),
+                      degrees=np.array(degrees), h=h, alpha=0.0)
+
+
+def joint_values(basis, z, weight):
+    """Every function of the level at points z (..., 4), as (..., n).
+
+    `weight` is w(z), and the functions are w |z|^(2k) q.
+    """
+    y = dictionary_values(list(basis.entries), z)
+    q = run_recurrence(basis, y)
+    r2 = jnp.sum(jnp.real(z) ** 2 + jnp.imag(z) ** 2, axis=-1)
+    return (weight * r2 ** basis.k)[..., None] * q
+
+
+def joint_hessians(basis, z, restriction, weight_fn):
+    """R ddbar G R^dag for every function of the level at one point, as (n, 2, 2)."""
+    return restricted_hessian_of(lambda p: joint_values(basis, p, weight_fn(p)), z,
                                  restriction)
