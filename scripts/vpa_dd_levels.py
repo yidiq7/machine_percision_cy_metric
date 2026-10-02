@@ -185,7 +185,8 @@ def factor(rows, f0, mass, m0):
 def solve(q, r, norms, r0, cutoffs):
     """`vpa_fit.solve` from the QR of the column-scaled J."""
     u, s, vt = jnp.linalg.svd(r)
-    beta = u.T @ (q.T @ r0)
+    # res @ q in place of q.T @ res: XLA can copy the transpose of q, which is as large as J.
+    beta = u.T @ (r0 @ q)
     loss0 = float(r0 @ r0)
     rel = np.asarray(s / s[0])
     b2 = np.asarray(beta ** 2)
@@ -205,7 +206,7 @@ def solve(q, r, norms, r0, cutoffs):
 
     def step(res, tau):
         """-J^+ res with the cutoff tau, for a refinement from the residual res."""
-        b = u.T @ (q.T @ res)
+        b = u.T @ (res @ q)
         return np.asarray(-(vt.T @ jnp.where(jnp.asarray(rel >= tau), b / s, 0.0)) / norms)
     return spec, np.stack(sols, axis=1), predicted, step
 
