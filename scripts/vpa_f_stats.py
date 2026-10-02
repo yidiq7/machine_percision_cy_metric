@@ -43,6 +43,16 @@ def main():
     print(f'{len(f)} points; weighted mean of f {np.sum(w * f):.3e}; mean abs(f) '
           f'{np.sum(w * np.abs(f)):.4e}; rms {math.sqrt(np.sum(w * f * f)):.3e}')
     print(f'share of the weight with f > 0: {w[f > 0].sum():.4f}')
+    # f = v/<v> - 1 has weighted mean 0 exactly; an offset comes from weights whose
+    # FP64 normalization does not sum to 1, and it moves every f by the same amount.
+    g = f - np.sum(w * f) / np.sum(w)
+    print(f'with the weighted mean removed: mean abs(f) {np.sum(w * np.abs(g)):.4e}, rms '
+          f'{math.sqrt(np.sum(w * g * g)):.3e}, max abs(f) {np.abs(g).max():.3e}')
+    size_bins = (0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.01)
+    for low, high in zip(size_bins[:-1], size_bins[1:]):
+        take = (ratio >= low) & (ratio < high)
+        print(f'    min/max abs(z) in {low:.2f} to {min(high, 1.0):.2f}: mean abs(f) '
+              f'{np.sum(w[take] * np.abs(g[take])) / w[take].sum():.3e}')
     for q in (0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 0.999):
         print(f'    quantile {q}: f = {np.quantile(f, q):.3e}')
     order = np.argsort(np.abs(f))[::-1][:args.top]
