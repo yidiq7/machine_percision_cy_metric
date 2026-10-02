@@ -25,6 +25,7 @@ repeats the build exactly and forms no large coefficient.
 from __future__ import annotations
 
 import itertools
+import time
 from dataclasses import dataclass
 
 import jax
@@ -406,7 +407,8 @@ def _pivoted(cols, ncur, weight, cand, size, budget, tol):
     return picks, cols, ncur
 
 
-def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=None):
+def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=None,
+                verbose=False):
     """The joint recurrence of a level of degree k on a sample.
 
     `scale` is w(z) |z|^(2k) at each sample point, so the functions of the level
@@ -416,6 +418,7 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
     must have n_by_degree[j] dimensions, the HN count at degree j. Where the
     products fall short, the HN functions of degree j from `layouts[j]` enter as
     seeds, pivoted, as many as are missing. Returns the basis and a trace.
+    `verbose` prints one line for each degree.
     """
     entries = dictionary(d_max)
     mvals = dictionary_values(entries, jnp.asarray(z))               # (N, n_entries)
@@ -427,6 +430,7 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
     ncur = 1
     parents, mults, degrees, coefs, norms = [-1], [-1], [0], [np.zeros(0)], [norm0]
     slots, seeds, trace = [-1], [], []
+    start = time.perf_counter()
     for target in range(1, k + 1):
         want = None if n_by_degree is None else n_by_degree[target]
         before = ncur
@@ -466,7 +470,11 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
         trace.append({'degree': target, 'want': want, 'dim': int(ncur),
                       'from_products': int(from_products), 'seeded': int(seeded),
                       'worst_product_ratio': float(worst),
-                      'worst_seed_ratio': float(seed_worst)})
+                      'worst_seed_ratio': float(seed_worst), 'candidates': len(pairs),
+                      'seconds': time.perf_counter() - start})
+        if verbose:
+            print(f"    degree {target}: {int(ncur)} of {want}, {len(pairs)} candidates, "
+                  f"{seeded} seeds, {trace[-1]['seconds']:.0f}s", flush=True)
 
     n = ncur
     h = np.zeros((n, n))

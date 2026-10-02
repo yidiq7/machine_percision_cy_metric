@@ -264,7 +264,7 @@ def main():
         basis, trace = arnoldi.build_joint(
             k1, np.asarray(build['points']), weights(build['points']) * r2 ** k1,
             build['mass'] / jnp.sum(build['mass']), d_max=args.d_max,
-            n_by_degree=counts, layouts=layouts)
+            n_by_degree=counts, layouts=layouts, verbose=True)
         n = int(basis.h.shape[0])
         say(f"k1 = {k1}: joint V+A basis in {time.perf_counter() - t1:.0f}s: dimension {n} "
             f"of n = {counts[k1]}, {len(basis.entries)} multipliers of degree <= "
