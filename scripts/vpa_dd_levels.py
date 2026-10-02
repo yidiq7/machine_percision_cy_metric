@@ -75,7 +75,8 @@ def point_hessians(lay0, parts0, levels, hs, a, joint=None):
     The weight W of each level comes in dd, so that the sums of two levels keep
     their digits where they cancel. Without `joint` the columns are the functions
     of each level with its psi_N in place; with it they are the joint functions,
-    with psi_N of the first level in place of joint function `joint[1]`.
+    with psi_N, the projection of 1 onto all of them, in place of joint function
+    `joint[1]`.
     """
     z, rest, extra = a
     state, hi, p_dd = correction.base_state_dd(lay0, parts0, z, extra, with_p=True)
@@ -95,7 +96,9 @@ def point_hessians(lay0, parts0, levels, hs, a, joint=None):
         jm, b0 = joint
         cols = joint_dd.transform(jax.tree_util.tree_map(lambda *xs: jnp.concatenate(xs),
                                                          *ps), jm)
-        p_n = vdf.with_null(ps[0], levels[0].null)[1]
+        g_hi, g_lo = (jnp.asarray(x)[:, None, None] for x in jm.gamma)
+        p_n = tuple(dd.add(dd.dot_dd_fp(comp, g_hi, axis=0), dd.dot_dd_fp(comp, g_lo, axis=0))
+                    for comp in cols)
         cols = jax.tree_util.tree_map(lambda x, y: x.at[b0].set(y), cols, p_n)
     return state, hi, (z_dd, m, free), cols
 
@@ -128,13 +131,15 @@ def level_arrays(levels, joint=None):
         return hs, None
     jm = joint[0]
     return hs, (jnp.asarray(jm.h), jnp.asarray(jm.h_lo),
-                tuple(tuple(jnp.asarray(x) for x in inv) for inv in jm.uinv))
+                tuple(tuple(jnp.asarray(x) for x in inv) for inv in jm.uinv),
+                tuple(jnp.asarray(x) for x in jm.gamma))
 
 
 def _with_arrays(joint, ja):
     if joint is None:
         return None
-    return dataclasses.replace(joint[0], h=ja[0], h_lo=ja[1], uinv=ja[2]), joint[1]
+    return (dataclasses.replace(joint[0], h=ja[0], h_lo=ja[1], uinv=ja[2], gamma=ja[3]),
+            joint[1])
 
 
 def fit_rows(lay0, parts0, levels, batch, chunk, joint=None):
@@ -392,18 +397,15 @@ def main():
         jm = joint_dd.build(values, jbuild['mass'] / jnp.sum(jbuild['mass']),
                             tol=args.joint_tol, block=args.joint_block, verbose=True)
         del values
-        # psi_N of the first level takes the place of the joint function it loads most.
-        n_low, gamma, _ = levels[0].null
-        where = {int(b): t for t, b in enumerate(jm.sel) if jm.level[t] == 0}
-        load = sum(gamma[b] * jm.h[:, where[b]] for b in range(n_low))
-        b0 = int(np.argmax(np.abs(load)))
+        # psi_N takes the place of the joint function that carries most of it.
+        b0 = int(np.argmax(np.abs(jm.gamma[0])))
         joint = (jm, b0)
         counts_in = [int(np.sum(jm.level == i)) for i in range(len(levels))]
-        record['joint'] = {'entered': counts_in, 'b0': b0, 'load_b0': float(load[b0]),
-                           'ratio': np.sort(jm.ratio).tolist()}
+        record['joint'] = {'entered': counts_in, 'b0': b0, 'gamma_b0': float(jm.gamma[0][b0]),
+                           'gap': jm.gap, 'ratio': np.sort(jm.ratio).tolist()}
         say(f'joint map in {time.perf_counter() - t1:.0f}s: {counts_in} functions of the '
-            f'levels enter, smallest new part {jm.ratio.min():.3e}; psi_N of level '
-            f'{levels[0].k1} takes joint function {b0}')
+            f'levels enter, smallest new part {jm.ratio.min():.3e}; psi_N - 1 has the norm '
+            f'{jm.gap:.3e} on the build points, and psi_N takes joint function {b0}')
         prefix = np.cumsum(counts_in)
         plans = [('+'.join(str(lev.k1) for lev in levels[:i + 1]) + ' joint',
                   np.arange(prefix[i]), [lev.k1 for lev in levels[:i + 1]])

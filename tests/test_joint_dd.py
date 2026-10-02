@@ -52,6 +52,13 @@ def test_joint_functions_are_orthonormal():
     gap = max(float(abs(g[s][t] - (1 if s == t else 0))) for s in range(n) for t in range(n))
     assert gap < 1e-26, gap
     print(f"  {entered} functions enter; the joint functions are orthonormal to {gap:.1e}")
+    # 1 = x^0 lies in the span, so psi_N = sum gamma_t Gt_t is 1 to dd accuracy.
+    psi = [mp.fsum((mp.mpf(float(jm.gamma[0][t])) + mp.mpf(float(jm.gamma[1][t])))
+                   * (mp.mpf(float(hi[i, t])) + mp.mpf(float(lo[i, t]))) for t in range(n))
+           for i in range(0, len(x), 50)]
+    off = max(float(abs(v - 1)) for v in psi)
+    assert off < 1e-26 and jm.gap < 1e-12, (off, jm.gap)
+    print(f"  psi_N is 1 to {off:.1e}, and the reported gap is {jm.gap:.1e}")
 
 
 if __name__ == "__main__":

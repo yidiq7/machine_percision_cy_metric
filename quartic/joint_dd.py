@@ -32,6 +32,8 @@ class JointMap:
     blocks: tuple         # (a, b) ranges of joint functions
     uinv: tuple           # (hi, lo) of U^-1 for the block H[a:b, a:b]
     ratio: np.ndarray     # (n,) H_tt over the norm of G_sel(t): the new part of each pick
+    gamma: tuple = ()     # (hi, lo) of <Gt_t, 1> on the build sample: psi_N = sum gamma_t Gt_t
+    gap: float = 0.0      # the norm of psi_N - 1 over the norm of 1 on the build sample
 
 
 def build(values, mu, tol=1e-15, block=256, verbose=False):
@@ -74,8 +76,15 @@ def build(values, mu, tol=1e-15, block=256, verbose=False):
         h[t, t], h_lo[t, t] = norms[t]
     blocks = tuple((a, min(a + block, n)) for a in range(0, n, block))
     uinv = tuple(arnoldi_dd.upper_inverse(h, h_lo, a, b) for a, b in blocks)
+    # The joint functions are orthonormal in dd on the build sample, so the projection
+    # of 1 onto them is the inner products, and psi_N - 1 is orthogonal to all of them.
+    proj = dd.dot_dd_fp(cols, weight[:, None], axis=0)
+    gamma = (np.asarray(proj[0])[:n], np.asarray(proj[1])[:n])
+    sq = dd.sum_dd(*dd.mul((proj[0][:n], proj[1][:n]), (proj[0][:n], proj[1][:n])))
+    rest = dd.add(dd.sum_fp(weight), dd.neg(sq))
+    gap = float(np.sqrt(max(float(dd.to_fp(rest)), 0.0) / float(jnp.sum(weight))))
     return JointMap(sel=np.array(sel), level=np.array(level), h=h, h_lo=h_lo,
-                    blocks=blocks, uinv=uinv, ratio=np.array(ratios))
+                    blocks=blocks, uinv=uinv, ratio=np.array(ratios), gamma=gamma, gap=gap)
 
 
 def _flat(p):
