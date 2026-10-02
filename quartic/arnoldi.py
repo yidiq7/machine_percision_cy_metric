@@ -311,9 +311,11 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_target=None):
 
     `scale` is w(z) |z|^(2k) at each sample point, so the functions of the level
     are scale times q, and q is orthonormal in the inner product of mu scale^2.
-    Candidates are the products of a q of degree j with a multiplier of degree d,
-    for j + d <= k, in the order of j + d. The build stops at `n_target`.
-    Returns the recurrence and the dimension that it reached.
+    The candidates of degree j are the products of a q of degree j - d with a
+    multiplier of degree d. Each degree is a pivoted Gram-Schmidt: all its
+    candidates are projected at once, and the one with the largest relative
+    residual enters first, so no nearly dependent candidate enters with a small
+    norm. The build stops at `n_target`.
     """
     entries = dictionary(d_max)
     mvals = np.asarray(dictionary_values(entries, jnp.asarray(z)))   # (N, n_entries)
@@ -323,27 +325,50 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_target=None):
     norm0 = np.sqrt(np.sum(weight * ones * ones))
     cols = (ones / norm0)[:, None]
     parents, mults, degrees, coefs, norms = [-1], [-1], [0], [np.zeros(0)], [norm0]
+
+    def full():
+        return n_target is not None and cols.shape[1] >= n_target
+
     for target in range(1, k + 1):
-        for e in np.nonzero(degs <= target)[0]:
-            for parent in [t for t in range(len(degrees)) if degrees[t] == target - degs[e]]:
-                cand = mvals[:, e] * cols[:, parent]
-                size = np.sqrt(np.sum(weight * cand * cand))
-                cand, coef = _orthogonalize(cols, weight, cand)
-                rest = np.sqrt(np.sum(weight * cand * cand))
-                if rest <= tol * size:
-                    continue
-                cols = np.concatenate([cols, (cand / rest)[:, None]], axis=1)
-                parents.append(parent)
-                mults.append(int(e))
-                degrees.append(target)
-                coefs.append(coef)
-                norms.append(rest)
-                if n_target is not None and cols.shape[1] >= n_target:
-                    break
-            if n_target is not None and cols.shape[1] >= n_target:
-                break
-        if n_target is not None and cols.shape[1] >= n_target:
+        if full():
             break
+        pairs = [(int(e), t) for e in np.nonzero(degs <= target)[0]
+                 for t in range(len(degrees)) if degrees[t] == target - degs[e]]
+        if not pairs:
+            continue
+        cand = np.stack([mvals[:, e] * cols[:, t] for e, t in pairs], axis=1)
+        size = np.sqrt(np.sum(weight[:, None] * cand ** 2, axis=0))
+        coef = cols.T @ (weight[:, None] * cand)
+        cand = cand - cols @ coef
+        again = cols.T @ (weight[:, None] * cand)
+        cand = cand - cols @ again
+        coef = coef + again                                       # original = cols @ coef + cand
+        left = list(range(len(pairs)))
+        while left and not full():
+            rest = np.sqrt(np.sum(weight[:, None] * cand[:, left] ** 2, axis=0))
+            pick = int(np.argmax(rest / size[left]))
+            if rest[pick] <= tol * size[left[pick]]:
+                break
+            idx = left.pop(pick)
+            # A second pass against every column keeps the new one orthogonal.
+            extra = cols.T @ (weight * cand[:, idx])
+            cand[:, idx] = cand[:, idx] - cols @ extra
+            coef[:, idx] = coef[:, idx] + extra
+            norm = np.sqrt(np.sum(weight * cand[:, idx] ** 2))
+            newcol = cand[:, idx] / norm
+            parents.append(pairs[idx][1])
+            mults.append(pairs[idx][0])
+            degrees.append(target)
+            coefs.append(coef[:, idx].copy())
+            norms.append(norm)
+            cols = np.concatenate([cols, newcol[:, None]], axis=1)
+            proj = newcol @ (weight[:, None] * cand[:, left]) if left else np.zeros(0)
+            row = np.zeros((1, cand.shape[1]))
+            if left:
+                cand[:, left] = cand[:, left] - np.outer(newcol, proj)
+                row[0, left] = proj
+            coef = np.concatenate([coef, row], axis=0)
+
     n = cols.shape[1]
     h = np.zeros((n, n))
     for t in range(n):
