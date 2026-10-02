@@ -46,7 +46,7 @@ def errors(basis, z_all, pick):
     worst = {}
     for i in pick:
         z = jnp.asarray(z_all[i])
-        y_fp = arnoldi.dictionary_values(list(basis.entries), z)
+        y_fp = arnoldi.multiplier_values(basis, z)
         seeds_fp = None
         if basis.seeds:
             seeds_fp = jnp.concatenate([arnoldi.seed_values(lays[j], z, [a])
@@ -54,6 +54,9 @@ def errors(basis, z_all, pick):
         q_fp = np.asarray(arnoldi.run_recurrence(basis, y_fp, seeds_fp))
         zm = [mp.mpc(complex(c).real, complex(c).imag) for c in z_all[i]]
         y_mp = vo.mp_multipliers(basis.entries, zm)
+        if basis.shift is not None:
+            y_mp = [(y - mp.mpf(a)) / mp.mpf(b)
+                    for y, a, b in zip(y_mp, basis.shift, basis.scale)]
         r2 = sum(abs(c) ** 2 for c in zm)
         seeds_mp = []
         for j, a in basis.seeds:
@@ -71,8 +74,8 @@ def main():
     ap.add_argument('--k0', type=int, default=12)
     ap.add_argument('--k1', type=int, default=24)
     ap.add_argument('--settings', type=str, nargs='+', default=['8:10000'],
-                    help='d_max:n_build for each build, and :flat for q orthonormal in mu '
-                         'alone, without the weight of the level')
+                    help='d_max:n_build for each build, then :flat for q orthonormal in mu '
+                         'alone, and :center for centered and scaled multipliers')
     ap.add_argument('--seed', type=int, default=20260813)
     ap.add_argument('--points', type=int, default=2)
     ap.add_argument('--dps', type=int, default=40)
@@ -104,7 +107,8 @@ def main():
     for setting in args.settings:
         parts = setting.split(':')
         d_max, n_build = int(parts[0]), int(parts[1])
-        flat = len(parts) > 2 and parts[2] == 'flat'
+        flat = 'flat' in parts[2:]
+        center = 'center' in parts[2:]
         build = sample(n_build, args.seed + 2000)
         r2 = jnp.sum(jnp.abs(build['points']) ** 2, axis=1)
         scale = (jnp.ones(n_build) if flat
@@ -113,7 +117,7 @@ def main():
         basis, trace = arnoldi.build_joint(
             args.k1, np.asarray(build['points']), scale,
             build['mass'] / jnp.sum(build['mass']), d_max=d_max, n_by_degree=counts,
-            layouts=layouts)
+            layouts=layouts, center=center)
         used = sorted({int(basis.entries[m][0]) for m in basis.mults if m >= 0})
         say(f'd_max {d_max}, {n_build} build points: dimension {basis.h.shape[0]} of '
             f'{counts[args.k1]} in {time.perf_counter() - t1:.0f}s, {len(basis.seeds)} '

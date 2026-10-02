@@ -17,7 +17,8 @@ import numpy as np
 
 from . import analytic, arnoldi, dd, dd_metric
 
-__all__ = ['jet_mul', 'multiplier_jets', 'weight_jets', 'low_jets', 'low_hessians']
+__all__ = ['jet_mul', 'multiplier_jets', 'basis_multiplier_jets', 'weight_jets',
+           'low_jets', 'low_hessians']
 
 
 def _conj(a):
@@ -142,6 +143,16 @@ def multiplier_jets(entries, z_dd, rest):
     return jet_mul((f_v, f_d, f_h), _inverse_power_jets(r2, d_r2, h_r2, degs))
 
 
+def basis_multiplier_jets(basis, z_dd, rest):
+    """The jets of the multipliers that the recurrence of `basis` takes, (y - shift) / scale."""
+    v, d, h = multiplier_jets(basis.entries, z_dd, rest)
+    if basis.shift is None:
+        return v, d, h
+    inv = dd.reciprocal(dd.to_dd(jnp.asarray(basis.scale)))
+    v = analytic._mul(dd.add(v, dd.to_dd(-jnp.asarray(basis.shift))), inv)
+    return v, _creal(d, _ex(inv, 0)), _creal(h, _ex(inv, 0, 0))
+
+
 def weight_jets(hi, z_dd, rest, alpha, k1):
     """D_k L and D_k Dbar_l L for L = k1 log |z|^2 - alpha log p_0, in dd.
 
@@ -205,8 +216,7 @@ def low_hessians(basis, n_low, z_dd, rest, hi, alpha, weight):
     W = w |z|^(2k) and `weight` is its FP64 value at the point, a factor common
     to every function, so its rounding moves no cancellation.
     """
-    q_v, q_d, q_h = low_jets(basis, n_low,
-                             multiplier_jets(basis.entries, z_dd, rest))
+    q_v, q_d, q_h = low_jets(basis, n_low, basis_multiplier_jets(basis, z_dd, rest))
     d_l, h_l = weight_jets(hi, z_dd, rest, alpha, basis.k)
     d_lb = analytic._cindex(d_l, None)
     h_lb = analytic._cindex(h_l, None)

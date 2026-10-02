@@ -233,6 +233,8 @@ def main():
     ap.add_argument('--dd-degree', type=int, default=0,
                     help='the functions of degree up to this, and before the first seed, '
                          'take their Hessians in dd in the evaluation')
+    ap.add_argument('--center', action='store_true',
+                    help='build with centered and scaled multipliers')
     ap.add_argument('--null', action='store_true',
                     help='replace the low function closest to psi_N by psi_N, the function '
                          'of the low part closest to 1, with its Hessian summed in dd')
@@ -291,7 +293,7 @@ def main():
         basis, trace = arnoldi.build_joint(
             k1, np.asarray(build['points']), weights(build['points']) * r2 ** k1,
             build['mass'] / jnp.sum(build['mass']), d_max=args.d_max,
-            n_by_degree=counts, layouts=layouts, verbose=True)
+            n_by_degree=counts, layouts=layouts, verbose=True, center=args.center)
         n = int(basis.h.shape[0])
         say(f"k1 = {k1}: joint V+A basis in {time.perf_counter() - t1:.0f}s: dimension {n} "
             f"of n = {counts[k1]}, {len(basis.entries)} multipliers of degree <= "

@@ -98,7 +98,7 @@ def main():
     worst = {}
     for i in pick:
         z = jnp.asarray(z_all[i])
-        y_fp = arnoldi.dictionary_values(list(basis.entries), z)
+        y_fp = arnoldi.multiplier_values(basis, z)
         seeds_fp = None
         if basis.seeds:
             seeds_fp = jnp.concatenate([arnoldi.seed_values(lays[j], z, [a])
@@ -106,6 +106,9 @@ def main():
         q_fp = np.asarray(arnoldi.run_recurrence(basis, y_fp, seeds_fp))
         zm = [mp.mpc(complex(c).real, complex(c).imag) for c in z_all[i]]
         y_mp = mp_multipliers(basis.entries, zm)
+        if basis.shift is not None:
+            y_mp = [(y - mp.mpf(a)) / mp.mpf(b)
+                    for y, a, b in zip(y_mp, basis.shift, basis.scale)]
         r2 = sum(abs(c) ** 2 for c in zm)
         seeds_mp = []
         for j, a in basis.seeds:

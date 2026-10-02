@@ -38,7 +38,8 @@ __all__ = ['PAIRS', 'OrbitRecurrence', 'Basis', 'multipliers', 'permuted',
            'block_factor', 'run_recurrence', 'build_orbit', 'build_basis',
            'orbit_images', 'values', 'restricted_hessian_of',
            'restricted_hessians', 'dictionary', 'dictionary_values', 'JointBasis',
-           'seed_values', 'seed_values_all', 'build_joint', 'save_joint',
+           'seed_values', 'seed_values_all', 'multiplier_values', 'build_joint',
+           'save_joint',
            'load_joint', 'joint_values', 'joint_hessians']
 
 # The six products v_a conj(v_b) with a <= b, in a fixed order.
@@ -322,6 +323,16 @@ class JointBasis:
     seed_slot: np.ndarray = None  # (n,) int, the index in `seeds`; -1 for other steps
     seeds: tuple = ()     # (j, a): the HN function of degree j with unit coefficient a
     layouts: tuple = ()   # (j, plain layout at degree j) for every j in `seeds`
+    shift: np.ndarray = None  # (n_entries,) the recurrence takes (y - shift) / scale
+    scale: np.ndarray = None
+
+
+def multiplier_values(basis, z):
+    """The multipliers that the recurrence of `basis` takes, at points z, as (..., E)."""
+    y = dictionary_values(list(basis.entries), z)
+    if basis.shift is None:
+        return y
+    return (y - jnp.asarray(basis.shift)) / jnp.asarray(basis.scale)
 
 
 def seed_values(lay_j, z, which=None):
@@ -408,7 +419,7 @@ def _pivoted(cols, ncur, weight, cand, size, budget, tol):
 
 
 def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=None,
-                verbose=False):
+                verbose=False, center=False):
     """The joint recurrence of a level of degree k on a sample.
 
     `scale` is w(z) |z|^(2k) at each sample point, so the functions of the level
@@ -418,12 +429,23 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
     must have n_by_degree[j] dimensions, the HN count at degree j. Where the
     products fall short, the HN functions of degree j from `layouts[j]` enter as
     seeds, pivoted, as many as are missing. Returns the basis and a trace.
-    `verbose` prints one line for each degree.
+    `verbose` prints one line for each degree. `center` takes each multiplier as
+    (y - mean) / std in the inner product, so that a product y q is not mostly q.
     """
     entries = dictionary(d_max)
     mvals = dictionary_values(entries, jnp.asarray(z))               # (N, n_entries)
-    degs = np.array([d for d, _, _ in entries])
     weight = jnp.asarray(mu) * jnp.asarray(scale) ** 2
+    shift = scale_y = None
+    if center:
+        total = jnp.sum(weight)
+        mean = (weight @ mvals) / total
+        std = jnp.sqrt((weight @ (mvals - mean) ** 2) / total)
+        # A multiplier that is constant on X adds nothing, and it has std = 0.
+        keep = np.nonzero(np.asarray(std) > 1e-12 * np.asarray(jnp.abs(mean)).max())[0]
+        entries = [entries[i] for i in keep]
+        shift, scale_y = np.asarray(mean)[keep], np.asarray(std)[keep]
+        mvals = (mvals[:, keep] - jnp.asarray(shift)) / jnp.asarray(scale_y)
+    degs = np.array([d for d, _, _ in entries])
     norm0 = float(jnp.sqrt(jnp.sum(weight)))
     room = 1 if n_by_degree is None else n_by_degree[k]
     cols = jnp.zeros((z.shape[0], room)).at[:, 0].set(1.0 / norm0)
@@ -489,7 +511,9 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
                        mults=np.array([remap[m] if m >= 0 else -1 for m in mults]),
                        degrees=np.array(degrees), h=h, alpha=0.0,
                        seed_slot=np.array(slots), seeds=tuple(seeds),
-                       layouts=tuple((j, layouts[j]) for j in seed_degrees))
+                       layouts=tuple((j, layouts[j]) for j in seed_degrees),
+                       shift=None if shift is None else shift[used],
+                       scale=None if scale_y is None else scale_y[used])
     return basis, trace
 
 
@@ -500,7 +524,8 @@ def save_joint(path, basis):
              seeds=np.array(basis.seeds, dtype=np.int64).reshape(-1, 2),
              entry_d=np.array([d for d, _, _ in basis.entries]),
              entry_a=np.array([a for _, a, _ in basis.entries]).reshape(-1, 4),
-             entry_b=np.array([b for _, _, b in basis.entries]).reshape(-1, 4))
+             entry_b=np.array([b for _, _, b in basis.entries]).reshape(-1, 4),
+             **({} if basis.shift is None else {'shift': basis.shift, 'scale': basis.scale}))
 
 
 def load_joint(path):
@@ -515,7 +540,9 @@ def load_joint(path):
                       mults=arr['mults'], degrees=arr['degrees'], h=arr['h'], alpha=0.0,
                       seed_slot=arr['seed_slot'], seeds=seeds,
                       layouts=tuple((j, sections.layout(j, normalize=False))
-                                    for j in degrees))
+                                    for j in degrees),
+                      shift=arr['shift'] if 'shift' in arr else None,
+                      scale=arr['scale'] if 'scale' in arr else None)
 
 
 def joint_values(basis, z, weight):
@@ -523,7 +550,7 @@ def joint_values(basis, z, weight):
 
     `weight` is w(z), and the functions are w |z|^(2k) q.
     """
-    y = dictionary_values(list(basis.entries), z)
+    y = multiplier_values(basis, z)
     seeds = None
     if basis.seeds:
         lays = dict(basis.layouts)
