@@ -37,7 +37,8 @@ __all__ = ['PAIRS', 'OrbitRecurrence', 'Basis', 'multipliers', 'permuted',
            'block_factor', 'run_recurrence', 'build_orbit', 'build_basis',
            'orbit_images', 'values', 'restricted_hessian_of',
            'restricted_hessians', 'dictionary', 'dictionary_values', 'JointBasis',
-           'seed_values', 'build_joint', 'joint_values', 'joint_hessians']
+           'seed_values', 'seed_values_all', 'build_joint', 'joint_values',
+           'joint_hessians']
 
 # The six products v_a conj(v_b) with a <= b, in a fixed order.
 PAIRS = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
@@ -341,39 +342,50 @@ def seed_values(lay_j, z, which=None):
     return jnp.stack(outs, axis=-1)
 
 
+def seed_values_all(lay_j, z):
+    """`seed_values` for every coefficient at points z (N, 4), as (N, n), in one program."""
+    from . import sections
+    r2 = jnp.sum(jnp.real(z) ** 2 + jnp.imag(z) ** 2, axis=-1)
+
+    def one(c):
+        cmats = sections.prepare_fp(lay_j, c)
+        return jax.vmap(lambda p: sections.potential_at(lay_j, cmats, p))(z)
+    vals = jax.jit(lambda e: jax.lax.map(one, e))(jnp.eye(lay_j.n_theta))
+    return (vals / r2 ** lay_j.k).T
+
+
 def _pivoted(cols, weight, cand, size, budget, tol):
-    """Pivoted Gram-Schmidt of the candidates `cand` against `cols`.
+    """Pivoted Gram-Schmidt of the candidates `cand` against `cols`, on the device.
 
     Returns the picks as (index, coefficient vector, norm, ratio), at most
     `budget` of them, and the new columns. The coefficients of each pick are on
     every column before it, so original = cols @ coef + norm * new column.
     """
-    coef = cols.T @ (weight[:, None] * cand)
+    cols, weight, cand, size = (jnp.asarray(a) for a in (cols, weight, cand, size))
+    wc = weight[:, None]
+    coef = cols.T @ (wc * cand)
     cand = cand - cols @ coef
-    again = cols.T @ (weight[:, None] * cand)
+    again = cols.T @ (wc * cand)
     cand = cand - cols @ again
     coef = coef + again
-    left, picks = list(range(cand.shape[1])), []
-    while left and len(picks) < budget:
-        rest = np.sqrt(np.sum(weight[:, None] * cand[:, left] ** 2, axis=0))
-        pick = int(np.argmax(rest / size[left]))
-        if rest[pick] <= tol * size[left[pick]]:
+    alive, picks = np.ones(cand.shape[1], bool), []
+    while alive.any() and len(picks) < budget:
+        rest = jnp.sqrt(jnp.sum(wc * cand ** 2, axis=0))
+        idx = int(np.argmax(np.where(alive, np.asarray(rest / size), -np.inf)))
+        if float(rest[idx]) <= tol * float(size[idx]):
             break
-        idx = left.pop(pick)
+        alive[idx] = False
         # A second pass against every column keeps the new one orthogonal.
         extra = cols.T @ (weight * cand[:, idx])
-        cand[:, idx] = cand[:, idx] - cols @ extra
-        coef[:, idx] = coef[:, idx] + extra
-        norm = np.sqrt(np.sum(weight * cand[:, idx] ** 2))
-        newcol = cand[:, idx] / norm
-        picks.append((idx, coef[:, idx].copy(), norm, norm / size[idx]))
-        cols = np.concatenate([cols, newcol[:, None]], axis=1)
-        row = np.zeros((1, cand.shape[1]))
-        if left:
-            proj = newcol @ (weight[:, None] * cand[:, left])
-            cand[:, left] = cand[:, left] - np.outer(newcol, proj)
-            row[0, left] = proj
-        coef = np.concatenate([coef, row], axis=0)
+        col = cand[:, idx] - cols @ extra
+        norm = jnp.sqrt(jnp.sum(weight * col ** 2))
+        newcol = col / norm
+        picks.append((idx, np.asarray(coef[:, idx] + extra), float(norm),
+                      float(norm / size[idx])))
+        cols = jnp.concatenate([cols, newcol[:, None]], axis=1)
+        proj = jnp.where(jnp.asarray(alive), newcol @ (wc * cand), 0.0)
+        cand = cand - jnp.outer(newcol, proj)
+        coef = jnp.concatenate([coef, proj[None]], axis=0)
     return picks, cols
 
 
@@ -389,12 +401,11 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
     seeds, pivoted, as many as are missing. Returns the basis and a trace.
     """
     entries = dictionary(d_max)
-    mvals = np.asarray(dictionary_values(entries, jnp.asarray(z)))   # (N, n_entries)
+    mvals = dictionary_values(entries, jnp.asarray(z))               # (N, n_entries)
     degs = np.array([d for d, _, _ in entries])
-    weight = np.asarray(mu) * np.asarray(scale) ** 2
-    ones = np.ones(z.shape[0])
-    norm0 = np.sqrt(np.sum(weight * ones * ones))
-    cols = (ones / norm0)[:, None]
+    weight = jnp.asarray(mu) * jnp.asarray(scale) ** 2
+    norm0 = float(jnp.sqrt(jnp.sum(weight)))
+    cols = jnp.full((z.shape[0], 1), 1.0 / norm0)
     parents, mults, degrees, coefs, norms = [-1], [-1], [0], [np.zeros(0)], [norm0]
     slots, seeds, trace = [-1], [], []
     for target in range(1, k + 1):
@@ -404,8 +415,9 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
                  for t in range(len(degrees)) if degrees[t] == target - degs[e]]
         worst = 1.0
         if pairs:
-            cand = np.stack([mvals[:, e] * cols[:, t] for e, t in pairs], axis=1)
-            size = np.sqrt(np.sum(weight[:, None] * cand ** 2, axis=0))
+            es, ts = (jnp.asarray([pair[i] for pair in pairs]) for i in (0, 1))
+            cand = mvals[:, es] * cols[:, ts]
+            size = jnp.sqrt(jnp.sum(weight[:, None] * cand ** 2, axis=0))
             budget = len(pairs) if want is None else max(want - cols.shape[1], 0)
             picks, cols = _pivoted(cols, weight, cand, size, budget, tol)
             for idx, coef, norm, ratio in picks:
@@ -419,8 +431,8 @@ def build_joint(k, z, scale, mu, d_max=8, tol=1e-9, n_by_degree=None, layouts=No
         from_products = cols.shape[1] - before
         seeded, seed_worst = 0, 1.0
         if want is not None and cols.shape[1] < want:
-            cand = np.asarray(seed_values(layouts[target], jnp.asarray(z)))
-            size = np.sqrt(np.sum(weight[:, None] * cand ** 2, axis=0))
+            cand = seed_values_all(layouts[target], jnp.asarray(z))
+            size = jnp.sqrt(jnp.sum(weight[:, None] * cand ** 2, axis=0))
             picks, cols = _pivoted(cols, weight, cand, size, want - cols.shape[1], tol)
             for idx, coef, norm, ratio in picks:
                 parents.append(-1)
