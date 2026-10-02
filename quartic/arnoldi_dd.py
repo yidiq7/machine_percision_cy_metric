@@ -33,8 +33,9 @@ def multiplier_values_dd(entries, z, chunk=500):
 
     Returns a dd pair of shape (N, E), in blocks of `chunk` points.
     """
-    return jax.jit(lambda x: jax.lax.map(lambda p: _multiplier_values_dd(entries, p[None])[0],
-                                         x, batch_size=chunk))(jnp.asarray(z))
+    def one(p):
+        return jtu.tree_map(lambda a: a[0], _multiplier_values_dd(entries, p[None]))
+    return jax.jit(lambda x: jax.lax.map(one, x, batch_size=chunk))(jnp.asarray(z))
 
 
 def _multiplier_values_dd(entries, z):
