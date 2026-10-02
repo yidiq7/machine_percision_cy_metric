@@ -184,7 +184,12 @@ def solve(jac, r0, cutoffs):
         y = -vt.T @ jnp.where(keep, beta / s, 0.0)
         sols.append(np.asarray(y / norms))
         predicted.append(loss0 - float(np.sum(np.where(np.asarray(keep), b2, 0.0))))
-    return spec, np.stack(sols, axis=1), predicted
+
+    def step(res, tau):
+        """-J^+ res with the cutoff tau, for a refinement from the residual res."""
+        b = u.T @ (q.T @ res)
+        return np.asarray(-(vt.T @ jnp.where(jnp.asarray(rel >= tau), b / s, 0.0)) / norms)
+    return spec, np.stack(sols, axis=1), predicted, step
 
 
 def main():
@@ -211,6 +216,8 @@ def main():
     ap.add_argument('--dd-degree', type=int, default=0,
                     help='the functions of degree up to this, and before the first seed, '
                          'take their Hessians in dd in the evaluation')
+    ap.add_argument('--refine', type=int, default=0,
+                    help='steps of -J^+ r from the residual in dd after the solve')
     ap.add_argument('--out', type=str, default='runs_vpa')
     args = ap.parse_args()
 
@@ -327,7 +334,7 @@ def main():
             del vals, q, r
 
         t1 = time.perf_counter()
-        spec, sols, predicted = solve(jac, r0, args.cutoffs)
+        spec, sols, predicted, step = solve(jac, r0, args.cutoffs)
         del jac, lrows
         row['spectrum'] = spec
         say(f"k1 = {k1}: solve in {time.perf_counter() - t1:.0f}s; columns scaled, cond "
@@ -369,6 +376,21 @@ def main():
                   f"model {pred:.4e}", flush=True)
             row['solutions'].append({'label': label, 'norm_c': float(np.linalg.norm(
                 coeffs[:, i])), 'fit': got, 'predicted_loss': pred})
+        # Refinement: one more step of -J^+ r from the residual r in dd, at each cutoff.
+        for it in range(1, args.refine + 1):
+            t1 = time.perf_counter()
+            res = root[:, None] * jnp.asarray(f_fit)
+            for i, tau in enumerate(args.cutoffs):
+                coeffs[:, 1 + i] += step(res[:, 1 + i], tau)
+            f_fit = residuals(lay0, parts0, basis, weight_fn, coeffs, fit_set, args.chunk,
+                              alpha, n_low)
+            say(f'k1 = {k1}: refinement {it} in {time.perf_counter() - t1:.0f}s')
+            for i, tau in enumerate(args.cutoffs):
+                got = summary(f_fit[:, 1 + i], fit_set)
+                row['solutions'][1 + i][f'fit_refined_{it}'] = got
+                print(f"    cutoff {tau:.0e}: norm of c {np.linalg.norm(coeffs[:, 1 + i]):.3e}; "
+                      f"fit set sigma {got['mape']:.4e}, loss {got['loss']:.4e}", flush=True)
+        del step
         np.save(out_dir / f'vpa_coeffs_k0_{args.k0}_k1_{k1}.npy', coeffs)
 
         t1 = time.perf_counter()
