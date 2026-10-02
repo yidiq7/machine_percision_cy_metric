@@ -53,7 +53,7 @@ def test_fp_products_reach_dd():
         got = [np.asarray(x) for x in fn(jnp.asarray(a), jnp.asarray(b))]
         scale = float(np.max(np.abs(a)) * np.max(np.abs(b)))
         err = relative_error(got, want, scale)
-        assert err < 1e-26, err
+        assert err < 1e-30, err
         print(f"  {a.shape} @ {b.shape}: error {err:.1e} of max|a| max|b|, under jax.jit")
 
 
@@ -72,12 +72,26 @@ def test_dd_products_reach_dd():
                                 (jnp.asarray(b_hi), jnp.asarray(b_lo)))
     got = [np.asarray(x) for x in got]
     err = relative_error(got, want, float(np.max(np.abs(a_hi)) * np.max(np.abs(b_hi))))
-    assert err < 1e-26, err
+    assert err < 1e-30, err
     print(f"  dd @ dd: error {err:.1e} of max|a| max|b|, under jax.jit")
 
 
+def test_long_inner_dimension_is_cut():
+    """An inner dimension above 2^15 goes in parts, each exact, added in dd."""
+    rng = np.random.default_rng(7)
+    k = 40_000
+    a = rng.normal(size=(2, k)) * np.exp(rng.normal(size=(2, k)) * 2)
+    b = rng.normal(size=(k, 1))
+    want = exact(a, b)
+    got = [np.asarray(x) for x in jax.jit(ozaki.matmul_fp)(jnp.asarray(a), jnp.asarray(b))]
+    err = relative_error(got, want, float(np.max(np.abs(a)) * np.max(np.abs(b))))
+    assert err < 1e-30, err
+    print(f"  inner dimension {k}: error {err:.1e} of max|a| max|b|, under jax.jit")
+
+
 if __name__ == "__main__":
-    for fn in (test_fp_products_reach_dd, test_dd_products_reach_dd):
+    for fn in (test_fp_products_reach_dd, test_dd_products_reach_dd,
+               test_long_inner_dimension_is_cut):
         print(fn.__name__)
         fn()
     print("\nall ozaki tests pass")
