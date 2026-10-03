@@ -74,9 +74,10 @@ def point_hessians(lay0, parts0, levels, hs, a, joint=None):
 
     The weight W of each level comes in dd, so that the sums of two levels keep
     their digits where they cancel. Without `joint` the columns are the functions
-    of each level with its psi_N in place; with it they are the joint functions,
-    with psi_N, the projection of 1 onto all of them, in place of joint function
-    `joint[1]`.
+    of each level with its psi_N in place. With it they are the joint functions, and
+    after them one psi_N for each prefix in `joint[2]`: the projection of 1 onto the
+    first n joint functions, which are orthonormal, so its coefficients are the
+    first n of gamma.
     """
     z, rest, extra = a
     state, hi, p_dd = correction.base_state_dd(lay0, parts0, z, extra, with_p=True)
@@ -93,13 +94,19 @@ def point_hessians(lay0, parts0, levels, hs, a, joint=None):
         cols = [vdf.with_null(p, lev.null)[0] for p, lev in zip(ps, levels)]
         cols = jax.tree_util.tree_map(lambda *xs: jnp.concatenate(xs), *cols)
     else:
-        jm, b0 = joint
+        jm, _, sizes = joint
         cols = joint_dd.transform(jax.tree_util.tree_map(lambda *xs: jnp.concatenate(xs),
                                                          *ps), jm)
-        g_hi, g_lo = (jnp.asarray(x)[:, None, None] for x in jm.gamma)
-        p_n = tuple(dd.add(dd.dot_dd_fp(comp, g_hi, axis=0), dd.dot_dd_fp(comp, g_lo, axis=0))
-                    for comp in cols)
-        cols = jax.tree_util.tree_map(lambda x, y: x.at[b0].set(y), cols, p_n)
+        n = cols[0][0].shape[0]
+        extra = []
+        for size in sizes:
+            mask = (jnp.arange(n) < size)[:, None, None]
+            g_hi, g_lo = (jnp.where(mask, jnp.asarray(x)[:, None, None], 0.0)
+                          for x in jm.gamma)
+            extra.append(tuple(dd.add(dd.dot_dd_fp(comp, g_hi, axis=0),
+                                      dd.dot_dd_fp(comp, g_lo, axis=0)) for comp in cols))
+        cols = jax.tree_util.tree_map(
+            lambda x, *ys: jnp.concatenate([x] + [y[None] for y in ys]), cols, *extra)
     return state, hi, (z_dd, m, free), cols
 
 
@@ -144,8 +151,8 @@ def level_arrays(levels, joint=None):
 def _with_arrays(joint, ja):
     if joint is None:
         return None
-    return (dataclasses.replace(joint[0], h=ja[0], h_lo=ja[1], uinv=ja[2], gamma=ja[3]),
-            joint[1])
+    return ((dataclasses.replace(joint[0], h=ja[0], h_lo=ja[1], uinv=ja[2], gamma=ja[3]),)
+            + tuple(joint[1:]))
 
 
 def fit_rows(lay0, parts0, levels, batch, chunk, joint=None):
@@ -463,26 +470,31 @@ def main():
         del values
         joint_dd.save(out_dir / f'joint_map_{tag}.npz', jm)
     if args.joint_basis:
-        # psi_N takes the place of the joint function that carries most of it.
-        b0 = int(np.argmax(np.abs(jm.gamma[0])))
-        joint = (jm, b0)
+        # The psi_N of a prefix takes the place of the joint function of the prefix that
+        # carries most of it.
         counts_in = [int(np.sum(jm.level == i)) for i in range(len(levels))]
+        prefix = np.cumsum(counts_in)
+        b0s = [int(np.argmax(np.abs(jm.gamma[0][:n]))) for n in prefix]
+        b0 = b0s[-1]
+        joint = (jm, b0, tuple(int(x) for x in prefix))
         record['joint'] = {'entered': counts_in, 'b0': b0, 'gamma_b0': float(jm.gamma[0][b0]),
                            'gap': jm.gap, 'ratio': np.sort(jm.ratio).tolist()}
         say(f'joint map in {time.perf_counter() - t1:.0f}s: {counts_in} functions of the '
             f'levels enter, smallest new part {jm.ratio.min():.3e}; psi_N - 1 has the norm '
             f'{jm.gap:.3e} on the build points, and psi_N takes joint function {b0}')
-        prefix = np.cumsum(counts_in)
         chosen = args.prefixes or list(range(1, len(levels) + 1))
+        n_joint = int(prefix[-1])
         plans = [('+'.join(str(lev.k1) for lev in levels[:i]) + ' joint',
-                  np.arange(prefix[i - 1]), [lev.k1 for lev in levels[:i]]) for i in chosen]
-        total = int(prefix[-1])
+                  np.array([t for t in range(prefix[i - 1]) if t != b0s[i - 1]]
+                           + [n_joint + i - 1]),
+                  [lev.k1 for lev in levels[:i]], n_joint + i - 1) for i in chosen]
+        total = n_joint + len(levels)
     else:
         sizes = [int(lev.basis.h.shape[0]) for lev in levels]
         starts = np.concatenate([[0], np.cumsum(sizes)])
         columns = {lev.k1: np.arange(starts[i], starts[i + 1]) for i, lev in enumerate(levels)}
         plans = [('+'.join(str(k) for k in sub), np.concatenate([columns[k] for k in sub]),
-                  sub) for sub in subsets]
+                  sub, None) for sub in subsets]
         total = int(starts[-1])
 
     if args.eval_only:
@@ -498,17 +510,20 @@ def main():
     say(f'rows of J of {total} functions at {args.n_fit} points in '
         f'{time.perf_counter() - t1:.0f}s')
 
-    # The plan of all columns, if any, comes last and takes the buffer of the rows.
-    order = sorted(range(len(plans)), key=lambda i: len(plans[i][1]) == total)
+    # The largest plan comes last. It takes the buffer of the rows when it has every
+    # column, and else the rows go as soon as its columns are copied.
+    order = sorted(range(len(plans)), key=lambda i: len(plans[i][1]))
     steps, coeffs, labels, preds = {}, [np.zeros(total)], ['base'], [float(r0 @ r0)]
     record['solutions'] = []
     for i in order:
-        name, cols, sub = plans[i]
+        name, cols, sub, psi_col = plans[i]
         t1 = time.perf_counter()
         if len(cols) == total:
             rows_sub, lrows = lrows, None
         else:
             rows_sub = lrows[:, jnp.asarray(cols)]
+            if i == order[-1]:
+                lrows = None
         q, r, norms = factor(rows_sub, f0, mass, m0)
         del rows_sub
         spec, sols, predicted, step = solve(q, r, norms, r0, args.cutoffs)
@@ -533,7 +548,7 @@ def main():
                       f'of psi_N {psi_n:.6f}', flush=True)
             if joint is not None:
                 print(f'        norm of c {np.linalg.norm(c):.3e}, coefficient of psi_N '
-                      f'{c[joint[1]]:.6f}', flush=True)
+                      f'{c[psi_col]:.6f}', flush=True)
             coeffs.append(c)
             labels.append(label)
             preds.append(predicted[j])
