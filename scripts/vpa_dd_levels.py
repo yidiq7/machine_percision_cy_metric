@@ -380,6 +380,9 @@ def main():
                     help='a function whose new part is below this share of its norm '
                          'does not enter the joint basis')
     ap.add_argument('--joint-block', type=int, default=256)
+    ap.add_argument('--prefixes', type=int, nargs='+', default=None,
+                    help='with --joint-basis, the numbers of levels of the prefixes to '
+                         'solve; the default is every prefix')
     ap.add_argument('--load-joint', type=str, default=None,
                     help='a joint map saved by an earlier run, in place of a new build')
     ap.add_argument('--eval-only', action='store_true',
@@ -470,9 +473,9 @@ def main():
             f'levels enter, smallest new part {jm.ratio.min():.3e}; psi_N - 1 has the norm '
             f'{jm.gap:.3e} on the build points, and psi_N takes joint function {b0}')
         prefix = np.cumsum(counts_in)
-        plans = [('+'.join(str(lev.k1) for lev in levels[:i + 1]) + ' joint',
-                  np.arange(prefix[i]), [lev.k1 for lev in levels[:i + 1]])
-                 for i in range(len(levels))]
+        chosen = args.prefixes or list(range(1, len(levels) + 1))
+        plans = [('+'.join(str(lev.k1) for lev in levels[:i]) + ' joint',
+                  np.arange(prefix[i - 1]), [lev.k1 for lev in levels[:i]]) for i in chosen]
         total = int(prefix[-1])
     else:
         sizes = [int(lev.basis.h.shape[0]) for lev in levels]
