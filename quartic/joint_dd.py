@@ -14,6 +14,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
@@ -131,18 +132,32 @@ def transform(p, jm):
     """The Hessians of the joint functions, complex dd (n, 2, 2), at one point.
 
     `p` holds the Hessians of the level functions of every level in order, complex
-    dd (n_total, 2, 2), and `jm` comes from `build`.
+    dd (n_total, 2, 2), and `jm` comes from `build`. One loop body serves every
+    block: the earlier joint functions enter through all of H[:, block], because
+    H is upper triangular and the entries of the later functions are still zero.
     """
     rows = _flat(p)
-    sel = jtu.tree_map(lambda x: x[:, jnp.asarray(jm.sel)], rows)
-    done = None
-    h = (jnp.asarray(jm.h), jnp.asarray(jm.h_lo))
-    for (a, b), inv in zip(jm.blocks, jm.uinv):
-        rest = jtu.tree_map(lambda x: x[:, a:b], sel)
-        if done is not None:
-            lower = ozaki.matmul(done, (h[0][:a, a:b], h[1][:a, a:b]))
-            rest = dd.add(rest, dd.neg(lower))
-        piece = ozaki.matmul(rest, tuple(jnp.asarray(x) for x in inv))
-        done = piece if done is None else tuple(jnp.concatenate([d, x], axis=1)
-                                                for d, x in zip(done, piece))
-    return _unflat(done, len(jm.sel))
+    n = len(jm.sel)
+    width = jm.blocks[0][1] - jm.blocks[0][0]
+    count = len(jm.blocks)
+    size = count * width
+    pad = size - n
+    sel = jtu.tree_map(lambda x: jnp.pad(x[:, jnp.asarray(jm.sel)], ((0, 0), (0, pad))), rows)
+    h = tuple(jnp.pad(jnp.asarray(x), ((0, pad), (0, pad))) for x in (jm.h, jm.h_lo))
+
+    def stacked(i):
+        return jnp.stack([jnp.pad(jnp.asarray(u[i]), ((0, width - u[i].shape[0]),
+                                                       (0, width - u[i].shape[1])))
+                          for u in jm.uinv])
+    uinv = (stacked(0), stacked(1))
+    done = (jnp.zeros((8, size)), jnp.zeros((8, size)))
+
+    def body(i, done):
+        a = i * width
+        rest = tuple(jax.lax.dynamic_slice(x, (0, a), (8, width)) for x in sel)
+        cols = tuple(jax.lax.dynamic_slice(x, (0, a), (size, width)) for x in h)
+        rest = dd.add(rest, dd.neg(ozaki.matmul(done, cols)))
+        piece = ozaki.matmul(rest, (uinv[0][i], uinv[1][i]))
+        return tuple(jax.lax.dynamic_update_slice(d, x, (0, a)) for d, x in zip(done, piece))
+    done = jax.lax.fori_loop(0, count, body, done)
+    return _unflat(tuple(x[:, :n] for x in done), n)
