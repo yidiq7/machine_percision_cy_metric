@@ -404,6 +404,9 @@ def main():
                     help='the exact dd product in the base path; dd.mul_fast gives 2^-79, '
                          'a floor on abs(f) near 1e-24')
     ap.add_argument('--eval-offset', type=int, default=0)
+    ap.add_argument('--eval-total', type=int, default=0,
+                    help='with --eval-offset, the size of the whole hold-out sample; each '
+                         'slice is a part of this one sample')
     ap.add_argument('--gram', action='store_true',
                     help='also report the Gram eigenvalues of each built basis')
     ap.add_argument('--refine', type=int, default=2)
@@ -425,9 +428,14 @@ def main():
         batch = data.make(math.ceil(n / 4), seed)
         return {key: val[:n] for key, val in batch.items()}
     fit_set = None if args.eval_only else cf.load_points(args.n_fit, args.seed)
-    if args.eval_offset:
-        hold = cf.load_points(args.eval_offset + args.n_eval, args.eval_seed)
-        hold = {key: val[args.eval_offset:] for key, val in hold.items()}
+    if args.eval_offset or args.eval_total:
+        # The sampler makes a new sample for each size and orders it by patch, so every
+        # slice must cut its part from the same whole sample.
+        whole = cf.load_points(args.eval_total or args.eval_offset + args.n_eval,
+                               args.eval_seed)
+        hold = {key: val[args.eval_offset:args.eval_offset + args.n_eval]
+                for key, val in whole.items()}
+        del whole
     else:
         hold = cf.load_points(args.n_eval, args.eval_seed)
     build = sample(args.n_build, args.build_seed)
