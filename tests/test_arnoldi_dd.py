@@ -77,6 +77,24 @@ def test_values_match_mpmath():
     print(f"  the dd values of all {basis.h.shape[0]} functions match mpmath to {worst:.1e}")
 
 
+def test_loop_matches_unrolled():
+    """The jets from one loop body equal the jets with one copy for each degree."""
+    _, _, _, basis, h_lo, uinv = built()
+    rest = dd.cto_dd(jnp.zeros((2, 4), jnp.complex128).at[0, 1].set(1.0).at[1, 2].set(1.0))
+    worst = 0.0
+    for z in TEST['points'][:3]:
+        y = arnoldi_dd.vpa_dd.basis_multiplier_jets(basis, dd.cto_dd(z), rest)
+        a = jax.tree_util.tree_leaves(jax.jit(
+            lambda yy: arnoldi_dd.joint_jets_dd(basis, h_lo, yy, uinv))(y))
+        b = jax.tree_util.tree_leaves(jax.jit(
+            lambda yy: arnoldi_dd.joint_jets_dd_unrolled(basis, h_lo, yy, uinv))(y))
+        for x, w in zip(a[0::2], b[0::2]):
+            scale = float(jnp.abs(w).max()) or 1.0
+            worst = max(worst, float(jnp.abs(x - w).max()) / scale)
+    assert worst < 1e-26, worst
+    print(f"  the loop jets match the unrolled jets to {worst:.1e} of the largest entry")
+
+
 def test_basis_is_orthonormal_on_its_sample():
     _, _, weight, basis, h_lo, _ = built()
     z = SAMPLE['points']
@@ -126,8 +144,9 @@ def test_weight_dd_matches_mpmath():
 
 
 if __name__ == "__main__":
-    for fn in (test_weight_dd_matches_mpmath, test_values_match_mpmath,
-               test_basis_is_orthonormal_on_its_sample, test_hessians_match_fp64):
+    for fn in (test_weight_dd_matches_mpmath, test_loop_matches_unrolled,
+               test_values_match_mpmath, test_basis_is_orthonormal_on_its_sample,
+               test_hessians_match_fp64):
         print(fn.__name__)
         fn()
     print("\nall arnoldi_dd tests pass")

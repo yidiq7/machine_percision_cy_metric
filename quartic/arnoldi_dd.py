@@ -244,13 +244,99 @@ def block_inverses(basis, h_lo, dps=40):
     return tuple(out)
 
 
+def _flat(jets):
+    """A jet of shape (m,) as 13 real dd rows (13, m)."""
+    v, d, hh = jets
+    rows = [v] + [jtu.tree_map(lambda a: a[:, c], part) for part in d for c in range(2)]
+    rows += [jtu.tree_map(lambda a: a[:, c, e], part) for part in hh
+             for c in range(2) for e in range(2)]
+    return tuple(jnp.stack([r[i] for r in rows]) for i in range(2))
+
+
+def _unflat(mat):
+    """The inverse of `_flat`."""
+    v = (mat[0][0], mat[1][0])
+    d = tuple(tuple(jnp.stack([mat[i][1 + 2 * part + c] for c in range(2)], axis=-1)
+                    for i in range(2)) for part in range(2))
+    hh = tuple(tuple(jnp.stack([jnp.stack([mat[i][5 + 4 * part + 2 * c + e]
+                                           for e in range(2)], axis=-1)
+                                for c in range(2)], axis=-2)
+                     for i in range(2)) for part in range(2))
+    return v, d, hh
+
+
+def _degree_blocks(degrees):
+    """The ranges (a, b) of the functions of each degree above 0, in order."""
+    out = []
+    for j in sorted(set(degrees.tolist()) - {0}):
+        idx = np.nonzero(degrees == j)[0]
+        a, b = int(idx[0]), int(idx[-1]) + 1
+        assert np.all(idx == np.arange(a, b)), 'the functions of a degree must be contiguous'
+        out.append((a, b))
+    return out
+
+
+def stack_inverses(basis, uinv):
+    """The U^-1 of `block_inverses` as two arrays (blocks, width, width), with zeros."""
+    sizes = [b - a for a, b in _degree_blocks(np.asarray(basis.degrees))]
+    width = max(sizes)
+    out = []
+    for i in range(2):
+        arr = np.zeros((len(sizes), width, width))
+        for k, (m, u) in enumerate(zip(sizes, uinv)):
+            arr[k, :m, :m] = u[i]
+        out.append(arr)
+    return tuple(out)
+
+
 def joint_jets_dd(basis, h_lo, y_jets, uinv):
     """The jets of every q_t in dd at one point, from the jets of the multipliers.
 
     The functions of each degree form one block: their products y q_parent come
     from lower degrees, the part of the lower degrees is one `ozaki` product, and
-    the block is that rest times U^-1 from `block_inverses`, a second product.
+    the block is that rest times U^-1 from `block_inverses`, a second product. One
+    loop body serves every block, padded to the widest: the earlier functions enter
+    through all of h[:, block], because h is upper triangular and the later
+    functions are still zero. `uinv` is the tuple of `block_inverses` or the pair of
+    `stack_inverses`.
     """
+    degrees = np.asarray(basis.degrees)
+    n = len(degrees)
+    blocks = _degree_blocks(degrees)
+    starts = np.array([a for a, _ in blocks])
+    sizes = np.array([b - a for a, b in blocks])
+    width, count = int(sizes.max()), len(blocks)
+    size = n + width
+    if isinstance(uinv[0], tuple):
+        uinv = stack_inverses(basis, uinv)
+    u_hi, u_lo = (jnp.asarray(x) for x in uinv)
+    h = tuple(jnp.pad(jnp.asarray(x), ((0, width), (0, width))) for x in (basis.h, h_lo))
+    inv_h = dd.reciprocal((h[0][:1, 0], h[1][:1, 0]))
+    idx = np.minimum(starts[:, None] + np.arange(width)[None], n - 1)
+    valid = (np.arange(width)[None] < sizes[:, None]).astype(np.float64)
+    par = jnp.asarray(np.maximum(np.asarray(basis.parents), 0)[idx])
+    mul = jnp.asarray(np.maximum(np.asarray(basis.mults), 0)[idx])
+    valid, a_of = jnp.asarray(valid), jnp.asarray(starts)
+    zero_d = dd.cto_dd(jnp.zeros((1, 2), jnp.complex128))
+    zero_h = dd.cto_dd(jnp.zeros((1, 2, 2), jnp.complex128))
+    first = _flat((inv_h, zero_d, zero_h))
+    done = tuple(jnp.zeros((13, size)).at[:, :1].set(x) for x in first)
+    take = lambda tree, i: jtu.tree_map(lambda x: x[i], tree)
+
+    def body(k, done):
+        a = a_of[k]
+        grown = vpa_dd.jet_mul(take(y_jets, mul[k]), take(_unflat(done), par[k]))
+        cols = tuple(jax.lax.dynamic_slice(x, (0, a), (size, width)) for x in h)
+        rest = dd.add(_flat(grown), dd.neg(ozaki.matmul(done, cols)))
+        piece = ozaki.matmul(rest, (u_hi[k], u_lo[k]))
+        return tuple(jax.lax.dynamic_update_slice(d, x * valid[k][None], (0, a))
+                     for d, x in zip(done, piece))
+    done = jax.lax.fori_loop(0, count, body, done)
+    return _unflat(tuple(x[:, :n] for x in done))
+
+
+def joint_jets_dd_unrolled(basis, h_lo, y_jets, uinv):
+    """`joint_jets_dd` with one copy of the products for each degree, as a reference."""
     degrees = np.asarray(basis.degrees)
     h = (jnp.asarray(basis.h), jnp.asarray(h_lo))
     inv_h = dd.reciprocal((jnp.diag(h[0][:1, :1]), jnp.diag(h[1][:1, :1])))

@@ -55,6 +55,7 @@ class Level:
     uinv: tuple
     null: tuple            # (n_low, gamma, b0), or None
     weight_fn: object      # w = p0^(-alpha) at an FP64 point, for the build and psi_N
+    ustack: tuple = ()     # uinv as the arrays of `arnoldi_dd.stack_inverses`
 
 
 def truncated(basis, h_lo, uinv, n):
@@ -85,10 +86,10 @@ def point_hessians(lay0, parts0, levels, hs, a, joint=None):
     rest_dd, _ = dd_metric._restriction_dd(z_dd, m, free)
     r2 = vpa_dd._radius_jets(z_dd, rest_dd)[0]
     ps = []
-    for lev, (h, hl) in zip(levels, hs):
+    for lev, (h, hl, uh, ul) in zip(levels, hs):
         basis = dataclasses.replace(lev.basis, h=h)
         scale = vpa_dd.weight_dd(p_dd, r2, lev.k0, lev.k1)
-        ps.append(arnoldi_dd.joint_hessians_dd(basis, hl, lev.uinv, z_dd, rest_dd, hi,
+        ps.append(arnoldi_dd.joint_hessians_dd(basis, hl, (uh, ul), z_dd, rest_dd, hi,
                                                lev.alpha, scale))
     if joint is None:
         cols = [vdf.with_null(p, lev.null)[0] for p, lev in zip(ps, levels)]
@@ -124,10 +125,10 @@ def level_values_dd(lay0, parts0, levels, batch, chunk):
         rest_dd, _ = dd_metric._restriction_dd(z_dd, m, free)
         r2 = vpa_dd._radius_jets(z_dd, rest_dd)[0]
         out = []
-        for lev, (h, hl) in zip(levels, hs):
+        for lev, (h, hl, uh, ul) in zip(levels, hs):
             basis = dataclasses.replace(lev.basis, h=h)
             jets = arnoldi_dd.joint_jets_dd(
-                basis, hl, vpa_dd.basis_multiplier_jets(basis, z_dd, rest_dd), lev.uinv)
+                basis, hl, vpa_dd.basis_multiplier_jets(basis, z_dd, rest_dd), (uh, ul))
             out.append(dd.mul(jets[0], vpa_dd.weight_dd(p_dd, r2, lev.k0, lev.k1)))
         return tuple(jnp.concatenate([v[i] for v in out]) for i in range(2))
     hs, _ = level_arrays(levels)
@@ -139,7 +140,8 @@ def level_values_dd(lay0, parts0, levels, batch, chunk):
 
 def level_arrays(levels, joint=None):
     """The large arrays of the levels and of the joint map, as arguments of a program."""
-    hs = tuple((jnp.asarray(lev.basis.h), jnp.asarray(lev.h_lo)) for lev in levels)
+    hs = tuple((jnp.asarray(lev.basis.h), jnp.asarray(lev.h_lo),
+                jnp.asarray(lev.ustack[0]), jnp.asarray(lev.ustack[1])) for lev in levels)
     if joint is None:
         return hs, None
     jm = joint[0]
@@ -255,7 +257,8 @@ def build_level(k0, k1, lay0, mats0, build, check, counts, args, out_dir):
         null = (len(gamma), gamma, int(np.argmax(np.abs(gamma))))
         say(f'k1 = {k1}: loaded from {src}: dimension {basis.h.shape[0]}, psi_N from the '
             f'first {null[0]} functions replaces function {null[2]}')
-        return Level(k0, k1, alpha, basis, h_lo, uinv, null, weight_fn), {'loaded': str(src)}
+        return (Level(k0, k1, alpha, basis, h_lo, uinv, null, weight_fn,
+                      arnoldi_dd.stack_inverses(basis, uinv)), {'loaded': str(src)})
 
     t1 = time.perf_counter()
     r2 = jnp.sum(jnp.abs(build['points']) ** 2, axis=1)
@@ -314,7 +317,8 @@ def build_level(k0, k1, lay0, mats0, build, check, counts, args, out_dir):
         say(f'k1 = {k1}: Gram on {args.n_check} independent points in '
             f'{time.perf_counter() - t1:.0f}s: eigenvalues {eig[0]:.4f} to {eig[-1]:.4f}')
         del vals
-    return Level(k0, k1, alpha, basis, h_lo, uinv, null, weight_fn), row
+    return (Level(k0, k1, alpha, basis, h_lo, uinv, null, weight_fn,
+                  arnoldi_dd.stack_inverses(basis, uinv)), row)
 
 
 def volumes(program, coeffs, batch, block):
