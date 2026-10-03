@@ -311,9 +311,12 @@ def section_vectors_dd(lay, z, z_dd=None):
         r_at += n_blocks
 
         psi = _project_dd(frame, mono)                    # (d,)
-        # The C_i weighted projection, for each of the 4 directions.
-        psi_i = _project_dd(frame[:, :, None] * exps.astype(frame.dtype)[:, None, :],
-                            mono, extra_axes=1)           # (d, 4)
+        # The C_i weighted projection, for each of the 4 directions. frame * C_i can
+        # need 56 bits, so the weights enter as an exact pair of FP64 arrays.
+        w_hi, w_lo = dd.mul_dd_fp(dd.to_dd(frame[:, :, None]),
+                                  exps.astype(frame.dtype)[:, None, :])
+        psi_i = dd.cadd(_project_dd(w_hi, mono, extra_axes=1),
+                        _project_dd(w_lo, mono, extra_axes=1))   # (d, 4)
 
         sig.append(_cmul(_cindex(weight, slice(None), None),
                            _cindex(psi, None, slice(None))))

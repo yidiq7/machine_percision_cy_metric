@@ -112,10 +112,37 @@ def test_exact_mul_is_needed_for_stage_2():
           f"the exact mul")
 
 
+def test_dd_phi_holds_dd_where_exponents_reach_3():
+    """At k = 12 the exponents C_i reach 3, so frame * C_i needs more than 53 bits."""
+    lay = sections.layout(12)
+    theta = sections.fubini_study_theta(lay)
+    mats = sections.prepare(lay, theta)
+    mats_np = [np.asarray(mm) for mm in mats]
+    worst = 0.0
+    try:
+        analytic.EXACT_MUL = True
+        run = jax.jit(lambda w: dd_metric.phi_dd(lay, mats, w))
+        for n in range(2):
+            z_dd, _, _, exact = _point(n)
+            phi, _ = run(z_dd)
+            ref, _ = phi_exact(lay, mats_np, exact, keep=True)
+            scale = max(abs(ref[i][j]) for i in range(4) for j in range(4))
+            for i in range(4):
+                for j in range(4):
+                    val = mpc(mpf(float(phi[0][0][i, j])) + mpf(float(phi[0][1][i, j])),
+                              mpf(float(phi[1][0][i, j])) + mpf(float(phi[1][1][i, j])))
+                    worst = max(worst, float(abs(val - ref[i][j]) / scale))
+    finally:
+        analytic.EXACT_MUL = False
+    assert worst < 1e-29, worst
+    print(f"  phi at k = 12 against mpmath: {worst:.2e} of max abs(phi)")
+
+
 if __name__ == "__main__":
     for fn in (test_one_newton_step_reaches_double_double,
                test_volume_agrees_with_the_fp64_path,
-               test_exact_mul_is_needed_for_stage_2):
+               test_exact_mul_is_needed_for_stage_2,
+               test_dd_phi_holds_dd_where_exponents_reach_3):
         print(fn.__name__)
         fn()
     print("\nall end-to-end dd tests pass")
