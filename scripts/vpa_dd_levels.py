@@ -196,8 +196,12 @@ def solve(q, r, norms, r0, cutoffs):
     """`vpa_fit.solve` from the QR of the column-scaled J."""
     u, s, vt = jnp.linalg.svd(r)
     # res @ q in place of q.T @ res: XLA can copy the transpose of q, which is as large as J.
-    beta = u.T @ (r0 @ q)
+    qr0 = r0 @ q
+    beta = u.T @ qr0
     loss0 = float(r0 @ r0)
+    # The part of r0 outside the range comes as a vector: loss0 - sum beta^2 cancels.
+    out = r0 - q @ qr0
+    loss_out = float(out @ out)
     rel = np.asarray(s / s[0])
     b2 = np.asarray(beta ** 2)
     shares = {}
@@ -207,12 +211,12 @@ def solve(q, r, norms, r0, cutoffs):
             shares[f'1e-{e} to 1e-{e + 1}'] = [int(take.sum()), float(b2[take].sum() / loss0)]
     spec = {'cond_scaled': float(rel[0] / rel[-1]), 'smallest': [float(x) for x in rel[-4:]],
             'column_norms': [float(norms.min()), float(norms.max())],
-            'loss0': loss0, 'outside': float((loss0 - b2.sum()) / loss0), 'shares': shares}
+            'loss0': loss0, 'outside': loss_out / loss0, 'shares': shares}
     sols, predicted = [], []
     for tau in cutoffs:
         keep = jnp.asarray(rel >= tau)
         sols.append(np.asarray(-vt.T @ jnp.where(keep, beta / s, 0.0) / norms))
-        predicted.append(loss0 - float(np.sum(np.where(np.asarray(keep), b2, 0.0))))
+        predicted.append(loss_out + float(np.sum(np.where(np.asarray(keep), 0.0, b2))))
 
     def step(res, tau):
         """-J^+ res with the cutoff tau, for a refinement from the residual res."""
