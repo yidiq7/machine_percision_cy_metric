@@ -396,6 +396,9 @@ def main():
                     help='evaluate the saved --coeffs on hold-out points --eval-offset to '
                          '--eval-offset + --n-eval, and save v in dd for each column')
     ap.add_argument('--coeffs', type=str, default=None)
+    ap.add_argument('--exact-mul', action='store_true',
+                    help='the exact dd product in the base path; dd.mul_fast gives 2^-79, '
+                         'a floor on abs(f) near 1e-24')
     ap.add_argument('--eval-offset', type=int, default=0)
     ap.add_argument('--gram', action='store_true',
                     help='also report the Gram eigenvalues of each built basis')
@@ -441,6 +444,7 @@ def main():
         rep0 = metric.report(lay0, theta0, hold, chunk=100_000, block=args.chunk)
         say(f"HN at k0 = {args.k0} in FP64: {st0['steps']} steps, sigma {rep0['mape']:.4e}")
     analytic.GRAM_DD, analytic.H_LOW, analytic.END_DD = True, True, True
+    analytic.EXACT_MUL = args.exact_mul
     sections.PREPARE_DD = True
     parts0 = jax.jit(lambda t: analytic.point_matrices(lay0, t))(theta0)
     mats0 = sections.prepare(lay0, theta0)
