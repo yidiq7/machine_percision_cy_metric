@@ -103,25 +103,31 @@ def point_hessians(lay0, parts0, levels, hs, a, joint=None):
     return state, hi, (z_dd, m, free), cols
 
 
-def level_values_dd(lay0, parts0, lev, batch, chunk):
-    """W q of every function of a level in dd at the dd points of `batch`, W in dd, (N, n).
+def level_values_dd(lay0, parts0, levels, batch, chunk):
+    """W q of every function of every level in dd at the dd points of `batch`, W in dd.
 
-    The joint map needs the values to dd accuracy: an FP64 W puts noise of 1e-16 on
-    each function, and that noise then reads as a new part of 1e-16.
+    Returns one dd pair (N, n_l) for each level; the base state at a point serves
+    every level. The joint map needs the values to dd accuracy: an FP64 W puts noise
+    of 1e-16 on each function, and that noise then reads as a new part of 1e-16.
     """
-    def one(a, h, hl):
+    def one(a, hs):
         z, _, extra = a
         _, _, p_dd = correction.base_state_dd(lay0, parts0, z, extra, with_p=True)
         z_dd, m, free = analytic._dd_point(extra)
         rest_dd, _ = dd_metric._restriction_dd(z_dd, m, free)
         r2 = vpa_dd._radius_jets(z_dd, rest_dd)[0]
-        basis = dataclasses.replace(lev.basis, h=h)
-        jets = arnoldi_dd.joint_jets_dd(
-            basis, hl, vpa_dd.basis_multiplier_jets(basis, z_dd, rest_dd), lev.uinv)
-        return dd.mul(jets[0], vpa_dd.weight_dd(p_dd, r2, lev.k0, lev.k1))
-    return jax.jit(lambda x, h, hl: jax.lax.map(lambda a: one(a, h, hl), x,
-                                                batch_size=chunk))(
-        vf.point_inputs(batch), jnp.asarray(lev.basis.h), jnp.asarray(lev.h_lo))
+        out = []
+        for lev, (h, hl) in zip(levels, hs):
+            basis = dataclasses.replace(lev.basis, h=h)
+            jets = arnoldi_dd.joint_jets_dd(
+                basis, hl, vpa_dd.basis_multiplier_jets(basis, z_dd, rest_dd), lev.uinv)
+            out.append(dd.mul(jets[0], vpa_dd.weight_dd(p_dd, r2, lev.k0, lev.k1)))
+        return tuple(jnp.concatenate([v[i] for v in out]) for i in range(2))
+    hs, _ = level_arrays(levels)
+    vals = jax.jit(lambda x, hs: jax.lax.map(lambda a: one(a, hs), x, batch_size=chunk))(
+        vf.point_inputs(batch), hs)
+    sizes = np.cumsum([0] + [int(lev.basis.h.shape[0]) for lev in levels])
+    return [tuple(v[:, a:b] for v in vals) for a, b in zip(sizes[:-1], sizes[1:])]
 
 
 def level_arrays(levels, joint=None):
@@ -394,7 +400,7 @@ def main():
     if args.joint_basis:
         t1 = time.perf_counter()
         jbuild = cf.load_points(args.n_build, args.build_seed)
-        values = [level_values_dd(lay0, parts0, lev, jbuild, args.chunk) for lev in levels]
+        values = level_values_dd(lay0, parts0, levels, jbuild, args.chunk)
         say(f'dd values of every level at the {args.n_build} build points on X in dd in '
             f'{time.perf_counter() - t1:.0f}s')
         t1 = time.perf_counter()
