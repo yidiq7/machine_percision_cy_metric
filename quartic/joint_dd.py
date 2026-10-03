@@ -20,7 +20,7 @@ import numpy as np
 
 from . import arnoldi_dd, dd, ozaki
 
-__all__ = ['JointMap', 'build', 'transform']
+__all__ = ['JointMap', 'build', 'transform', 'save', 'load']
 
 
 @dataclass(frozen=True)
@@ -85,6 +85,30 @@ def build(values, mu, tol=1e-15, block=256, verbose=False):
     gap = float(np.sqrt(max(float(dd.to_fp(rest)), 0.0) / float(jnp.sum(weight))))
     return JointMap(sel=np.array(sel), level=np.array(level), h=h, h_lo=h_lo,
                     blocks=blocks, uinv=uinv, ratio=np.array(ratios), gamma=gamma, gap=gap)
+
+
+def save(path, jm):
+    """The arrays of a joint map, so that another process can use the same map."""
+    sizes = np.array([b - a for a, b in jm.blocks])
+    np.savez(path, sel=jm.sel, level=jm.level, h=jm.h, h_lo=jm.h_lo,
+             blocks=np.array(jm.blocks), ratio=jm.ratio, gamma_hi=jm.gamma[0],
+             gamma_lo=jm.gamma[1], gap=jm.gap,
+             uinv_hi=np.concatenate([u[0].ravel() for u in jm.uinv]),
+             uinv_lo=np.concatenate([u[1].ravel() for u in jm.uinv]), sizes=sizes)
+
+
+def load(path):
+    """A joint map from `save`."""
+    arr = np.load(path)
+    sizes = arr['sizes']
+    ends = np.cumsum(sizes ** 2)
+    starts = ends - sizes ** 2
+    uinv = tuple((arr['uinv_hi'][a:b].reshape(m, m), arr['uinv_lo'][a:b].reshape(m, m))
+                 for a, b, m in zip(starts, ends, sizes))
+    return JointMap(sel=arr['sel'], level=arr['level'], h=arr['h'], h_lo=arr['h_lo'],
+                    blocks=tuple((int(a), int(b)) for a, b in arr['blocks']), uinv=uinv,
+                    ratio=arr['ratio'], gamma=(arr['gamma_hi'], arr['gamma_lo']),
+                    gap=float(arr['gap']))
 
 
 def _flat(p):

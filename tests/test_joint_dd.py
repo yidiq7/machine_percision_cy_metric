@@ -59,6 +59,16 @@ def test_joint_functions_are_orthonormal():
     off = max(float(abs(v - 1)) for v in psi)
     assert off < 1e-26 and jm.gap < 1e-12, (off, jm.gap)
     print(f"  psi_N is 1 to {off:.1e}, and the reported gap is {jm.gap:.1e}")
+    # A saved map gives the same Hessians.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        joint_dd.save(tmp + '/map.npz', jm)
+        back = joint_dd.load(tmp + '/map.npz')
+    again = jax.jit(jax.vmap(lambda q: joint_dd.transform(q, back)))(p)
+    same = max(float(jnp.max(jnp.abs(x - y))) for x, y in
+               zip(jax.tree_util.tree_leaves(out), jax.tree_util.tree_leaves(again)))
+    assert same == 0.0, same
+    print("  a saved and loaded map gives the same joint functions")
 
 
 if __name__ == "__main__":

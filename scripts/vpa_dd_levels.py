@@ -310,6 +310,41 @@ def build_level(k0, k1, lay0, mats0, build, check, counts, args, out_dir):
     return Level(k0, k1, alpha, basis, h_lo, uinv, null, weight_fn), row
 
 
+def volumes(program, coeffs, batch, block):
+    """v in dd for each column of coeffs, as FP64 arrays hi and lo of shape (N, n_c)."""
+    inputs = vf.point_inputs(batch)
+    total = batch['mass'].shape[0]
+    his, los = [], []
+    for start in range(0, total, block):
+        stop = min(start + block, total)
+        take = jnp.minimum(jnp.arange(start, start + block), stop - 1)
+        part = jax.tree_util.tree_map(lambda a: a[take], inputs)
+        v = program(part, jnp.asarray(coeffs))
+        his.append(np.asarray(v[0][:stop - start]))
+        los.append(np.asarray(v[1][:stop - start]))
+    return np.concatenate(his), np.concatenate(los)
+
+
+def evaluate_only(lay0, parts0, levels, joint, hold, args, out_dir, tag):
+    """v in dd of saved coefficients on a slice of the hold-out, saved for a later sum."""
+    coeffs = np.load(args.coeffs)
+    program = residual_program(lay0, parts0, levels, args.chunk, joint)
+    t1 = time.perf_counter()
+    hi, lo = volumes(program, coeffs, hold, args.block)
+    say(f'{len(hi)} hold-out points from {args.eval_offset} in dd in '
+        f'{time.perf_counter() - t1:.0f}s')
+    size = np.abs(np.asarray(hold['points_hi']))
+    np.savez(out_dir / f'vpa_levels_v_{tag}_{args.eval_offset}.npz', hi=hi, lo=lo,
+             mass=np.asarray(hold['mass']), ratio=size.min(axis=1) / size.max(axis=1))
+    mass = hold['mass'] / jnp.sum(hold['mass'])
+    f = np.asarray(analytic.residual_from_volumes((jnp.asarray(hi), jnp.asarray(lo)),
+                                                  mass[:, None]))
+    for i in range(f.shape[1]):
+        got = vf.summary(f[:, i], hold)
+        say(f"column {i}, this slice alone: sigma {got['mape']:.4e}, rms {got['rms']:.3e}, "
+            f"max {got['max']:.3e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--k0', type=int, required=True)
@@ -345,6 +380,13 @@ def main():
                     help='a function whose new part is below this share of its norm '
                          'does not enter the joint basis')
     ap.add_argument('--joint-block', type=int, default=256)
+    ap.add_argument('--load-joint', type=str, default=None,
+                    help='a joint map saved by an earlier run, in place of a new build')
+    ap.add_argument('--eval-only', action='store_true',
+                    help='evaluate the saved --coeffs on hold-out points --eval-offset to '
+                         '--eval-offset + --n-eval, and save v in dd for each column')
+    ap.add_argument('--coeffs', type=str, default=None)
+    ap.add_argument('--eval-offset', type=int, default=0)
     ap.add_argument('--gram', action='store_true',
                     help='also report the Gram eigenvalues of each built basis')
     ap.add_argument('--refine', type=int, default=2)
@@ -365,8 +407,12 @@ def main():
     def sample(n, seed):
         batch = data.make(math.ceil(n / 4), seed)
         return {key: val[:n] for key, val in batch.items()}
-    fit_set = cf.load_points(args.n_fit, args.seed)
-    hold = cf.load_points(args.n_eval, args.eval_seed)
+    fit_set = None if args.eval_only else cf.load_points(args.n_fit, args.seed)
+    if args.eval_offset:
+        hold = cf.load_points(args.eval_offset + args.n_eval, args.eval_seed)
+        hold = {key: val[args.eval_offset:] for key, val in hold.items()}
+    else:
+        hold = cf.load_points(args.n_eval, args.eval_seed)
     build = sample(args.n_build, args.build_seed)
     check = sample(args.n_check, args.build_seed + 1000)
     say(f'{args.n_fit} fit points of seed {args.seed}, {args.n_eval} hold-out points of '
@@ -397,7 +443,12 @@ def main():
         levels.append(lev)
         record['levels'][str(k1)] = row
     joint = None
-    if args.joint_basis:
+    tag = f"k0_{args.k0}_" + '_'.join(str(k) for k in args.k1)
+    if args.joint_basis and args.load_joint is not None:
+        t1 = time.perf_counter()
+        jm = joint_dd.load(args.load_joint)
+        say(f'joint map loaded from {args.load_joint}')
+    elif args.joint_basis:
         t1 = time.perf_counter()
         jbuild = cf.load_points(args.n_build, args.build_seed)
         values = level_values_dd(lay0, parts0, levels, jbuild, args.chunk)
@@ -407,6 +458,8 @@ def main():
         jm = joint_dd.build(values, jbuild['mass'] / jnp.sum(jbuild['mass']),
                             tol=args.joint_tol, block=args.joint_block, verbose=True)
         del values
+        joint_dd.save(out_dir / f'joint_map_{tag}.npz', jm)
+    if args.joint_basis:
         # psi_N takes the place of the joint function that carries most of it.
         b0 = int(np.argmax(np.abs(jm.gamma[0])))
         joint = (jm, b0)
@@ -428,6 +481,10 @@ def main():
         plans = [('+'.join(str(k) for k in sub), np.concatenate([columns[k] for k in sub]),
                   sub) for sub in subsets]
         total = int(starts[-1])
+
+    if args.eval_only:
+        evaluate_only(lay0, parts0, levels, joint, hold, args, out_dir, tag)
+        return
 
     t1 = time.perf_counter()
     v0, lrows = fit_rows(lay0, parts0, levels, fit_set, args.chunk, joint)
@@ -515,7 +572,6 @@ def main():
             print(f"    {label}: fit set sigma {got['mape']:.4e}, loss {got['loss']:.4e}"
                   f"{'' if kept else ', not kept'}", flush=True)
     del steps
-    tag = f"k0_{args.k0}_" + '_'.join(str(k) for k in args.k1)
     np.save(out_dir / f'vpa_levels_coeffs_{tag}.npy', coeffs)
     np.save(out_dir / f'vpa_levels_f_fit_{tag}.npy', f_fit)
 
