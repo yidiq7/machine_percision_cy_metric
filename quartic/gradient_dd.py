@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 
-from . import analytic, dd, dd_metric, sections
+from . import analytic, dd, dd_metric, gradient, sections
 
 __all__ = ['moved_point', 'volume_keep', 'volume_gradient', 'gradient_report_dd']
 
@@ -102,7 +102,7 @@ def gradient_report_dd(lay, theta, batch, eps=2.0 ** -14, chunk=32,
     v_fp, mean_fp = dd.to_fp(v), dd.to_fp(mean_v)
     # d_i f = <v> d_i v / v^2
     df = mean_fp * dv / v_fp[:, None] ** 2
-    grad_sq = jnp.real(jnp.einsum('nij,ni,nj->n', jnp.linalg.inv(g), df, jnp.conj(df)))
+    grad_sq = gradient.grad_norm_sq(g, df)
 
     l2_f = float(jnp.sqrt(volume * jnp.sum(weight * f ** 2)))
     l2_df = float(jnp.sqrt(volume * jnp.sum(weight * grad_sq)))

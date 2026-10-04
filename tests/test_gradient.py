@@ -125,6 +125,24 @@ def test_the_ratio_is_free_of_the_volume_normalization():
     print(f"  R = {a['ratio']:.6f} for both normalizations, and the norms scale")
 
 
+def test_grad_norm_matches_the_real_metric():
+    """4 grad_norm_sq is grad f^T G^-1 grad f for G(u, u) = Re(g_{i jbar} u^i conj(u^j))."""
+    worst = 0.0
+    for seed in range(20):
+        r = np.random.default_rng(seed)
+        a = r.normal(size=(2, 2)) + 1j * r.normal(size=(2, 2))
+        g = a @ a.conj().T + 0.1 * np.eye(2)
+        grad = r.normal(size=4)                 # (f_x0, f_y0, f_x1, f_y1)
+        df = np.array([grad[0] - 1j * grad[1], grad[2] - 1j * grad[3]]) / 2
+        basis = np.array([[1, 0], [1j, 0], [0, 1], [0, 1j]])
+        big = np.real(basis @ g @ np.conj(basis).T)
+        real = grad @ np.linalg.solve(big, grad)
+        ours = 4 * float(gradient.grad_norm_sq(jnp.asarray(g)[None], jnp.asarray(df)[None])[0])
+        worst = max(worst, abs(ours / real - 1))
+    assert worst < 1e-12, worst
+    print(f"  4 grad_norm_sq matches the real 4 by 4 metric to {worst:.1e}")
+
+
 def test_dd_is_refused():
     """`gradient_report` is the plain FP64 path, so it refuses the dd flags."""
     lay = sections.layout(4)
@@ -147,6 +165,7 @@ if __name__ == "__main__":
                test_tangent_derivative_matches_a_central_difference,
                test_ratio_does_not_depend_on_the_point_set,
                test_the_ratio_is_free_of_the_volume_normalization,
+               test_grad_norm_matches_the_real_metric,
                test_dd_is_refused):
         print(fn.__name__)
         fn()

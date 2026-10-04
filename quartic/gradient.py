@@ -35,7 +35,8 @@ import jax.numpy as jnp
 
 from . import analytic
 
-__all__ = ['patch_indices', 'volume_at', 'volume_tangents', 'gradient_report']
+__all__ = ['patch_indices', 'volume_at', 'volume_tangents', 'grad_norm_sq',
+           'gradient_report']
 
 
 def patch_indices(batch):
@@ -113,6 +114,15 @@ def volume_tangents(lay, mats, z, m, free):
     return v, jnp.stack(out), g
 
 
+def grad_norm_sq(g, df):
+    """`g^{i jbar} d_i f conj(d_j f)` for a stack of metrics g[i, j] = g_{i jbar}.
+
+    g^{i jbar} is the transpose of inv(g), so the sum is conj(df)^T inv(g) df. For
+    the Riemannian metric Re(g) the squared length of grad f is 4 times this.
+    """
+    return jnp.real(jnp.einsum('ni,nij,nj->n', jnp.conj(df), jnp.linalg.inv(g), df))
+
+
 def gradient_report(lay, theta, batch, chunk=None, volume=2.0 * np.pi ** 2):
     """`norm(f)_L2`, `norm(grad f)_L2` and their ratio on a point set.
 
@@ -150,8 +160,7 @@ def gradient_report(lay, theta, batch, chunk=None, volume=2.0 * np.pi ** 2):
     f = 1.0 - mean_v / v
     # d_i f = <v> d_i v / v^2
     df = mean_v * dv / v[:, None] ** 2
-    g_inv = jnp.linalg.inv(g)
-    grad_sq = jnp.real(jnp.einsum('nij,ni,nj->n', g_inv, df, jnp.conj(df)))
+    grad_sq = grad_norm_sq(g, df)
 
     l2_f = float(jnp.sqrt(volume * jnp.sum(weight * f ** 2)))
     l2_df = float(jnp.sqrt(volume * jnp.sum(weight * grad_sq)))
