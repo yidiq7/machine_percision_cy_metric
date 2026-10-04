@@ -264,13 +264,26 @@ def _block_matrices_dd(group, scaled, whitened):
     return _conjugate_dd(jnp.asarray(group.rot), per_block)
 
 
+def _symmetric_dd(mats):
+    """(H + H^T) / 2 in dd. p = Re(sigma^* H sigma) sees only this part, so the
+    closed forms of dp and phi must see only this part as well."""
+    hi, lo = mats
+    total = dd.add((hi, lo), (jnp.swapaxes(hi, -1, -2), jnp.swapaxes(lo, -1, -2)))
+    return total[0] * 0.5, total[1] * 0.5
+
+
+def _symmetric_fp(mats):
+    """(H + H^T) / 2 for each FP64 stack, the tangent of `_symmetric_dd`."""
+    return tuple(0.5 * (m + jnp.swapaxes(m, -1, -2)) for m in mats)
+
+
 @partial(jax.custom_jvp, nondiff_argnums=(0,))
 def _prepare_rounded(lay, theta):
     """`prepare` in double-double, with each entry of each H_r rounded once."""
     scale = jnp.asarray(lay.scale, dtype=theta.dtype)
     scaled = dd.mul(dd.to_dd(theta), dd.to_dd(scale))       # exact product
     whitened = bool(lay.whiten_inv)
-    return tuple(dd.to_fp(_with_base(i, _block_matrices_dd(g, scaled, whitened)))
+    return tuple(dd.to_fp(_symmetric_dd(_with_base(i, _block_matrices_dd(g, scaled, whitened))))
                  for i, g in enumerate(lay.groups))
 
 
@@ -279,7 +292,7 @@ def _prepare_rounded_jvp(lay, primals, tangents):
     # H is linear in theta, so the tangent is the FP64 map of the tangent. That
     # costs far less than a tangent through the dd formation, and it is exact.
     (theta,), (dtheta,) = primals, tangents
-    return _prepare_rounded(lay, theta), prepare_fp(lay, dtheta)
+    return _prepare_rounded(lay, theta), _symmetric_fp(prepare_fp(lay, dtheta))
 
 
 @partial(jax.custom_jvp, nondiff_argnums=(0,))
@@ -297,7 +310,8 @@ def prepare_parts(lay, theta):
     for i, g in enumerate(lay.groups):
         # Renormalize, so that the high part is the rounded H. `dd.two_sum`
         # holds barriers; XLA can fold the plain form (hi - (hi + lo)) + lo to 0.
-        out.append(dd.two_sum(*_with_base(i, _block_matrices_dd(g, scaled, whitened))))
+        out.append(dd.two_sum(*_symmetric_dd(
+            _with_base(i, _block_matrices_dd(g, scaled, whitened)))))
     return tuple(out)
 
 
@@ -305,7 +319,7 @@ def prepare_parts(lay, theta):
 def _prepare_parts_jvp(lay, primals, tangents):
     # The whole tangent goes to the high part, and the low part has none.
     (theta,), (dtheta,) = primals, tangents
-    tan = prepare_fp(lay, dtheta)
+    tan = _symmetric_fp(prepare_fp(lay, dtheta))
     return prepare_parts(lay, theta), tuple((t, jnp.zeros_like(t)) for t in tan)
 
 

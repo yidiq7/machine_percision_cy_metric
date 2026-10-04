@@ -3,6 +3,7 @@
 Run: uv run python -m tests.test_arnoldi_dd
 """
 import sys
+from fractions import Fraction
 from pathlib import Path
 
 import mpmath as mp
@@ -143,8 +144,22 @@ def test_weight_dd_matches_mpmath():
     print(f"  the dd weight matches mpmath to {worst:.1e}")
 
 
+def test_alpha_dd_is_exact():
+    """The exponent of W enters its jets as k1/k0 in dd, as in the value of W."""
+    mp.mp.dps = 60
+    worst = 0.0
+    for k0, k1 in ((28, 44), (28, 40), (28, 36), (12, 20)):
+        got = jax.jit(lambda: arnoldi_dd.vpa_dd.alpha_dd(Fraction(k1, k0)))()
+        have = mp.mpf(float(got[0])) + mp.mpf(float(got[1]))
+        worst = max(worst, float(abs(have / (mp.mpf(k1) / k0) - 1)))
+    plain = arnoldi_dd.vpa_dd.alpha_dd(44 / 28)
+    assert float(plain[1]) == 0.0 and float(plain[0]) == 44 / 28
+    assert worst < 1e-31, worst
+    print(f"  alpha in dd matches k1/k0 to {worst:.1e}")
+
+
 if __name__ == "__main__":
-    for fn in (test_weight_dd_matches_mpmath, test_loop_matches_unrolled,
+    for fn in (test_alpha_dd_is_exact, test_weight_dd_matches_mpmath, test_loop_matches_unrolled,
                test_values_match_mpmath, test_basis_is_orthonormal_on_its_sample,
                test_hessians_match_fp64):
         print(fn.__name__)

@@ -138,11 +138,41 @@ def test_dd_phi_holds_dd_where_exponents_reach_3():
     print(f"  phi at k = 12 against mpmath: {worst:.2e} of max abs(phi)")
 
 
+def test_dd_phi_is_hermitian():
+    """p = Re(sigma^* H sigma) sees the symmetric part of H only, so phi of the dd H
+    must be Hermitian: the FP64 basis gives H an antisymmetric part near 1e-16."""
+    lay = sections.layout(12)
+    theta = sections.fubini_study_theta(lay)
+    theta = theta * (1.0 + 0.3 * np.random.default_rng(3).standard_normal(theta.shape))
+    mats = jax.jit(lambda t: sections.prepare_parts(lay, t))(theta)
+    for hi, lo in mats:
+        assert np.array_equal(np.asarray(hi), np.swapaxes(np.asarray(hi), 1, 2))
+        assert np.array_equal(np.asarray(lo), np.swapaxes(np.asarray(lo), 1, 2))
+    worst = 0.0
+    try:
+        analytic.EXACT_MUL = True
+        run = jax.jit(lambda w: dd_metric.phi_dd(lay, mats, w))
+        for n in range(2):
+            z_dd, _, _, _ = _point(n)
+            phi, _ = run(z_dd)
+            val = [[mpc(mpf(float(phi[0][0][i, j])) + mpf(float(phi[0][1][i, j])),
+                        mpf(float(phi[1][0][i, j])) + mpf(float(phi[1][1][i, j])))
+                    for j in range(4)] for i in range(4)]
+            scale = max(abs(val[i][j]) for i in range(4) for j in range(4))
+            worst = max(worst, max(float(abs(val[i][j] - val[j][i].conjugate()) / scale)
+                                   for i in range(4) for j in range(4)))
+    finally:
+        analytic.EXACT_MUL = False
+    assert worst < 1e-30, worst
+    print(f"  phi of the dd H at k = 12 is Hermitian to {worst:.2e}")
+
+
 if __name__ == "__main__":
     for fn in (test_one_newton_step_reaches_double_double,
                test_volume_agrees_with_the_fp64_path,
                test_exact_mul_is_needed_for_stage_2,
-               test_dd_phi_holds_dd_where_exponents_reach_3):
+               test_dd_phi_holds_dd_where_exponents_reach_3,
+               test_dd_phi_is_hermitian):
         print(fn.__name__)
         fn()
     print("\nall end-to-end dd tests pass")

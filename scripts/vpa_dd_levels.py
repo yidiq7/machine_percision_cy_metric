@@ -18,6 +18,7 @@ import json
 import math
 import sys
 import time
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -36,7 +37,7 @@ import correction_fit as cf                                 # noqa: E402
 import vpa_dd_fit as vdf                                    # noqa: E402
 import vpa_fit as vf                                        # noqa: E402
 from quartic import (analytic, arnoldi, arnoldi_dd, correction, data, dd,  # noqa: E402
-                     dd_metric, fit, joint_dd, metric, sections, vpa_dd)
+                     dd_metric, fit, joint_dd, metric, sections, volume, vpa_dd)
 
 T0 = time.perf_counter()
 
@@ -49,7 +50,7 @@ def say(text):
 class Level:
     k0: int
     k1: int
-    alpha: float
+    alpha: Fraction        # k1/k0, exact, so that the dd jets of W take it exactly
     basis: arnoldi.JointBasis
     h_lo: np.ndarray
     uinv: tuple
@@ -242,9 +243,9 @@ def solve(q, r, norms, r0, cutoffs):
 
 def build_level(k0, k1, lay0, mats0, build, check, counts, args, out_dir):
     """A level of degree k1 in dd from the build points, with psi_N from the check points."""
-    alpha = k1 / k0
+    alpha = Fraction(k1, k0)
 
-    def weight_fn(z, alpha=alpha):
+    def weight_fn(z, alpha=float(alpha)):
         return jnp.exp(-alpha * sections.log_potential_at(lay0, mats0, z))
     weights = jax.jit(jax.vmap(weight_fn))
     stem = f'k0_{k0}_k1_{k1}'
@@ -348,12 +349,13 @@ def evaluate_only(lay0, parts0, levels, joint, hold, args, out_dir, tag):
     np.savez(out_dir / f'vpa_levels_v_{tag}_{args.eval_offset}.npz', hi=hi, lo=lo,
              mass=np.asarray(hold['mass']), ratio=size.min(axis=1) / size.max(axis=1))
     mass = hold['mass'] / jnp.sum(hold['mass'])
-    f = np.asarray(analytic.residual_from_volumes((jnp.asarray(hi), jnp.asarray(lo)),
-                                                  mass[:, None]))
-    for i in range(f.shape[1]):
-        got = vf.summary(f[:, i], hold)
-        say(f"column {i}, this slice alone: sigma {got['mape']:.4e}, rms {got['rms']:.3e}, "
-            f"max {got['max']:.3e}")
+    v = (jnp.asarray(hi), jnp.asarray(lo))
+    for name, mean in (('sampled mean', None), ('exact mean', volume.mean_v_dd(args.k0))):
+        f = np.asarray(analytic.residual_from_volumes(v, mass[:, None], mean=mean))
+        for i in range(f.shape[1]):
+            got = vf.summary(f[:, i], hold)
+            say(f"column {i}, this slice alone, {name} of v: sigma {got['mape']:.4e}, "
+                f"rms {got['rms']:.3e}, max {got['max']:.3e}")
 
 
 def main():

@@ -17,6 +17,7 @@ import json
 import math
 import sys
 import time
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -196,9 +197,9 @@ def main():
     rows = {'k0': args.k0, 'theta': args.theta}
 
     for k1 in args.k1:
-        alpha = k1 / args.k0
+        alpha = Fraction(k1, args.k0)
 
-        def weight_fn(z, alpha=alpha):
+        def weight_fn(z, alpha=float(alpha)):
             return jnp.exp(-alpha * sections.log_potential_at(lay0, mats0, z))
         weights = jax.jit(jax.vmap(weight_fn))
 

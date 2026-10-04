@@ -11,6 +11,8 @@ the recurrence amplifies the 2^-79 of `dd.mul_fast` by about 3 for each degree.
 """
 from __future__ import annotations
 
+from fractions import Fraction
+
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
@@ -154,6 +156,17 @@ def basis_multiplier_jets(basis, z_dd, rest):
     return v, _creal(d, _ex(inv, 0)), _creal(h, _ex(inv, 0, 0))
 
 
+def alpha_dd(alpha):
+    """alpha in dd: k1/k0 to 2^-106 for a Fraction, the FP64 value for a float.
+
+    W itself takes the exact exponent, so its jets must take the exact one too.
+    """
+    if isinstance(alpha, Fraction):
+        inv = dd.reciprocal(dd.to_dd(jnp.asarray(float(alpha.denominator))))
+        return dd.mul_dd_fp(inv, jnp.asarray(float(alpha.numerator)))
+    return dd.to_dd(jnp.asarray(alpha, jnp.float64))
+
+
 def weight_jets(hi, z_dd, rest, alpha, k1):
     """D_k L and D_k Dbar_l L for L = k1 log |z|^2 - alpha log p_0, in dd.
 
@@ -168,7 +181,7 @@ def weight_jets(hi, z_dd, rest, alpha, k1):
     mid = analytic._cindex(phi_dd, None, None, slice(None), slice(None))
     right = _conj(analytic._cindex(rest, None, slice(None), None, slice(None)))
     tpt = dd_metric._creduce_last_two(dd.cmul(dd.cmul(left, mid), right))
-    scale = dd.to_dd(jnp.asarray(alpha, jnp.float64))
+    scale = alpha_dd(alpha)
     d_l = dd.csub(analytic._cscale(_creal(d_r2, _ex(inv, 0)), jnp.asarray(float(k1))),
                   _creal(ta, _ex(scale, 0)))
     fs = dd.csub(_creal(h_r2, _ex(inv, 0, 0)),

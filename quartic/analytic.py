@@ -661,16 +661,29 @@ def _fp(v):
     return dd.to_fp(v) if isinstance(v, tuple) else v
 
 
-def residual_from_volumes(v, weights):
+def sampled_mean(v, weights):
+    """<v> = sum w v / sum w in dd, for v as a dd pair.
+
+    Weights divided by their FP64 sum add up to 1 only to about 1e-16, and that
+    offset would move every f by the same amount.
+    """
+    return dd.mul(dd.dot_dd_fp(v, weights, axis=0),
+                  dd.reciprocal(dd.sum_fp(weights, axis=0)))
+
+
+def residual_from_volumes(v, weights, mean=None):
     """f = v/<v> - 1 from v in FP64, or from a dd pair in dd with f rounded once.
 
-    <v> = sum w v / sum w: weights divided by their FP64 sum add up to 1 only to
-    about 1e-16, and that offset would move every f by the same amount.
+    <v> is the sampled mean, or `mean`, the exact dd pair of `volume.mean_v_dd`.
     """
     if not isinstance(v, tuple):
+        if mean is not None:
+            return v / (mean[0] + mean[1]) - 1.0
         return v * jnp.sum(weights, axis=0) / jnp.sum(weights * v, axis=0) - 1.0
-    mean = dd.mul(dd.dot_dd_fp(v, weights, axis=0),
-                  dd.reciprocal(dd.sum_fp(weights, axis=0)))
+    if mean is None:
+        mean = sampled_mean(v, weights)
+    else:
+        mean = (jnp.asarray(mean[0]), jnp.asarray(mean[1]))
     ratio = dd.mul(v, dd.reciprocal(mean))
     return dd.to_fp(dd.add(ratio, dd.to_dd(-jnp.ones_like(v[0]))))
 
