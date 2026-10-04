@@ -412,18 +412,24 @@ def reference(args):
     for k, off, vals in results:
         table.setdefault(k, {})[off] = {col: mp.mpf(v) for col, v in vals.items()}
 
+    ratios = {}
     for k in range(n_pts):
         center, chart = M['centers'][k], M['charts'][k]
         phi = phi0(center)
         _, g0 = _volume(center, chart, phi, [[0, 0], [0, 0]])
         scale = max(abs(g0[i][j]) for i in range(2) for j in range(2))
+        # A matrix H that is not exactly symmetric gives R phi0 R^dag an anti-Hermitian
+        # part, which v = Re det does not see to first order; the control takes the rest.
+        herm = [[(g0[i][j] + mp.conj(g0[j][i])) / 2 for j in range(2)] for i in range(2)]
+        anti = max(abs(g0[i][j] - herm[i][j]) for i in range(2) for j in range(2))
         logp = {off: v['logp'] for off, v in table[k].items()}
         l1, l2 = _hessian(logp, 1, M['h']), _hessian(logp, 2, M['h'])
-        control = max(abs((4 * l1[i][j] - l2[i][j]) / 3 - g0[i][j])
+        control = max(abs((4 * l1[i][j] - l2[i][j]) / 3 - herm[i][j])
                       for i in range(2) for j in range(2))
         print(f'point {k}, min/max abs(z) {float(data["ratio"][k]):.3f}, chart (j, m, free) '
-              f'{chart}; control: the differences of log p0 against R phi0 R^dag '
-              f'{float(control / scale):.1e}', flush=True)
+              f'{chart}; control: the differences of log p0 against the Hermitian part of '
+              f'R phi0 R^dag {float(control / scale):.1e}; its anti-Hermitian part '
+              f'{float(anti / scale):.1e}', flush=True)
         for col in range(coeffs.shape[1]):
             if col in columns:
                 vals = {off: v[col] for off, v in table[k].items()}
@@ -437,10 +443,14 @@ def reference(args):
             v_ref, _ = _volume(center, chart, phi, g_add)
             v1 = _mpf(data['v1_hi'][k, col], data['v1_lo'][k, col])
             v2 = _mpf(data['v2_hi'][k, col], data['v2_lo'][k, col])
+            ratios.setdefault(col, []).extend([v1 / v_ref - 1, v2 / v_ref - 1])
             print(f'    column {col}: max abs(dg) {float(size / scale):.3e} of max abs(g0), '
                   f'h against 2h {float(trunc / scale):.1e}; v_dd / v_ref - 1: '
-                  f'{float(v1 / v_ref - 1):+.3e} in the first chart, '
-                  f'{float(v2 / v_ref - 1):+.3e} in the second', flush=True)
+                  f'{mp.nstr(v1 / v_ref - 1, 20)} in the first chart, '
+                  f'{mp.nstr(v2 / v_ref - 1, 20)} in the second', flush=True)
+    for col, vals in ratios.items():
+        print(f'column {col}: v_dd / v_ref - 1 spans {mp.nstr(max(vals) - min(vals), 5)} over '
+              f'the points and the charts, around {mp.nstr(sum(vals) / len(vals), 12)}')
     print(f'all in {time.perf_counter() - t0:.0f}s')
 
 
