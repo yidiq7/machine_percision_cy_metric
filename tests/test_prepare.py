@@ -45,6 +45,8 @@ def test_dd_agrees_where_fp64_is_accurate():
 def test_each_entry_is_rounded_once():
     """Against mpmath at 60 digits, each entry is within one ulp of exact.
 
+    The exact value is the symmetric part (H + H^T)/2, which the dd form takes.
+
     dd holds a sum to approximately 1e-31 of the size of its terms. So an entry
     that is nearly zero by symmetry, near 1e-16 of the block, is good to a few
     ulp of itself only, and that has no effect on r. Those entries must meet an
@@ -70,11 +72,12 @@ def test_each_entry_is_rounded_once():
         for b in range(g.rot.shape[0]):
             rot, rep = g.rot[b], reps[int(g.orbit_of[b])]
             top = float(np.abs(mats[b]).max())
+            full = [[sum(mpf(float(rot[p, u])) * rep[u][v] * mpf(float(rot[q, v]))
+                         for u in range(d) for v in range(d)) for q in range(d)]
+                    for p in range(d)]
             for p in range(d):
                 for q in range(d):
-                    exact = sum(mpf(float(rot[p, u])) * rep[u][v] * mpf(float(rot[q, v]))
-                                for u in range(d) for v in range(d))
-                    ref = float(exact)
+                    ref = float((full[p][q] + full[q][p]) / 2)
                     err = abs(mats[b, p, q] - ref)
                     if abs(ref) > 1e-12 * top:
                         worst = max(worst, err / np.spacing(abs(ref)))
@@ -87,12 +90,12 @@ def test_each_entry_is_rounded_once():
 
 
 def test_tangent_is_the_linear_map():
-    """The rule of `_prepare_rounded` must give prepare_fp of the tangent."""
+    """The rule of `_prepare_rounded` must give the symmetric part of prepare_fp."""
     lay = sections.layout(6)
     theta = perturbed_theta(lay, 6)
     tangent = jnp.asarray(np.random.default_rng(1).normal(size=lay.n_theta))
     _, got = jax.jvp(lambda t: sections._prepare_rounded(lay, t), (theta,), (tangent,))
-    want = sections.prepare_fp(lay, tangent)
+    want = sections._symmetric_fp(sections.prepare_fp(lay, tangent))
     worst = max(float(jnp.abs(a - b).max()) for a, b in zip(got, want))
     assert worst == 0.0, worst
 
@@ -442,7 +445,8 @@ def test_base_adds_in_dd():
     base = sections.base_matrices(lay, a)
     got = _with_base(base, lambda: sections.prepare_parts(lay, b))
     scaled = dd.mul(dd.add(dd.to_dd(a), dd.to_dd(b)), dd.to_dd(jnp.asarray(lay.scale)))
-    want = [dd.two_sum(*sections._block_matrices_dd(g, scaled, False)) for g in lay.groups]
+    want = [dd.two_sum(*sections._symmetric_dd(sections._block_matrices_dd(g, scaled, False)))
+            for g in lay.groups]
     rounded = sections.prepare_parts(lay, a + b)
     worst = lost = 0.0
     for g, w, r in zip(got, want, rounded):
@@ -463,7 +467,7 @@ def test_base_keeps_the_tangent_and_the_fp64_path():
     base = sections.base_matrices(lay, a)
     _, tan = _with_base(base, lambda: jax.jvp(
         lambda t: sections.prepare_parts(lay, t), (b,), (tangent,)))
-    for (t_hi, t_lo), want in zip(tan, sections.prepare_fp(lay, tangent)):
+    for (t_hi, t_lo), want in zip(tan, sections._symmetric_fp(sections.prepare_fp(lay, tangent))):
         assert float(jnp.abs(t_hi - want).max()) == 0.0 and float(jnp.abs(t_lo).max()) == 0.0
     fp = _with_base(base, lambda: sections.prepare(lay, b))
     rel = max(float(jnp.abs(m - w).max() / jnp.abs(w).max())
@@ -504,7 +508,7 @@ def test_base_with_a_whitened_correction():
     got = _with_base(base, lambda: sections.prepare_parts(lay_w, w))
     worst = 0.0
     for g, bp, cw in zip(got, base, sections.base_matrices(lay_w, w)):
-        total = dd.add(bp, cw)
+        total = sections._symmetric_dd(dd.add(bp, cw))
         worst = max(worst, _dd_gap(g, total) / float(jnp.abs(total[0]).max()))
     fp = sum(float(jnp.abs((gh + gl) - (p + q)).max() / jnp.abs(p).max())
              for (gh, gl), p, q in zip(got, sections.prepare_fp(lay_p, a),
