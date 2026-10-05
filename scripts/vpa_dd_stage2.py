@@ -591,7 +591,8 @@ def main():
     def residuals(cc, batch):
         hi, lo = vl.volumes(program, cc, batch, args.block)
         m = batch['mass'] / jnp.sum(batch['mass'])
-        return np.asarray(analytic.residual_from_volumes(
+        # A copy, because the refinements write into it.
+        return np.array(analytic.residual_from_volumes(
             (jnp.asarray(hi), jnp.asarray(lo)), m[:, None]))
     t1 = time.perf_counter()
     f_fit = residuals(coeffs, fit_set)
