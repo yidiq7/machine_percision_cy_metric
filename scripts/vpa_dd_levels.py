@@ -457,6 +457,10 @@ def main():
         theta0, st0 = fit.fit(lay0, fit_set, max_steps=args.max_steps, chunk=args.chunk)
         rep0 = metric.report(lay0, theta0, hold, chunk=100_000, block=args.chunk)
         say(f"HN at k0 = {args.k0} in FP64: {st0['steps']} steps, sigma {rep0['mape']:.4e}")
+        # The levels and the joint map depend on this base, so a rerun with --load
+        # must take the same theta through --theta.
+        np.save(out_dir / f'theta_k0_{args.k0}.npy', np.asarray(theta0))
+        (out_dir / f'theta_k0_{args.k0}.basis').write_text(lay0.fingerprint())
     analytic.GRAM_DD, analytic.H_LOW, analytic.END_DD = True, True, True
     analytic.EXACT_MUL = args.exact_mul
     sections.PREPARE_DD = True
