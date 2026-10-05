@@ -377,6 +377,9 @@ def main():
     ap.add_argument('--n-eval', type=int, default=2_000_000)
     ap.add_argument('--eval-seed', type=int, default=20261813)
     ap.add_argument('--n-build', type=int, default=20_000)
+    ap.add_argument('--n-build-level', type=int, default=None,
+                    help='build points of each level basis; the default is --n-build. The '
+                         'FP64 build of a level of degree 40 needs 26 GB at 60,000 points')
     ap.add_argument('--build-seed', type=int, default=20262001)
     ap.add_argument('--n-check', type=int, default=20_000)
     ap.add_argument('--d-max', type=int, default=12)
@@ -440,7 +443,7 @@ def main():
         del whole
     else:
         hold = cf.load_points(args.n_eval, args.eval_seed)
-    build = sample(args.n_build, args.build_seed)
+    build = sample(args.n_build_level or args.n_build, args.build_seed)
     check = sample(args.n_check, args.build_seed + 1000)
     say(f'{args.n_fit} fit points of seed {args.seed}, {args.n_eval} hold-out points of '
         f'seed {args.eval_seed}, {args.n_build} build points of seed {args.build_seed}')
