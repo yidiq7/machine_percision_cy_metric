@@ -126,7 +126,11 @@ def test_chart_jets_stay_on_X():
 
 
 def test_base_jet_at_fubini_study():
-    """At theta_FS, p0 = |z|^(2k), so log p0 and k log |z|^2 have the same jet."""
+    """At theta_FS, p0 = |z|^(2k), so log p0 and k log |z|^2 have the same jet.
+
+    theta_FS comes from FP64 frames, so the two agree to the FP64 level only. The
+    check of `scripts/residual_jets.py` compares the jet with the dd base path.
+    """
     worst = 0.0
     for k in (4, 8):
         lay = sections.layout(k)
@@ -147,7 +151,7 @@ def test_base_jet_at_fubini_study():
                 diff = dd.cto_fp(dd.csub(lp, lr))
                 return jnp.max(jnp.abs(diff)) / jnp.max(jnp.abs(dd.cto_fp(lr)))
             worst = max(worst, float(jax.jit(run)(z_dd)))
-    assert worst < 1e-28, worst
+    assert worst < 1e-14, worst
     print(f'  log p0 at theta_FS equals k log |z|^2 to {worst:.1e}, k = 4 and 8')
 
 
