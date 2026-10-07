@@ -10,6 +10,7 @@ along the rows of the restriction matrix, as in `vpa_dd`.
 from __future__ import annotations
 
 import time
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -77,16 +78,52 @@ def _multiplier_values_dd(entries, z):
     return dd.mul(s, rho)
 
 
-@jax.jit
-def _pick_dd(cols, coef, cand, weight, alive, idx, ncur):
-    """One step of the pivoted Gram-Schmidt in dd, on arrays of fixed shape."""
+# The projections on the columns built so far run over blocks of this many columns,
+# and only over the blocks that hold a column: the Ozaki slices of all the room of a
+# joint build of 8 levels of degree up to 40 on 60,000 points need 40 GB.
+COL_BLOCK = 2048
+
+
+def _blocks_for(ncur):
+    """The number of column blocks that hold the ncur columns built so far."""
+    return max(1, -(-int(ncur) // COL_BLOCK))
+
+
+def _cols_t_matmul(cols, b, nb):
+    """cols^T @ b over the first nb column blocks, with zeros for the rest of the room."""
+    room = cols[0].shape[1]
+    parts = []
+    for c in range(nb):
+        blk = jtu.tree_map(lambda a: a[:, c * COL_BLOCK:(c + 1) * COL_BLOCK].T, cols)
+        parts.append(ozaki.matmul(blk, b))
+    top = jtu.tree_map(lambda *xs: jnp.concatenate(xs, axis=0), *parts)
+    pad = room - top[0].shape[0]
+    return jtu.tree_map(lambda a: jnp.pad(a, ((0, pad),) + ((0, 0),) * (a.ndim - 1)), top)
+
+
+def _cols_matmul(cols, x, nb):
+    """cols @ x over the first nb column blocks, where the later columns are zero."""
+    acc = None
+    for c in range(nb):
+        sl = slice(c * COL_BLOCK, (c + 1) * COL_BLOCK)
+        piece = ozaki.matmul(jtu.tree_map(lambda a: a[:, sl], cols),
+                             jtu.tree_map(lambda a: a[sl], x))
+        acc = piece if acc is None else dd.add(acc, piece)
+    return acc
+
+
+@partial(jax.jit, static_argnames=('nb',))
+def _pick_dd(cols, coef, cand, weight, alive, idx, ncur, nb=None):
+    """One step of the pivoted Gram-Schmidt in dd, on arrays of fixed shape.
+
+    `nb` column blocks of `cols` hold the columns built so far.
+    """
     take = lambda tree, i, ax: jtu.tree_map(lambda a: jnp.take(a, i, axis=ax), tree)
     c = take(cand, idx, 1)                                                # (N,)
     wc = dd.mul_dd_fp(c, weight)
-    extra = ozaki.matmul(jtu.tree_map(lambda a: a.T, cols), jtu.tree_map(
-        lambda a: a[:, None], wc))
+    extra = _cols_t_matmul(cols, jtu.tree_map(lambda a: a[:, None], wc), nb)
     extra = jtu.tree_map(lambda a: a[:, 0], extra)                        # (room,)
-    proj_old = ozaki.matmul(cols, jtu.tree_map(lambda a: a[:, None], extra))
+    proj_old = _cols_matmul(cols, jtu.tree_map(lambda a: a[:, None], extra), nb)
     col = dd.add(c, dd.neg(jtu.tree_map(lambda a: a[:, 0], proj_old)))
     norm = _sqrt_dd(dd.dot_dd_fp(dd.mul(col, col), weight, axis=0))
     inv = dd.reciprocal(norm)
@@ -109,11 +146,11 @@ def _pick_dd(cols, coef, cand, weight, alive, idx, ncur):
 def _pivoted_dd(cols, ncur, weight, cand, size, budget, tol):
     """`arnoldi._pivoted` in dd: cols, cand and the coefficients are dd pairs."""
     w = weight[:, None]
-    t_cols = jtu.tree_map(lambda a: a.T, cols)
-    coef = ozaki.matmul(t_cols, dd.mul_dd_fp(cand, w))
-    cand = dd.add(cand, dd.neg(ozaki.matmul(cols, coef)))
-    again = ozaki.matmul(t_cols, dd.mul_dd_fp(cand, w))
-    cand = dd.add(cand, dd.neg(ozaki.matmul(cols, again)))
+    nb = _blocks_for(ncur)
+    coef = _cols_t_matmul(cols, dd.mul_dd_fp(cand, w), nb)
+    cand = dd.add(cand, dd.neg(_cols_matmul(cols, coef, nb)))
+    again = _cols_t_matmul(cols, dd.mul_dd_fp(cand, w), nb)
+    cand = dd.add(cand, dd.neg(_cols_matmul(cols, again, nb)))
     coef = dd.add(coef, again)
     size_np = np.asarray(size)
     rest = jnp.sqrt(jnp.sum(w * cand[0] ** 2, axis=0))
@@ -125,7 +162,8 @@ def _pivoted_dd(cols, ncur, weight, cand, size, budget, tol):
             break
         alive[idx] = False
         cols, coef, cand, vec, norm, rest = _pick_dd(cols, coef, cand, weight,
-                                                     jnp.asarray(alive), idx, ncur)
+                                                     jnp.asarray(alive), idx, ncur,
+                                                     nb=_blocks_for(ncur))
         vec = tuple(np.asarray(v)[:ncur] for v in vec)
         norm = tuple(float(v) for v in norm)
         picks.append((idx, vec, norm, norm[0] / size_np[idx]))
