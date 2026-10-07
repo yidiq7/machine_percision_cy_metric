@@ -18,6 +18,10 @@ Usage, on the GPU node:
         --load runs_levels_load --load-joint MAP --coeffs COEFFS --exact-mul \\
         --n 32768 --seed 20271001 --out runs_derivatives/part_20271001.npz
     python scripts/residual_derivatives.py combine runs_derivatives/part_*.npz
+
+For a two-stage fit of `vpa_dd_stage2.py`, give --stage1, --stage1-k1 and --run in
+place of --load-joint and --coeffs; --load is then the directory of the second-stage
+level bases.
 """
 import argparse
 import json
@@ -77,17 +81,39 @@ def compute(args):
     sections.PREPARE_DD = True
     parts0 = jax.jit(lambda t: analytic.point_matrices(lay0, t))(theta0)
     mats0 = sections.prepare(lay0, theta0)
-    counts = vf.hn_counts(max(args.k1))
+    counts = vf.hn_counts(max(args.k1 + (args.stage1_k1 or [])))
 
-    class LoadArgs:
-        load = args.load
-    levels = [vl.build_level(args.k0, k1, lay0, mats0, None, None, counts, LoadArgs,
-                             Path('.'))[0] for k1 in args.k1]
-    jm = joint_dd.load(args.load_joint)
+    def load_levels(directory, degrees):
+        class LoadArgs:
+            load = directory
+        return [vl.build_level(args.k0, k1, lay0, mats0, None, None, counts, LoadArgs,
+                               Path('.'))[0] for k1 in degrees]
+    levels = load_levels(args.load, args.k1)
+    s1 = None
+    if args.stage1 is not None:
+        # A two-stage fit of vpa_dd_stage2.py: the first stage gives psi_1, and the
+        # weights of the second stage take exp(-(k1/k0)(psi_1 - C)) with the saved C.
+        import vpa_dd_stage2 as st
+        s1_tag = f'k0_{args.k0}_' + '_'.join(str(k) for k in args.stage1_k1)
+        s1_levels = load_levels(args.stage1, args.stage1_k1)
+        jm1 = joint_dd.load(Path(args.stage1) / f'joint_map_{s1_tag}.npz')
+        prefix1 = np.cumsum([int(np.sum(jm1.level == i)) for i in range(len(s1_levels))])
+        c1 = np.load(Path(args.stage1) / f'vpa_levels_coeffs_{s1_tag}.npy')[:, args.stage1_col]
+        s1 = st.Stage1(s1_levels, jm1, st.stage1_weights(c1, jm1, prefix1))
+        tag = f"k0_{args.k0}_s1_{'_'.join(str(k) for k in args.stage1_k1)}_s2_" + \
+            '_'.join(str(k) for k in args.k1)
+        run = Path(args.run)
+        s1.shift = float(json.loads((run / f'vpa_stage2_{tag}.json').read_text())['stage1_shift'])
+        jm = joint_dd.load(run / f'joint_map_{tag}.npz')
+        coeffs = jnp.asarray(np.load(run / f'vpa_stage2_coeffs_{tag}.npy'))
+    else:
+        jm = joint_dd.load(args.load_joint)
+        coeffs = jnp.asarray(np.load(args.coeffs))
     prefix = np.cumsum([int(np.sum(jm.level == i)) for i in range(len(levels))])
     joint = (jm, None, tuple(int(x) for x in prefix))
-    coeffs = jnp.asarray(np.load(args.coeffs))
-    say(f'model: k0 = {args.k0}, levels {args.k1}, {coeffs.shape[1]} columns of c')
+    say(f'model: k0 = {args.k0}, levels {args.k1}'
+        f"{'' if s1 is None else f' on the first stage {args.stage1_k1}'}, "
+        f'{coeffs.shape[1]} columns of c')
 
     batch = cf.load_points(args.n, args.seed)
     entries = plan()
@@ -121,20 +147,32 @@ def compute(args):
     say(f'{n} points, {e} evaluations each; abs(P) of the moved points <= '
         f'{float(jnp.max(p_res)):.2e}')
 
-    def one(a, cc, hs, ja):
-        _, hi, (z_dd, m, free), p = vl.point_hessians(lay0, parts0, levels, hs, a,
-                                                      vl._with_arrays(joint, ja))
+    def one(a, cc, hs, ja, arrays1):
+        if s1 is None:
+            _, hi, (z_dd, m, free), p = vl.point_hessians(lay0, parts0, levels, hs, a,
+                                                          vl._with_arrays(joint, ja))
+            base = None
+        else:
+            _, hi, (z_dd, m, free), p, psi = st.point_state(
+                lay0, parts0, s1, levels, a, arrays1, hs, vl._with_arrays(joint, ja))
+            base = psi[2]
         rest = dd.cto_fp(dd_metric._restriction_dd(z_dd, m, free)[0])
+        # The metric of the norms: the HN base, and the first stage when there is one.
         g0 = rest @ dd.cto_fp(hi[0]) @ jnp.conj(rest).T
+        if base is not None:
+            g0 = g0 + dd.cto_fp(base)
 
         def column(c):
             delta = tuple(dd.dot_dd_fp(comp, c[:, None, None], axis=0) for comp in p)
+            if base is not None:
+                delta = dd.cadd(base, delta)
             return analytic._volume_from_phi_dd(hi[0], z_dd, m, free, keep=True,
                                                 delta=delta)
         return jax.vmap(column)(cc.T), g0
-    program = jax.jit(lambda x, cc, hs, ja: jax.lax.map(lambda a: one(a, cc, hs, ja), x,
-                                                        batch_size=args.chunk))
+    program = jax.jit(lambda x, cc, hs, ja, arrays1: jax.lax.map(
+        lambda a: one(a, cc, hs, ja, arrays1), x, batch_size=args.chunk))
     hs, ja = vl.level_arrays(levels, joint)
+    arrays1 = None if s1 is None else st.stage1_arrays(s1)
 
     flat_hi = moved_hi.reshape(n * e, 4)
     flat_lo = moved_lo.reshape(n * e, 4)
@@ -147,7 +185,8 @@ def compute(args):
     for start in range(0, total, args.block):
         stop = min(start + args.block, total)
         take = jnp.minimum(jnp.arange(start, start + args.block), stop - 1)
-        v, g0 = program(jax.tree_util.tree_map(lambda a: a[take], inputs), coeffs, hs, ja)
+        v, g0 = program(jax.tree_util.tree_map(lambda a: a[take], inputs), coeffs, hs, ja,
+                        arrays1)
         f = analytic.residual_from_volumes(v, None, mean=mean)
         fs.append(np.asarray(f[:stop - start]))
         gs.append(np.asarray(g0[:stop - start]))
@@ -274,6 +313,12 @@ def main():
     ap.add_argument('--load', type=str)
     ap.add_argument('--load-joint', type=str)
     ap.add_argument('--coeffs', type=str)
+    ap.add_argument('--stage1', type=str, default=None,
+                    help='for a two-stage fit: the first-stage run of vpa_dd_levels.py')
+    ap.add_argument('--stage1-k1', type=int, nargs='+', default=None)
+    ap.add_argument('--stage1-col', type=int, default=-1)
+    ap.add_argument('--run', type=str, default=None,
+                    help='for a two-stage fit: the output directory of vpa_dd_stage2.py')
     ap.add_argument('--exact-mul', action='store_true')
     ap.add_argument('--n', type=int, default=32_768)
     ap.add_argument('--seed', type=int, default=20271001)
