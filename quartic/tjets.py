@@ -47,8 +47,8 @@ P1, P2 = _pairs()
 _TRIU = [(a, b) for a in range(6) for b in range(a + 1, 6)]
 
 
-def _tmap(f, x):
-    return jtu.tree_map(f, x)
+def _tmap(f, *trees):
+    return jtu.tree_map(f, *trees)
 
 
 def _pad_last(x, n_axes):
