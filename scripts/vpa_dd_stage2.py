@@ -40,6 +40,7 @@ import jax.numpy as jnp                                     # noqa: E402
 import jax.tree_util as jtu                                 # noqa: E402
 
 import correction_fit as cf                                 # noqa: E402
+import seam_levels as sl                                    # noqa: E402
 import vpa_dd_fit as vdf                                    # noqa: E402
 import vpa_dd_levels as vl                                  # noqa: E402
 import vpa_fit as vf                                        # noqa: E402
@@ -425,6 +426,46 @@ def finite_differences(lay0, parts0, s1, batch, args):
         f'difference {worst_d:.2e}')
 
 
+def evaluate_saved(lay0, parts0, s1, levels, joint, hold, args, out_dir, tag):
+    """v of saved coefficients on a hold-out slice, or the seam test in two charts."""
+    coeffs = np.load(args.coeffs)
+    program = residual_program(lay0, parts0, s1, levels, args.chunk, joint)
+    if args.eval_only:
+        t1 = time.perf_counter()
+        hi, lo = vl.volumes(program, coeffs, hold, args.block)
+        say(f'{len(hi)} hold-out points from {args.eval_offset} in dd in '
+            f'{time.perf_counter() - t1:.0f}s')
+        size = np.abs(np.asarray(hold['points_hi']))
+        np.savez(out_dir / f'vpa_levels_v_{tag}_{args.eval_offset}.npz', hi=hi, lo=lo,
+                 mass=np.asarray(hold['mass']), ratio=size.min(axis=1) / size.max(axis=1))
+        mass = hold['mass'] / jnp.sum(hold['mass'])
+        f = np.asarray(analytic.residual_from_volumes((jnp.asarray(hi), jnp.asarray(lo)),
+                                                      mass[:, None]))
+        for i in range(f.shape[1]):
+            got = vf.summary(f[:, i], hold)
+            say(f"column {i}, this slice alone: sigma {got['mape']:.4e}, rms {got['rms']:.3e}, "
+                f"max {got['max']:.3e}")
+    if args.seam:
+        batch = cf.load_points(args.seam, 20263813)
+        second = sl.other_chart(batch)
+        mass = batch['mass'] / jnp.sum(batch['mass'])
+        w = np.asarray(mass)
+        fs = []
+        for name, points in (('first', batch), ('second', second)):
+            t1 = time.perf_counter()
+            hi, lo = vl.volumes(program, coeffs, points, args.block)
+            fs.append(np.asarray(analytic.residual_from_volumes(
+                (jnp.asarray(hi), jnp.asarray(lo)), mass[:, None])))
+            say(f'{name} chart: {args.seam} points in dd in {time.perf_counter() - t1:.0f}s')
+        for i in range(coeffs.shape[1]):
+            fa, fb = fs[0][:, i], fs[1][:, i]
+            d = fb - fa
+            print(f'column {i}: sigma {np.sum(w * np.abs(fa)):.4e} in the first chart and '
+                  f'{np.sum(w * np.abs(fb)):.4e} in the second; the change of f has mean abs '
+                  f'{np.sum(w * np.abs(d)):.3e}, rms {math.sqrt(np.sum(w * d * d)):.3e}, max '
+                  f'{np.abs(d).max():.3e} and weighted mean {np.sum(w * d):.3e}', flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--k0', type=int, required=True)
@@ -455,6 +496,20 @@ def main():
     ap.add_argument('--refine', type=int, default=3)
     ap.add_argument('--check', type=int, default=0,
                     help='only run the three tests of the jets at this many points')
+    ap.add_argument('--load-joint', type=str, default=None,
+                    help='a saved second-stage joint map, in place of a new build')
+    ap.add_argument('--coeffs', type=str, default=None,
+                    help='saved second-stage coefficients, for --eval-only and --seam')
+    ap.add_argument('--record', type=str, default=None,
+                    help='the json of a second-stage fit: its constant C of psi_1 is reused, '
+                         'because the saved coefficients hold only for that C')
+    ap.add_argument('--eval-only', action='store_true',
+                    help='save v in dd on the hold-out points --eval-offset to '
+                         '--eval-offset + --n-eval of one sample of --eval-total points')
+    ap.add_argument('--eval-offset', type=int, default=0)
+    ap.add_argument('--eval-total', type=int, default=0)
+    ap.add_argument('--seam', type=int, default=0,
+                    help='the seam test: f at this many points of seed 20263813 in two charts')
     ap.add_argument('--out', type=str, required=True)
     args = ap.parse_args()
     args.gram, args.entries_from = False, None
@@ -478,8 +533,21 @@ def main():
     def sample(n, seed):
         batch = vl.data.make(math.ceil(n / 4), seed)
         return {key: val[:n] for key, val in batch.items()}
-    fit_set = cf.load_points(args.n_fit, args.seed)
-    hold = cf.load_points(args.n_eval, args.eval_seed)
+    evaluate = args.eval_only or args.seam > 0
+    if evaluate and (args.load_joint is None or args.coeffs is None or args.record is None):
+        raise SystemExit('--eval-only and --seam need --load-joint, --coeffs and --record')
+    fit_set = None if evaluate else cf.load_points(args.n_fit, args.seed)
+    hold = None
+    if args.eval_offset or args.eval_total:
+        # The sampler makes a new sample for each size and orders it by patch, so every
+        # slice must come from the same whole sample.
+        whole = cf.load_points(args.eval_total or args.eval_offset + args.n_eval,
+                               args.eval_seed)
+        hold = {key: val[args.eval_offset:args.eval_offset + args.n_eval]
+                for key, val in whole.items()}
+        del whole
+    elif not args.seam:
+        hold = cf.load_points(args.n_eval, args.eval_seed)
     build = sample(args.n_build_level, args.build_seed)
     check_pts = sample(args.n_check, args.build_seed + 1000)
     say(f'{args.n_fit} fit points of seed {args.seed}, {args.n_eval} hold-out points of seed '
@@ -499,16 +567,21 @@ def main():
     say(f'first stage {args.stage1_k1} from {args.stage1}: {len(jm1.sel)} joint functions, '
         f'column {args.stage1_col}, norm of c {np.linalg.norm(c1):.3e}')
 
-    probe = jtu.tree_map(lambda x: x[:4096], fit_set)
-    v1 = np.asarray(psi1_program(lay0, parts0, s1, args.chunk)(probe)[0][0])
-    w = np.asarray(probe['mass']) / float(np.sum(probe['mass']))
-    s1.shift = float(np.sum(w * v1))
-    spread = float(np.max(np.abs(v1 - s1.shift)))
-    top = max(Fraction(k, args.k0) for k in args.k1)
-    say(f'psi_1 on 4096 fit points: mean {s1.shift:.6e}, largest distance from the mean '
-        f'{spread:.3e}, times the largest k1/k0 {float(top) * spread:.3e}')
-    if float(top) * spread > 1e-3:
-        raise SystemExit('psi_1 - C is too large for the series of exp; take a general exp')
+    if args.record is not None:
+        s1.shift = float(json.loads(Path(args.record).read_text())['stage1_shift'])
+        spread = float('nan')
+        say(f'the constant C of psi_1 from {args.record}: {s1.shift!r}')
+    else:
+        probe = jtu.tree_map(lambda x: x[:4096], fit_set)
+        v1 = np.asarray(psi1_program(lay0, parts0, s1, args.chunk)(probe)[0][0])
+        w = np.asarray(probe['mass']) / float(np.sum(probe['mass']))
+        s1.shift = float(np.sum(w * v1))
+        spread = float(np.max(np.abs(v1 - s1.shift)))
+        top = max(Fraction(k, args.k0) for k in args.k1)
+        say(f'psi_1 on 4096 fit points: mean {s1.shift:.6e}, largest distance from the mean '
+            f'{spread:.3e}, times the largest k1/k0 {float(top) * spread:.3e}')
+        if float(top) * spread > 1e-3:
+            raise SystemExit('psi_1 - C is too large for the series of exp; take a general exp')
 
     levels = []
     for k1 in args.k1:
@@ -520,18 +593,22 @@ def main():
         finite_differences(lay0, parts0, s1, fit_set, args)
         return
 
-    t1 = time.perf_counter()
-    jbuild = cf.load_points(args.n_build, args.build_seed)
-    values = level_values(lay0, parts0, s1, levels, jbuild, args.chunk)
-    say(f'dd values of every second-stage level at {args.n_build} build points in '
-        f'{time.perf_counter() - t1:.0f}s')
-    t1 = time.perf_counter()
-    jm = joint_dd.build(values, jbuild['mass'] / jnp.sum(jbuild['mass']), tol=args.joint_tol,
-                        block=args.joint_block, verbose=True)
-    del values
     tag = f"k0_{args.k0}_s1_{'_'.join(str(k) for k in args.stage1_k1)}_s2_" + \
         '_'.join(str(k) for k in args.k1)
-    joint_dd.save(out_dir / f'joint_map_{tag}.npz', jm)
+    t1 = time.perf_counter()
+    if args.load_joint is not None:
+        jm = joint_dd.load(args.load_joint)
+        say(f'joint map loaded from {args.load_joint}')
+    else:
+        jbuild = cf.load_points(args.n_build, args.build_seed)
+        values = level_values(lay0, parts0, s1, levels, jbuild, args.chunk)
+        say(f'dd values of every second-stage level at {args.n_build} build points in '
+            f'{time.perf_counter() - t1:.0f}s')
+        t1 = time.perf_counter()
+        jm = joint_dd.build(values, jbuild['mass'] / jnp.sum(jbuild['mass']),
+                            tol=args.joint_tol, block=args.joint_block, verbose=True)
+        del values
+        joint_dd.save(out_dir / f'joint_map_{tag}.npz', jm)
     counts_in = [int(np.sum(jm.level == i)) for i in range(len(levels))]
     prefix = np.cumsum(counts_in)
     b0s = [int(np.argmax(np.abs(jm.gamma[0][:n]))) for n in prefix]
@@ -539,6 +616,9 @@ def main():
     say(f'joint map in {time.perf_counter() - t1:.0f}s: {counts_in} functions of the levels '
         f'enter, smallest new part {jm.ratio.min():.3e}; psi_N - 1 has the norm '
         f'{jm.gap:.3e} on the build points')
+    if evaluate:
+        evaluate_saved(lay0, parts0, s1, levels, joint, hold, args, out_dir, tag)
+        return
     chosen = args.prefixes or list(range(1, len(levels) + 1))
     n_joint = int(prefix[-1])
     plans = [('+'.join(str(lev.k1) for lev in levels[:i]) + ' stage 2',
