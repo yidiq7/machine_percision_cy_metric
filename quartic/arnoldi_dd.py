@@ -289,7 +289,7 @@ def stack_inverses(basis, uinv):
     return tuple(out)
 
 
-def joint_jets_dd(basis, h_lo, y_jets, uinv, groups=4):
+def joint_jets_dd(basis, h_lo, y_jets, uinv, groups=4, algebra=None):
     """The jets of every q_t in dd at one point, from the jets of the multipliers.
 
     The functions of each degree form one block: their products y q_parent come
@@ -298,7 +298,9 @@ def joint_jets_dd(basis, h_lo, y_jets, uinv, groups=4):
     blocks go in `groups` runs of one loop body each, padded to the widest block of
     the run, and the earlier functions enter through h[:L, block] with L the end of
     the run: h is upper triangular and the later functions are still zero. `uinv`
-    is the tuple of `block_inverses` or the pair of `stack_inverses`.
+    is the tuple of `block_inverses` or the pair of `stack_inverses`. `algebra` sets
+    the form of a jet, for example `tjets.T36`; the default is the 13-row jet of
+    `vpa_dd.jet_mul`.
     """
     degrees = np.asarray(basis.degrees)
     n = len(degrees)
@@ -312,10 +314,15 @@ def joint_jets_dd(basis, h_lo, y_jets, uinv, groups=4):
     u_hi, u_lo = (jnp.asarray(x) for x in uinv)
     h = tuple(jnp.pad(jnp.asarray(x), ((0, top), (0, top))) for x in (basis.h, h_lo))
     inv_h = dd.reciprocal((h[0][:1, 0], h[1][:1, 0]))
-    zero_d = dd.cto_dd(jnp.zeros((1, 2), jnp.complex128))
-    zero_h = dd.cto_dd(jnp.zeros((1, 2, 2), jnp.complex128))
-    first = _flat((inv_h, zero_d, zero_h))
-    done = tuple(jnp.zeros((13, size)).at[:, :1].set(x) for x in first)
+    if algebra is None:
+        flat, unflat, jmul, n_rows = _flat, _unflat, vpa_dd.jet_mul, 13
+        zero_d = dd.cto_dd(jnp.zeros((1, 2), jnp.complex128))
+        zero_h = dd.cto_dd(jnp.zeros((1, 2, 2), jnp.complex128))
+        first = _flat((inv_h, zero_d, zero_h))
+    else:
+        flat, unflat, jmul, n_rows = algebra.flat, algebra.unflat, algebra.mul, algebra.rows
+        first = flat(algebra.first(inv_h))
+    done = tuple(jnp.zeros((n_rows, size)).at[:, :1].set(x) for x in first)
     take = lambda tree, i: jtu.tree_map(lambda x: x[i], tree)
     parents = np.maximum(np.asarray(basis.parents), 0)
     mults = np.maximum(np.asarray(basis.mults), 0)
@@ -332,15 +339,15 @@ def joint_jets_dd(basis, h_lo, y_jets, uinv, groups=4):
         def body(k, part, width=width, span=span, valid=valid, par=par, mul=mul,
                  a_of=a_of, u_of=u_of, cols_all=cols_all):
             a = a_of[k]
-            grown = vpa_dd.jet_mul(take(y_jets, mul[k]), take(_unflat(part), par[k]))
+            grown = jmul(take(y_jets, mul[k]), take(unflat(part), par[k]))
             cols = tuple(jax.lax.dynamic_slice(x, (0, a), (span, width)) for x in cols_all)
-            rest = dd.add(_flat(grown), dd.neg(ozaki.matmul(part, cols)))
+            rest = dd.add(flat(grown), dd.neg(ozaki.matmul(part, cols)))
             piece = ozaki.matmul(rest, (u_of[0][k], u_of[1][k]))
             return tuple(jax.lax.dynamic_update_slice(d, x * valid[k][None], (0, a))
                          for d, x in zip(part, piece))
         part = jax.lax.fori_loop(0, len(run), body, tuple(x[:, :span] for x in done))
         done = tuple(jax.lax.dynamic_update_slice(d, x, (0, 0)) for d, x in zip(done, part))
-    return _unflat(tuple(x[:, :n] for x in done))
+    return unflat(tuple(x[:, :n] for x in done))
 
 
 def joint_jets_dd_unrolled(basis, h_lo, y_jets, uinv):

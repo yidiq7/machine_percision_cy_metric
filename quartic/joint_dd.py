@@ -21,7 +21,7 @@ import numpy as np
 
 from . import arnoldi_dd, dd, ozaki
 
-__all__ = ['JointMap', 'build', 'transform', 'save', 'load']
+__all__ = ['JointMap', 'build', 'transform', 'save', 'load', 'effective_weights']
 
 
 @dataclass(frozen=True)
@@ -161,3 +161,37 @@ def transform(p, jm):
         return tuple(jax.lax.dynamic_update_slice(d, x, (0, a)) for d, x in zip(done, piece))
     done = jax.lax.fori_loop(0, count, body, done)
     return _unflat(tuple(x[:, :n] for x in done), n)
+
+
+def effective_weights(jm, w, sizes):
+    """Weights on the level functions whose sum equals sum_t w_t Gt_t, in dd.
+
+    The joint functions are G_sel H^-1, because G_sel(t) = sum over s <= t of
+    H_st Gt_s with H upper triangular. So sum_t w_t Gt_t = sum_t what_t G_sel(t)
+    with what = H^-1 w, by back substitution over the blocks of `jm`. `w` is a dd
+    pair over the joint functions, and `sizes` are the numbers of functions of each
+    level. The result is one dd pair for each level, zero at the functions that do
+    not enter.
+    """
+    n = len(jm.sel)
+    h = (jnp.asarray(jm.h), jnp.asarray(jm.h_lo))
+    out = (jnp.zeros(n), jnp.zeros(n))
+    w = (jnp.asarray(w[0]), jnp.asarray(w[1]))
+    for (a, b), (u_hi, u_lo) in reversed(list(zip(jm.blocks, jm.uinv))):
+        rhs = (w[0][a:b, None], w[1][a:b, None])
+        if b < n:
+            later = ozaki.matmul((h[0][a:b, b:], h[1][a:b, b:]), (out[0][b:, None],
+                                                                   out[1][b:, None]))
+            rhs = dd.add(rhs, dd.neg(later))
+        piece = ozaki.matmul((jnp.asarray(u_hi), jnp.asarray(u_lo)), rhs)
+        out = (out[0].at[a:b].set(piece[0][:, 0]), out[1].at[a:b].set(piece[1][:, 0]))
+    offsets = np.concatenate([[0], np.cumsum(sizes)])
+    hi, lo = np.asarray(out[0]), np.asarray(out[1])
+    levels = []
+    for i, size in enumerate(sizes):
+        take = np.nonzero(jm.level == i)[0]
+        lh, ll = np.zeros(size), np.zeros(size)
+        lh[jm.sel[take] - offsets[i]] = hi[take]
+        ll[jm.sel[take] - offsets[i]] = lo[take]
+        levels.append((lh, ll))
+    return levels
