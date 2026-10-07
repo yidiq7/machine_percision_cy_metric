@@ -175,6 +175,10 @@ def compute(args):
         f"effective weights of {len(model['what1'])} + {len(model['what2'])} levels")
     program = jet_program(model, args.k0, args.chunk)
     batch = cf.load_points(args.n, args.seed)
+    if args.other_chart:
+        # The same points in the chart of the second largest coordinate, for the noise.
+        import seam_levels as sl
+        batch = sl.other_chart(batch)
     inputs = (batch['points_hi'], batch['points_lo'], batch['patch'])
     n = inputs[0].shape[0]
     parts = []
@@ -354,6 +358,8 @@ def main():
     ap.add_argument('--exact-mul', action='store_true')
     ap.add_argument('--n', type=int, default=32_768)
     ap.add_argument('--seed', type=int, default=20271001)
+    ap.add_argument('--other-chart', action='store_true',
+                    help='write each point in the chart of its second largest coordinate')
     ap.add_argument('--chunk', type=int, default=64)
     ap.add_argument('--block', type=int, default=4096)
     ap.add_argument('--out', type=str)
