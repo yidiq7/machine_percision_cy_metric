@@ -79,9 +79,16 @@ def build(values, mu, tol=1e-15, block=256, verbose=False):
     uinv = tuple(arnoldi_dd.upper_inverse(h, h_lo, a, b) for a, b in blocks)
     # The joint functions are orthonormal in dd on the build sample, so the projection
     # of 1 onto them is the inner products, and psi_N - 1 is orthogonal to all of them.
-    proj = dd.dot_dd_fp(cols, weight[:, None], axis=0)
-    gamma = (np.asarray(proj[0])[:n], np.asarray(proj[1])[:n])
-    sq = dd.sum_dd(*dd.mul((proj[0][:n], proj[1][:n]), (proj[0][:n], proj[1][:n])))
+    # The inner products run over blocks of the built columns, so that no temporary has
+    # the size of all the room.
+    pieces = []
+    for a in range(0, n, arnoldi_dd.COL_BLOCK):
+        b = min(a + arnoldi_dd.COL_BLOCK, n)
+        piece = dd.dot_dd_fp((cols[0][:, a:b], cols[1][:, a:b]), weight[:, None], axis=0)
+        pieces.append((np.asarray(piece[0]), np.asarray(piece[1])))
+    gamma = (np.concatenate([x[0] for x in pieces]), np.concatenate([x[1] for x in pieces]))
+    proj = (jnp.asarray(gamma[0]), jnp.asarray(gamma[1]))
+    sq = dd.sum_dd(*dd.mul(proj, proj))
     rest = dd.add(dd.sum_fp(weight), dd.neg(sq))
     gap = float(np.sqrt(max(float(dd.to_fp(rest)), 0.0) / float(jnp.sum(weight))))
     return JointMap(sel=np.array(sel), level=np.array(level), h=h, h_lo=h_lo,
