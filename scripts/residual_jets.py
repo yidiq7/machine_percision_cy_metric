@@ -94,7 +94,7 @@ def jet_program(model, k0, chunk):
     """f, D f, ddbar f, Ric and g for the columns base, first stage and final fit."""
     import jax
     import jax.numpy as jnp
-    from quartic import arnoldi_dd, dd, ozaki, tjets as tj, volume, vpa_dd
+    from quartic import arnoldi_dd, dd, tjets as tj, volume, vpa_dd
     import vpa_dd_stage2 as st
 
     lay0, parts0 = model['lay0'], model['parts0']
@@ -113,7 +113,10 @@ def jet_program(model, k0, chunk):
             basis = dataclasses.replace(lev.basis, h=h)
             y = tj.centered(tj.multiplier_jets(basis.entries, table, r2), basis)
             q = arnoldi_dd.joint_jets_dd(basis, hl, y, (uh, ul), algebra=tj.T36)
-            comb = ozaki.matmul(tj.T36.flat(q), (wh[:, None], wl[:, None]))
+            # Exact dd products and a dd sum: an Ozaki product bounds its error by the largest
+            # weight times the largest jet, and the two belong to different functions.
+            terms = dd.mul(tj.T36.flat(q), (wh[None, :], wl[None, :]))
+            comb = jax.tree_util.tree_map(lambda a: a[:, None], dd.sum_dd(*terms, axis=1))
             big_q = jax.tree_util.tree_map(lambda a: a[0], tj.T36.unflat(comb))
             alpha = vpa_dd.alpha_dd(lev.alpha)
             lnil = dd.csub(tj.analytic._cscale(lr, jnp.asarray(float(lev.k1))),
