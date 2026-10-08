@@ -43,7 +43,8 @@ def build(values, mu, tol=1e-15, block=256, verbose=False):
     `values` is a list of dd pairs (N, n_l), one for each level in order, and `mu`
     the FP64 measure of the build points. The first level comes first, so every
     prefix of the levels spans the same functions as those levels alone. A
-    function whose new part is below `tol` of its norm does not enter.
+    function whose new part is below `tol` of its norm does not enter. With host
+    arrays in `values`, the device holds the values of one level at a time.
     """
     n_pts = values[0][0].shape[0]
     room = sum(v[0].shape[1] for v in values)
@@ -53,6 +54,7 @@ def build(values, mu, tol=1e-15, block=256, verbose=False):
     sel, level, vecs, norms, ratios = [], [], [], [], []
     start = time.perf_counter()
     for lev, cand in enumerate(values):
+        cand = jtu.tree_map(jnp.asarray, cand)
         size = jnp.sqrt(jnp.sum(weight[:, None] * cand[0] ** 2, axis=0))
         picks, cols, ncur = arnoldi_dd._pivoted_dd(cols, ncur, weight, cand, size,
                                                    cand[0].shape[1], tol)

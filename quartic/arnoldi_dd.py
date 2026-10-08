@@ -112,11 +112,12 @@ def _cols_matmul(cols, x, nb):
     return acc
 
 
-@partial(jax.jit, static_argnames=('nb',))
+@partial(jax.jit, static_argnames=('nb',), donate_argnums=(0, 1, 2))
 def _pick_dd(cols, coef, cand, weight, alive, idx, ncur, nb=None):
     """One step of the pivoted Gram-Schmidt in dd, on arrays of fixed shape.
 
-    `nb` column blocks of `cols` hold the columns built so far.
+    `nb` column blocks of `cols` hold the columns built so far. The step donates cols,
+    coef and cand, so the device holds one copy of each.
     """
     take = lambda tree, i, ax: jtu.tree_map(lambda a: jnp.take(a, i, axis=ax), tree)
     c = take(cand, idx, 1)                                                # (N,)

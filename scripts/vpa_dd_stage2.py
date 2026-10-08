@@ -602,6 +602,8 @@ def main():
     else:
         jbuild = cf.load_points(args.n_build, args.build_seed)
         values = level_values(lay0, parts0, s1, levels, jbuild, args.chunk)
+        # Host copies, so that the joint build holds the values of one level at a time.
+        values = [tuple(np.asarray(a) for a in v) for v in values]
         say(f'dd values of every second-stage level at {args.n_build} build points in '
             f'{time.perf_counter() - t1:.0f}s')
         t1 = time.perf_counter()
