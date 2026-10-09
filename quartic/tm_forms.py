@@ -148,8 +148,14 @@ def level_blocks(forms, k1):
     return [(rp, groups[gi][0], c) for (rp, gi), c in acc.items()]
 
 
-def times_radius(p2, q):
-    """Q_e of the form times abs(z)^2 = 1 + t_0 w_0 + t_1 w_1 + z_2 w_2."""
+def times_radius(p2, q, cur):
+    """Q_e of a form of degree cur times abs(z)^2 = 1 + t_0 w_0 + t_1 w_1 + z_2 w_2.
+
+    Q_e has rows of degree <= cur - e, so each product stays inside the space if
+    cur + 1 <= p2.d.
+    """
+    if cur + 1 > p2.d:
+        raise ValueError('the degree of the space is too small for abs(z)^2')
     n = p2.size
     shifts = []
     for axis in range(2):
@@ -159,8 +165,6 @@ def times_radius(p2, q):
             f[axis] += 1
             if sum(f) <= p2.d:
                 s[p2.index[tuple(f)], i] = 1
-            elif any(q[k][i, j] != 0 for k in range(4) for j in range(n)):
-                raise ValueError('the degree of the space is too small for abs(z)^2')
         shifts.append(s)
     um = p2.u_m()
     u = arb_mat(n, n)
@@ -200,19 +204,25 @@ def to_dd(q):
     return hi, lo, rad
 
 
-def chart_forms(data, forms, prec=256):
-    """Q_e of the base (degree k0) and of each M_L (degree 20) in the chart, as dd + radius."""
+def chart_forms_arb(data, forms, prec=256):
+    """Q_e of the base (degree k0) and of each M_L (degree top) in the chart, as arb_mat."""
     flint.ctx.prec = prec
     k0 = int(data['k0'])
     top = int(max(forms['k1']))
     out = {'k0': k0, 'top': top, 'levels': [int(x) for x in forms['k1']]}
-    pb = Poly2(k0)
-    qb = form_q(pb, base_blocks(data))
-    out['base'] = [to_dd(x) for x in qb]
+    out['base'] = form_q(Poly2(k0), base_blocks(data))
     p2 = Poly2(top)
     for k1 in out['levels']:
         q = form_q(p2, level_blocks(forms, k1))
-        for _ in range(top - k1):
-            q = times_radius(p2, q)
-        out[f'M{k1}'] = [to_dd(x) for x in q]
+        for cur in range(k1, top):
+            q = times_radius(p2, q, cur)
+        out[f'M{k1}'] = q
+    return out
+
+
+def chart_forms(data, forms, prec=256):
+    """The same forms as dd + radius."""
+    out = chart_forms_arb(data, forms, prec)
+    for key in ['base'] + [f'M{k1}' for k1 in out['levels']]:
+        out[key] = [to_dd(x) for x in out[key]]
     return out
