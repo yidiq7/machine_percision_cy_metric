@@ -90,19 +90,34 @@ def main():
                     help='the largest k with a full model of F_k; the rest enter by a bound')
     ap.add_argument('--repeat', type=int, default=1, help='copies of each box, for the timing')
     ap.add_argument('--deltas', type=float, nargs='+', default=[0.005, 0.01, 0.02, 0.03])
+    ap.add_argument('--cover', type=str, default='',
+                    help='take the boxes from the cells of a cover (with --ref and --ncell)')
+    ap.add_argument('--ref', type=int, default=0)
+    ap.add_argument('--ncell', type=int, default=4)
     ap.add_argument('--fref', type=str, default='',
                     help='reference values of f(c), separated by commas')
     args = ap.parse_args()
     args.fref = [float(x) for x in args.fref.split(',') if x]
     print(cp.cuda.runtime.getDeviceProperties(0)['name'], flush=True)
+    if args.cover:
+        cov = np.load(args.cover)
+        idx = np.flatnonzero(cov['ref'] == args.ref)
+        pick = idx[np.linspace(0, len(idx) - 1, min(args.ncell, len(idx))).astype(int)]
+        args.centers = [args.ref]
     for ci in args.centers:
         local = tc.local_on_gpu(Path(args.local) / f'center_{ci}.npz')
         k0 = int(local['k0'])
         local_host = np.load(Path(args.local) / f'center_{ci}.npz')
         cdd = [list(local_host['c'][i]) for i in range(2)]
+        if args.cover:
+            centers = [[list(x) for x in cov['centers'][i]] for i in pick]
+            args.deltas = [float(cov['deltas'][i]) for i in pick]
+            off = [max(abs(tc.dd_mp(c[k]) - tc.dd_mp(cdd[k])) for k in range(2)) for c in centers]
+            print(f'reference {ci}: cells {list(pick)}, offsets {[f"{float(o):.3f}" for o in off]}',
+                  flush=True)
         deltas = list(args.deltas) * args.repeat
         nb = len(deltas)
-        fr = tc.make_frames([cdd] * nb, k0)
+        fr = tc.make_frames(centers * args.repeat if args.cover else [cdd] * nb, k0)
         for n in args.orders:
             if args.repeat > 1:
                 tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax)
