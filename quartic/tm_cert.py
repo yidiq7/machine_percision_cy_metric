@@ -30,7 +30,7 @@ import numpy as np
 import cupy as cp
 import mpmath as mp
 
-from . import tmc, ddgemm
+from . import tmc, tmtd, ddgemm
 
 U2 = tmc.U2
 SAFE = tmc.SAFE
@@ -65,6 +65,11 @@ class Frames:
     a4: cp.ndarray = None  # (3, 4, B): 4 p_k
     h_err: cp.ndarray = None   # (6, B): the errors of ha (3), abs(1 - c1inv c1), and the
                                # largest errors of a6 and a4
+    ha_td: cp.ndarray = None   # (3, 6, B), and the next three: the same constants in td,
+    a6_td: cp.ndarray = None   # with kappa = 1 - c1inv c1 and the errors of the td roundings
+    a4_td: cp.ndarray = None
+    kappa_td: cp.ndarray = None
+    h_err_td: cp.ndarray = None
 
 
 def make_frames(centers, k0):
@@ -74,21 +79,25 @@ def make_frames(centers, k0):
     arithmetic, so the boxes and the cover (scripts/cert_cover.py) use the same frame.
     """
     from .tm_frame import frame
-    keys = ('p', 'e', 'n', 'c1inv', 'vol', 'ha', 'a6', 'a4')
+    keys = ('p', 'e', 'n', 'c1inv', 'vol', 'ha', 'a6', 'a4', 'ha_td', 'a6_td', 'a4_td',
+            'kappa_td')
     cols = {k: [] for k in keys}
-    errs, host, herr = [], [], []
+    errs, host, herr, herr_td = [], [], [], []
     for t in centers:
         f = frame(t, k0)
         for k in keys:
             cols[k].append(f[k])
         errs.append(f['vol_err'])
         herr.append(f['h_err'])
+        herr_td.append(f['h_err_td'])
         host.append(dict(p=[dd_mp(v) for v in f['p']], e=[[dd_mp(v) for v in row] for row in f['e']],
                          n=[dd_mp(v) for v in f['n']], c1inv=dd_mp(f['c1inv']), w=dd_mp(f['vol'])))
     to = lambda key: cp.asarray(np.moveaxis(np.array(cols[key], dtype=np.float64), 0, -1))
     return Frames(p=to('p'), e=to('e'), n=to('n'), c1inv=to('c1inv'), vol=to('vol'),
                   vol_err=cp.asarray(np.array(errs)), host=host, ha=to('ha'), a6=to('a6'),
-                  a4=to('a4'), h_err=cp.asarray(np.array(herr).T))
+                  a4=to('a4'), h_err=cp.asarray(np.array(herr).T), ha_td=to('ha_td'),
+                  a6_td=to('a6_td'), a4_td=to('a4_td'), kappa_td=to('kappa_td'),
+                  h_err_td=cp.asarray(np.array(herr_td).T))
 
 
 def neg(k):
@@ -519,6 +528,228 @@ def delta_form(sp4, sp_low, mats, q, q_rad, q_abs, delta, dl, bdl, td=False):
     return s
 
 
+# ---- The td chain: h, the offsets, the monomials, the re-expansion and the compositions
+# in triple-double, for local forms stored in td (tm_local_forms.py --td). Near a reference
+# center's edge the forms cancel by up to 1e6, and dd errors of these steps grow by as much.
+
+def lin_tmt(sp, p6, e0, e1, delta):
+    """p + e0 tau_0 + e1 tau_1 as a td model, from td numbers (6, B): exact."""
+    c = cp.zeros((6, sp.size, delta.shape[0]))
+    c[:, 0, :] = p6
+    c[:, sp.index[(1, 0)], :] = e0
+    c[:, sp.index[(0, 1)], :] = e1
+    return tmtd.TMT(c, cp.zeros_like(delta), delta)
+
+
+def implicit_h_td(sp, fr, delta, hmax=None):
+    """`implicit_h` with the map T(h) = kappa h - A(tau) - c1inv N(w) in td arithmetic.
+
+    The residual of the td model of h, with the errors of the td constants of the frame,
+    gives rho; the contraction factors come from the dd models, as bounds. Returns the dd
+    models ys, rho, lam, the td model of h, its dd model, and lam_big.
+    """
+    b = delta.shape[0]
+    T6 = tmtd.tconst
+    zero6 = cp.zeros((6, b))
+    lin0 = [lin_tmt(sp, zero6, T6(fr.e[0, k], b), T6(fr.e[1, k], b), delta) for k in range(3)]
+    a_tau = lin_tmt(sp, fr.ha_td[0], fr.ha_td[1], fr.ha_td[2], delta)
+    n6 = [T6(fr.n[k], b) for k in range(3)]
+    c1inv6 = T6(fr.c1inv, b)
+
+    def t_map(h):
+        ws = [tmtd.add(sp, lin0[k], tmtd.scale(sp, h, n6[k])) for k in range(3)]
+        nw = None
+        for k in range(3):
+            inner = tmtd.add_const(sp, tmtd.mul(sp, ws[k], tmtd.add_const(sp, ws[k], fr.a4_td[k])),
+                                   fr.a6_td[k])
+            term = tmtd.mul(sp, tmtd.mul(sp, ws[k], ws[k]), inner)
+            nw = term if nw is None else tmtd.add(sp, nw, term)
+        rest = tmtd.add(sp, a_tau, tmtd.scale(sp, nw, c1inv6))
+        return tmtd.sub(sp, tmtd.scale(sp, h, fr.kappa_td), rest), ws
+
+    h = tmtd.TMT(cp.zeros((6, sp.size, b)), cp.zeros(b), delta)
+    for _ in range(sp.n + 2):
+        h, _ = t_map(h)
+        h = tmtd.TMT(h.c, cp.zeros(b), delta)
+    th, ws = t_map(h)
+    bw = [tmtd.bound(sp, w) for w in ws]
+    iabs = tmc.abs_ub(fr.c1inv[:, None, :])[0]
+    he = fr.h_err_td
+    eps = (he[0] + (he[1] + he[2]) * delta + he[3] * tmtd.bound(sp, h)
+           + iabs * sum(he[4] * x ** 2 + he[5] * x ** 3 for x in bw)) * SAFE
+    bd = (tmtd.bound(sp, tmtd.sub(sp, th, h)) + eps) * SAFE
+    h_dd = tmtd.to_dd(sp, h)
+    lin = [lin_tm(sp, fr.p[k], fr.e[0, k], fr.e[1, k], delta) for k in range(3)]
+    ys = [tmc.add(sp, lin[k], tmc.scale(sp, h_dd, fr.n[k])) for k in range(3)]
+    dp = None
+    for k in range(3):
+        cube = tmc.mul(sp, tmc.mul(sp, ys[k], ys[k]), ys[k])
+        term = tmc.scale(sp, cube, 4 * fr.n[k])
+        dp = term if dp is None else tmc.add(sp, dp, term)
+    lam0 = tmc.bound(sp, tmc.add_const(sp, tmc.scale(sp, dp, -fr.c1inv), tmc.cconst(1, b)))
+    by = [tmc.bound(sp, y) for y in ys]
+    nabs = [tmc.abs_ub(fr.n[k][:, None, :])[0] for k in range(3)]
+    ok = lam0 < 1
+    r = cp.where(ok, 2 * bd / cp.where(ok, 1 - lam0, 1.0), cp.inf) * SAFE
+    second = sum(12 * nabs[k] ** 2 * (by[k] + r * nabs[k]) ** 2 for k in range(3))
+    lam = (lam0 + r * second * iabs) * SAFE
+    good = ok & (lam < 1) & ((bd + lam * r) * SAFE <= r)
+    rho = cp.where(good, r, cp.inf)
+    lam_big = cp.full(b, cp.nan)
+    if hmax is not None:
+        big = (cp.asarray(hmax) + tmc.bound(sp, h_dd) + r) * SAFE
+        second_big = sum(12 * nabs[k] ** 2 * (by[k] + big * nabs[k]) ** 2 for k in range(3))
+        lam_big = (lam0 + big * second_big * iabs) * SAFE
+        rho = cp.where(lam_big < 1, rho, cp.inf)
+    h_td = tmtd.TMT(h.c, rho, delta)
+    h_dd = tmc.TM(h_dd.c, (h_dd.rem + rho) * SAFE, delta)
+    ys = [tmc.add(sp, lin[k], tmc.scale(sp, h_dd, fr.n[k])) for k in range(3)]
+    return ys, rho, lam, h_td, h_dd, lam_big
+
+
+def offset_models_td(sp, fr, h_td, h_dd, ref, delta):
+    """`offset_models` with td models of t_i - ref_i; v = y_2 - p_2 stays dd."""
+    b = delta.shape[0]
+    out = []
+    for i in range(2):
+        vals = [hb['p'][i] - ref[i] for hb in fr.host]
+        dp = _to_dd(vals)
+        err = cp.asarray(np.array([float(abs(dd_mp(mp_dd(v)) - v)) * (1 + 1e-9) + 1e-300
+                                   for v in vals]))
+        x = tmtd.add(sp, lin_tmt(sp, tmtd.tconst(dp, b), tmtd.tconst(fr.e[0, i], b),
+                                 tmtd.tconst(fr.e[1, i], b), delta),
+                     tmtd.scale(sp, h_td, tmtd.tconst(fr.n[i], b)))
+        out.append(tmtd.TMT(x.c, (x.rem + err) * SAFE, x.delta))
+    v = tmc.add(sp, lin_tm(sp, cp.zeros((4, b)), fr.e[0, 2], fr.e[1, 2], delta),
+                tmc.scale(sp, h_dd, fr.n[2]))
+    return out, v
+
+
+def _batched_mul_td(sp, xs, ys):
+    """The products xs[i] ys[i] of lists of td models, in one call."""
+    b = xs[0].delta.shape[0]
+    cat = lambda ms: tmtd.TMT(cp.concatenate([m.c for m in ms], axis=2),
+                              cp.concatenate([m.rem for m in ms]),
+                              cp.concatenate([m.delta for m in ms]))
+    z = tmtd.mul(sp, cat(xs), cat(ys))
+    return [tmtd.TMT(z.c[:, :, i * b:(i + 1) * b], z.rem[i * b:(i + 1) * b],
+                     z.delta[i * b:(i + 1) * b]) for i in range(len(xs))]
+
+
+def monomial_mats_td(sp2, sp_low, base_t, top):
+    """`monomial_mats` (one block, e = 0) with td models: Y is (B, 6, S_low, n_top)."""
+    from .tm_forms import Poly2
+    p2 = Poly2(top)
+    b = base_t[0].delta.shape[0]
+    one = cp.zeros((6, b))
+    one[0] = 1.0
+    mono = {(0, 0): tmtd.const(sp2, one, base_t[0].delta)}
+    for d in range(1, top + 1):
+        layer = [(d - j, j) for j in range(d + 1)]
+        srcs = [mono[(a - 1, c)] if a else mono[(0, c - 1)] for a, c in layer]
+        facs = [base_t[0] if a else base_t[1] for a, c in layer]
+        for m, x in zip(layer, _batched_mul_td(sp2, srcs, facs)):
+            mono[m] = x
+    low = sp_low.size
+    deg = cp.asarray(sp2.deg)
+    pw = base_t[0].delta[None, :] ** deg[:, None]
+    is_low = cp.asarray((sp2.deg <= sp_low.n).astype(np.float64))[:, None]
+    tms = [mono[m] for m in p2.mons]
+    cs = cp.stack([t.c for t in tms], axis=2)                 # (6, S2, n_top, B)
+    a = tmtd.abs_ub(cs.reshape(6, sp2.size, -1)).reshape(sp2.size, len(tms), b)
+    w = a * pw[:, None, :]
+    b_low = (cp.sum(w * is_low[:, :, None], axis=0)) * SAFE
+    b_high = (cp.sum(w * (1 - is_low)[:, :, None], axis=0)) * SAFE
+    rem = cp.stack([t.rem for t in tms])
+    y = cp.moveaxis(cs[:, :low], -1, 0)                       # (B, 6, low, n_top)
+    onehot = cp.asarray((sp2.deg[:, None] == np.arange(sp2.n + 1)[None, :]).astype(np.float64))
+    gdeg = cp.einsum('sab,sd->adb', w, onehot) * SAFE
+    return [(cp.ascontiguousarray(y), b_low, b_high, rem, gdeg)]
+
+
+def _td_parts(v):
+    """A complex mpmath number as td limbs (6,) and a bound of the distance to it."""
+    out, err = [], 0.0
+    for part in (v.real, v.imag):
+        h = float(part)
+        m = float(part - h)
+        lo = float(part - h - m)
+        out += [h, m, lo]
+        err += float(abs(part - h - m - lo))
+    return out, err * (1 + 1e-9) + 1e-300
+
+
+def reexpand_td(local, zeta_host, k_max, top, tag='j'):
+    """`reexpand` with td weights (from 100-digit mpmath, whose error is far below u^3) and
+    td local forms; returns td matrices (B, 6, n, n) of F_k with rad and abs."""
+    b = len(zeta_host)
+    nm = top + 1
+    w = np.zeros((b, 6, k_max + 1, nm))
+    werr = np.zeros((b, k_max + 1, nm))
+    wabs = np.zeros((b, k_max + 1, nm))
+    for i, z in enumerate(zeta_host):
+        for k in range(k_max + 1):
+            for m in range(k, nm):
+                v = (1 + z) ** k * math.comb(m, k) * z ** (m - k)
+                w[i, :, k, m], werr[i, k, m] = _td_parts(v)
+                wabs[i, k, m] = float(abs(v)) * (1 + 1e-12)
+    wd, wa, we = cp.asarray(w), cp.asarray(wabs), cp.asarray(werr)
+    out = [[None] * 4 for _ in range(k_max + 1)]
+    for e in range(4):
+        n = local[f'mt0_{tag}{e}'].shape[-1]
+        mt = cp.stack([local[f'mt{m}_{tag}{e}'].reshape(6, n * n) for m in range(nm)], axis=1)
+        q, qerr = ddgemm.zgemm_tt(wd, mt[None], mode=0, out_td=True)  # (B, 6, K+1, n*n)
+        ma = cp.stack([local[f'mt{m}_{tag}{e}_abs'].reshape(n * n) for m in range(nm)])
+        mr = cp.stack([local[f'mt{m}_{tag}{e}_rad'].reshape(n * n) for m in range(nm)])
+        absq = cp.matmul(wa, ma) * SAFE
+        rad = (cp.matmul(wa, mr) + cp.matmul(we, ma) + qerr) * SAFE
+        for k in range(k_max + 1):
+            out[k][e] = (cp.ascontiguousarray(q[:, :, k].reshape(b, 6, n, n)),
+                         rad[:, k].reshape(b, n, n), absq[:, k].reshape(b, n, n))
+        del q, qerr
+    return out
+
+
+def compose_td(sp4, sp_low, mats, q, q_rad, q_abs, delta):
+    """`compose` for one block with td models and a td form: T = Y Q in td, W = T Y^H to dd.
+
+    The rounding is the running bound of the two products: that of T enters W through
+    abs(Y), that of W directly, each weighted by delta^deg.
+    """
+    n = q.shape[-1]
+    b = delta.shape[0]
+    y, b_low, b_high, r = mats[0][:4]
+    y = cp.ascontiguousarray(y[:, :, :, :n])
+    b_low, b_high, r = b_low[:n], b_high[:n], r[:n]
+    t, terr = ddgemm.zgemm_tt(y, q, mode=0, out_td=True)
+    w, werr = ddgemm.zgemm_tt(t, y, mode=1, out_td=False)
+    del t
+    pw = delta[:, None] ** cp.asarray(sp_low.deg)[None, :]   # (B, low)
+    rnd = (cp.einsum('bi,bic,cb->b', pw, terr, b_low) + cp.einsum('bi,bij,bj->b', pw, werr, pw)) * SAFE
+    quad = lambda u, m, v: cp.matmul(cp.matmul(u.T[:, None, :], m), v.T[:, :, None])[:, 0, 0]
+    qa = cp.broadcast_to(q_abs, (b, n, n))
+    qr = cp.broadcast_to(q_rad, (b, n, n))
+    full = b_low + b_high + r
+    ab = quad(b_low, qa, b_low)
+    parts = {'round': rnd, 'high': 2 * quad(b_high, qa, b_low) + quad(b_high, qa, b_high),
+             'models': 2 * quad(r, qa, b_low + b_high) + quad(r, qa, r),
+             'radius': quad(full, qr, full), 'sums': cp.zeros(b), 'abs': ab}
+    rem = (parts['round'] + parts['high'] + parts['models'] + parts['radius']) * SAFE
+    out = _from_bidegree(sp4, sp_low, w, rem * SAFE, delta)
+    out.parts = parts
+    return out
+
+
+def delta_form_td(sp4, sp_low, mats, q, q_rad, q_abs, delta, dl, bdl):
+    """`delta_form` with compose_td."""
+    ws = [compose_td(sp4, sp_low, mats, q[j], q_rad[j], q_abs[j], delta) for j in range(4)]
+    s = ws[3]
+    for j in (2, 1, 0):
+        s = tmc.add(sp4, ws[j], tmc.mul(sp4, dl, s))
+    s.parts = {key: sum(ws[j].parts[key] * bdl ** j for j in range(4)) for key in ws[0].parts}
+    return s
+
+
 def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hmax=None):
     """The model of f on a batch of boxes that share the reference center of `local`.
 
@@ -536,16 +767,27 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hma
     sp2, sp_low, sp4 = _space(2, ny), _space(2, n), _space(4, n)
     info = {}
     clock = _Clock()
-    # The forms are sums over e of abs(y_2)^(2e) Q_e, or over j of Delta^j R_j.
+    # The forms are sums over e of abs(y_2)^(2e) Q_e, or over j of Delta^j R_j; local
+    # forms stored in td (6 parts) take the td chain.
     mode_j = 's2' in local
     tag = 'j' if mode_j else 'e'
-    ys, rho, lam, hm, lam_big = implicit_h(sp2, fr, d_phi, hmax)
+    chain = int(local.get('parts', 4)) == 6
+    if chain and not mode_j:
+        raise ValueError('the td chain needs the forms in Delta (tm_local_forms.py --delta)')
+    cref = [dd_mp(cp.asnumpy(cp.asarray(local['c']))[i]) for i in range(2)]
+    if chain:
+        ys, rho, lam, h_td, hm, lam_big = implicit_h_td(sp2, fr, d_phi, hmax)
+        base_t, v2 = offset_models_td(sp2, fr, h_td, hm, cref, d_phi)
+    else:
+        ys, rho, lam, hm, lam_big = implicit_h(sp2, fr, d_phi, hmax)
+        base_t, v2 = offset_models(sp2, fr, hm, cref, d_phi)
     info['rho_h'], info['lam_h'], info['lam_big'] = rho, lam, lam_big
     yc = [conj_tm(y) for y in ys]
-    cref = [dd_mp(cp.asnumpy(cp.asarray(local['c']))[i]) for i in range(2)]
-    base_t, v2 = offset_models(sp2, fr, hm, cref, d_phi)
     clock('h')
-    mats = monomial_mats(sp2, sp_low, base_t, None if mode_j else ys[2], top)
+    if chain:
+        mats = monomial_mats_td(sp2, sp_low, base_t, top)
+    else:
+        mats = monomial_mats(sp2, sp_low, base_t, None if mode_j else ys[2], top)
     dls, bdl = {}, None
     if mode_j:
         dls[n] = delta_model(sp4, sp2, fr, v2, local, d_phi)
@@ -558,6 +800,8 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hma
             return compose(sp4k, splk, mk, q, rr, aa, d_phi, td)
         if sp4k.n not in dls:
             dls[sp4k.n] = tmc.truncate(sp4k, sp4, dls[n])
+        if chain:
+            return delta_form_td(sp4k, splk, mk, q, rr, aa, d_phi, dls[sp4k.n], bdl)
         return delta_form(sp4k, splk, mk, q, rr, aa, d_phi, dls[sp4k.n], bdl, td)
 
     # The base and abs(y)^2.
@@ -607,7 +851,8 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hma
 
     clock('base')
     # F_k for k <= k_max as models; the rest through a bound.
-    fq = reexpand(local, zeta, k_max, top, tag, td)
+    fq = (reexpand_td(local, zeta, k_max, top, tag) if chain
+          else reexpand(local, zeta, k_max, top, tag, td))
     clock('reexpand')
     # F_k enters psi as xi^k F_k, and xi is of degree 1 up to a rounding, so F_k needs
     # only the order n - (k - k_full) for k > k_full; the rest goes to its remainder.

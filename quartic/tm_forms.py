@@ -325,6 +325,31 @@ def to_dd_complex(q):
     return parts, rad, absb
 
 
+def to_td_complex(q):
+    """An acb_mat as (6, n, m) td parts (three limbs of re, then of im), an upper bound of
+    the distance to it, and abs bounds."""
+    n, m = q.nrows(), q.ncols()
+    parts = np.zeros((6, n, m))
+    rad = np.zeros((n, m))
+    absb = np.zeros((n, m))
+    for i in range(n):
+        for j in range(m):
+            x = q[i, j]
+            err = 0.0
+            for k, part in enumerate((x.real, x.imag)):
+                mid = part.mid()
+                h = float(mid)
+                md = float(mid - arb(h))
+                lo = float(mid - arb(h) - arb(md))
+                rest = abs(mid - arb(h) - arb(md) - arb(lo))
+                parts[3 * k, i, j], parts[3 * k + 1, i, j], parts[3 * k + 2, i, j] = h, md, lo
+                err += float(part.rad()) + float(rest.mid()) + float(rest.rad())
+            rad[i, j] = err * (1 + 1e-12) + 1e-300
+            a = abs(x)
+            absb[i, j] = (float(a.mid()) + float(a.rad())) * (1 + 1e-12)
+    return parts, rad, absb
+
+
 def delta_split(qs, s2):
     """R_j = sum over e >= j of C(e, j) s2^(e - j) Q_e, for j = 0..3.
 
@@ -341,7 +366,7 @@ def delta_split(qs, s2):
     return out
 
 
-def local_forms(cf, c, x0, s2=None):
+def local_forms(cf, c, x0, s2=None, td=False):
     """The base and the M~_m at x0, moved to t = c in arb, as dd parts, radii, abs bounds.
 
     M~_m = sum over L of C(L, m) x0^L N_L, with N_L the chart polynomials of the levels.
@@ -349,7 +374,7 @@ def local_forms(cf, c, x0, s2=None):
     F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m - k) M~_m, and these terms do
     not cancel, so the cancellation of the levels happens here in arb only.
     With an exact real s2, each form is written as R_j of `delta_split` (keys
-    `<name>_j<j>`) and not as Q_e (keys `<name>_e<e>`).
+    `<name>_j<j>`) and not as Q_e (keys `<name>_e<e>`). td stores three limbs (6 parts).
     """
     from flint import acb_mat
     out = {}
@@ -375,7 +400,7 @@ def local_forms(cf, c, x0, s2=None):
         if s2 is not None:
             qs = delta_split(qs, acb(s2))
         for e, q in enumerate(qs):
-            parts, rad, absb = to_dd_complex(q)
+            parts, rad, absb = (to_td_complex if td else to_dd_complex)(q)
             out[f'{name}_{tag}{e}'] = parts
             out[f'{name}_{tag}{e}_rad'] = rad
             out[f'{name}_{tag}{e}_abs'] = absb

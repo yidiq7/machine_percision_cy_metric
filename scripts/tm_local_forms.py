@@ -87,11 +87,12 @@ def one(job):
     x0 = from_dd(dd_of(exact((p0.real.log() * (-arb(1) / G['cf']['k0'])).exp())))
     # s2 is a dd number near abs(y2)^2, taken as exact; the GPU forms Delta = abs(y2)^2 - s2.
     s2 = from_dd(dd_of(exact(acb(abs(y2) ** 2)))).real if G['delta'] else None
-    out = tm_forms.local_forms(G['cf'], c, x0, s2)
+    out = tm_forms.local_forms(G['cf'], c, x0, s2, td=G['td'])
     out['c'] = np.array([t[0], t[1]])
     out['x0'] = np.array(dd_of(x0))
     if s2 is not None:
         out['s2'] = np.array(dd_of(acb(s2)))
+    out['parts'] = 6 if G['td'] else 4
     out['k0'] = G['cf']['k0']
     out['top'] = G['cf']['top']
     np.savez(Path(G['out']) / f'center_{i}.npz', **out)
@@ -116,8 +117,11 @@ def main():
     ap.add_argument('--procs', type=int, default=4)
     ap.add_argument('--delta', action='store_true',
                     help='write each form as R_j in Delta = abs(y2)^2 - s2 (tm_forms.delta_split)')
+    ap.add_argument('--td', action='store_true', help='store three limbs (td) of each entry')
+    ap.add_argument('--only', type=int, nargs='*', default=None,
+                    help='only these indices of the centers; the files keep the indices')
     args = ap.parse_args()
-    G['prec'], G['out'], G['delta'] = args.prec, args.out, args.delta
+    G['prec'], G['out'], G['delta'], G['td'] = args.prec, args.out, args.delta, args.td
     Path(args.out).mkdir(parents=True, exist_ok=True)
     flint.ctx.prec = args.prec
     data, forms = np.load(args.data), np.load(args.forms)
@@ -135,6 +139,8 @@ def main():
         for c in np.load(args.centers)['ref_centers']:
             centers.append([list(c[0]), list(c[1])])
     jobs = list(enumerate(centers))
+    if args.only is not None:
+        jobs = [jobs[i] for i in args.only]
     with multiprocessing.get_context('fork').Pool(args.procs) as pool:
         for i, sec in pool.imap_unordered(one, jobs):
             print(f'center {i} in {sec:.0f}s', flush=True)

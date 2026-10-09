@@ -65,6 +65,20 @@ def to_dd(x):
     return out, err
 
 
+def to_td(x):
+    """The td rounding of the midpoint of an acb ball (6 floats), and a bound of its
+    distance to x."""
+    out, err = [], 0.0
+    for part in (x.real, x.imag):
+        mid = part.mid()
+        h = float(mid)
+        m = float(mid - arb(h))
+        lo = float(mid - arb(h) - arb(m))
+        out += [h, m, lo]
+        err += upper(part - arb(h) - arb(m) - arb(lo))
+    return out, err
+
+
 def frame(c_dd, k0, prec=PREC):
     """The frame of the box at the dd center t = c_dd (two dd lists), with error bounds.
 
@@ -110,9 +124,18 @@ def frame(c_dd, k0, prec=PREC):
         a4 = [to_dd(4 * c) for c in p]
         h_err = [x[1] for x in ha_dd] + [upper(1 - c1inv * c1), max(x[1] for x in a6),
                                          max(x[1] for x in a4)]
+        # The same constants in td, and kappa = 1 - c1inv c1, for the td solve of h.
+        ha_td = [to_td(v) for v in ha]
+        a6_td = [to_td(6 * c ** 2) for c in p]
+        a4_td = [to_td(4 * c) for c in p]
+        kap_td = to_td(1 - c1inv * c1)
+        h_err_td = [x[1] for x in ha_td] + [kap_td[1], max(x[1] for x in a6_td),
+                                            max(x[1] for x in a4_td)]
         return dict(p=[list(c_dd[0]), list(c_dd[1]), p2_dd], e=e_dd, n=n_dd, c1inv=c1inv_dd,
                     vol=vol_dd, vol_err=vol_err, ha=[x[0] for x in ha_dd],
                     a6=[x[0] for x in a6], a4=[x[0] for x in a4], h_err=h_err,
+                    ha_td=[x[0] for x in ha_td], a6_td=[x[0] for x in a6_td],
+                    a4_td=[x[0] for x in a4_td], kappa_td=kap_td[0], h_err_td=h_err_td,
                     acb=dict(p=p, e=e, n=n, c1inv=c1inv, y2=y2))
     finally:
         ctx.prec = old
