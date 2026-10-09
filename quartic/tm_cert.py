@@ -345,7 +345,7 @@ def reexpand_abs(local, zeta_host, k, top):
     return out
 
 
-def box_f(fr, local, delta_box, n, ny, k_max=12, a=None):
+def box_f(fr, local, delta_box, n, ny, k_max=20, a=None):
     """The model of f on a batch of boxes that share the reference center of `local`.
 
     Returns f (on delta_f), the radii (box, f, Phi) and the parts of the remainder.

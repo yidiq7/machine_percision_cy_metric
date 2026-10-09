@@ -86,7 +86,9 @@ def main():
     ap.add_argument('--centers', type=int, nargs='+', default=[0, 1, 2])
     ap.add_argument('--orders', type=int, nargs='+', default=[16, 20])
     ap.add_argument('--ny-extra', type=int, default=6)
-    ap.add_argument('--kmax', type=int, default=12)
+    ap.add_argument('--kmax', type=int, default=20,
+                    help='the largest k with a full model of F_k; the rest enter by a bound')
+    ap.add_argument('--repeat', type=int, default=1, help='copies of each box, for the timing')
     ap.add_argument('--deltas', type=float, nargs='+', default=[0.005, 0.01, 0.02, 0.03])
     ap.add_argument('--fref', type=str, default='',
                     help='reference values of f(c), separated by commas')
@@ -98,12 +100,13 @@ def main():
         k0 = int(local['k0'])
         local_host = np.load(Path(args.local) / f'center_{ci}.npz')
         cdd = [list(local_host['c'][i]) for i in range(2)]
-        nb = len(args.deltas)
+        deltas = list(args.deltas) * args.repeat
+        nb = len(deltas)
         fr = tc.make_frames([cdd] * nb, k0)
         for n in args.orders:
             cp.cuda.Device().synchronize()
             t0 = time.perf_counter()
-            f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, args.deltas, n,
+            f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, deltas, n,
                                                       n + args.ny_extra, args.kmax)
             sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
             cp.cuda.Device().synchronize()
