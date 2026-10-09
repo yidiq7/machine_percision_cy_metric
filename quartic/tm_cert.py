@@ -169,10 +169,16 @@ def monomial_mats(sp2, sp_low, ys, cr, top, n_list):
     p2 = Poly2(top)
     b = ys[0].delta.shape[0]
     base_t = [tmc.add_const(sp2, ys[i], -cr[i][:, None].repeat(b, axis=1)) for i in range(2)]
+    # The monomials of one degree come from those of the degree below in one product,
+    # with the monomials stacked along the batch axis.
     mono = {(0, 0): tmc.const(sp2, tmc.cconst(1, b), ys[0].delta)}
-    for e in p2.mons[1:]:
-        mono[e] = (tmc.mul(sp2, mono[(e[0] - 1, e[1])], base_t[0]) if e[0]
-                   else tmc.mul(sp2, mono[(0, e[1] - 1)], base_t[1]))
+    for d in range(1, top + 1):
+        layer = [(d - j, j) for j in range(d + 1)]
+        srcs = [mono[(a - 1, c)] if a else mono[(0, c - 1)] for a, c in layer]
+        facs = [base_t[0] if a else base_t[1] for a, c in layer]
+        prod = _batched_mul(sp2, srcs, facs)
+        for m, x in zip(layer, prod):
+            mono[m] = x
     y2e = [None, ys[2], tmc.mul(sp2, ys[2], ys[2])]
     y2e.append(tmc.mul(sp2, y2e[2], ys[2]))
     low = sp_low.size
@@ -180,8 +186,9 @@ def monomial_mats(sp2, sp_low, ys, cr, top, n_list):
     pw = ys[0].delta[None, :] ** deg[:, None]                 # (S2, B)
     is_low = cp.asarray((sp2.deg <= sp_low.n).astype(np.float64))[:, None]
     out = []
+    monos = [mono[m] for m in p2.mons]
     for e in range(4):
-        tms = [mono[m] if e == 0 else tmc.mul(sp2, y2e[e], mono[m]) for m in p2.mons]
+        tms = monos if e == 0 else _batched_mul(sp2, [y2e[e]] * len(monos), monos)
         cs = cp.stack([t.c for t in tms], axis=2)             # (4, S2, n_top, B)
         a = tmc.abs_ub(cs.reshape(4, sp2.size, -1)).reshape(sp2.size, len(tms), b)
         w = a * pw[:, None, :]
@@ -194,6 +201,17 @@ def monomial_mats(sp2, sp_low, ys, cr, top, n_list):
         gdeg = cp.einsum('sab,sd->adb', w, onehot) * SAFE     # (n_top, ny + 1, B)
         out.append((cp.ascontiguousarray(y), b_low, b_high, rem, gdeg))
     return out
+
+
+def _batched_mul(sp, xs, ys):
+    """The products xs[i] ys[i] of lists of models, in one call with the batches stacked."""
+    b = xs[0].delta.shape[0]
+    cat = lambda ms: tmc.TM(cp.concatenate([m.c for m in ms], axis=2),
+                            cp.concatenate([m.rem for m in ms]),
+                            cp.concatenate([m.delta for m in ms]))
+    z = tmc.mul(sp, cat(xs), cat(ys))
+    return [tmc.TM(z.c[:, :, i * b:(i + 1) * b], z.rem[i * b:(i + 1) * b],
+                   z.delta[i * b:(i + 1) * b]) for i in range(len(xs))]
 
 
 def mats_at(mats, sp_k):
@@ -285,36 +303,37 @@ def _from_bidegree(sp4, sp_low, w, rem, delta, tail_done=False):
 def reexpand(local, zeta_host, k_max, top):
     """Per box: the matrices of F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m-k) M~_m.
 
-    The weights are formed in mpmath and rounded to dd (2 u^2 each); the products (16 u^2)
-    and sums (3.1 u^2 of the partial sums) run on the GPU. Returns, for each k <= k_max,
-    a list over e of (q (B, 4, n, n), rad (B, n, n), abs (B, n, n)); rad holds the radii
-    of the M~_m and all those roundings.
+    For each e this is one product of the weights (B, k_max + 1, top + 1), formed in
+    mpmath and rounded to dd (2 u^2 each), with the stacked M~_m (top + 1, n^2) by
+    `ddgemm.zgemm`. Returns, for each k <= k_max, a list over e of (q (B, 4, n, n),
+    rad (B, n, n), abs (B, n, n)); rad holds the radii of the M~_m, the rounding of the
+    weights and that of the product.
     """
     b = len(zeta_host)
-    out = []
-    for k in range(k_max + 1):
-        ms = list(range(k, top + 1))
-        ws = [cp.asarray(np.array([mp_dd((1 + z) ** k * math.comb(m, k) * z ** (m - k))
-                                   for z in zeta_host]).T) for m in ms]
-        ks = []
-        for e in range(4):
-            acc, rad, absq = None, None, None
-            for wv, m in zip(ws, ms):
-                qm = local[f'mt{m}_e{e}']                       # (4, n, n)
-                n = qm.shape[-1]
-                x = cp.ascontiguousarray(cp.broadcast_to(qm.reshape(4, n * n, 1), (4, n * n, b)))
-                term = tmc.scale_raw(x, wv)                     # (4, n*n, B)
-                wa = tmc.abs_ub(wv[:, None, :])[0]              # (B,)
-                ra = local[f'mt{m}_e{e}_rad'].reshape(n * n, 1) * wa[None, :]
-                aa = local[f'mt{m}_e{e}_abs'].reshape(n * n, 1) * wa[None, :]
-                acc = term if acc is None else tmc._axpy(acc, term, 1.0)
-                rad = ra if rad is None else rad + ra
-                absq = aa if absq is None else absq + aa
-            rad = (rad + (2 + 16 + 3.1 * len(ms)) * U2 * absq) * SAFE
-            q = cp.ascontiguousarray(cp.moveaxis(acc.reshape(4, n, n, b), -1, 0))
-            ks.append((q, cp.ascontiguousarray(cp.moveaxis(rad.reshape(n, n, b), -1, 0)),
-                       cp.ascontiguousarray(cp.moveaxis((absq * SAFE).reshape(n, n, b), -1, 0))))
-        out.append(ks)
+    nm = top + 1
+    w = np.zeros((b, 4, k_max + 1, nm))
+    wabs = np.zeros((b, k_max + 1, nm))
+    for i, z in enumerate(zeta_host):
+        for k in range(k_max + 1):
+            for m in range(k, nm):
+                v = (1 + z) ** k * math.comb(m, k) * z ** (m - k)
+                w[i, :, k, m] = mp_dd(v)
+                wabs[i, k, m] = float(abs(v)) * (1 + 1e-12)
+    wd = cp.asarray(w)
+    wa = cp.asarray(wabs)
+    g = ddgemm.gamma(nm)
+    out = [[None] * 4 for _ in range(k_max + 1)]
+    for e in range(4):
+        n = local[f'mt0_e{e}'].shape[-1]
+        mt = cp.stack([local[f'mt{m}_e{e}'].reshape(4, n * n) for m in range(nm)], axis=1)
+        q = ddgemm.zgemm(wd, mt[None], mode=0)                          # (B, 4, K+1, n*n)
+        ma = cp.stack([local[f'mt{m}_e{e}_abs'].reshape(n * n) for m in range(nm)])
+        mr = cp.stack([local[f'mt{m}_e{e}_rad'].reshape(n * n) for m in range(nm)])
+        absq = cp.matmul(wa, ma) * SAFE                                  # (B, K+1, n*n)
+        rad = (cp.matmul(wa, mr) + (g + 2 * U2) * absq) * SAFE
+        for k in range(k_max + 1):
+            out[k][e] = (cp.ascontiguousarray(q[:, :, k].reshape(b, 4, n, n)),
+                         rad[:, k].reshape(b, n, n), absq[:, k].reshape(b, n, n))
     return out
 
 
@@ -325,6 +344,14 @@ def local_on_gpu(path):
     for key in z.files:
         out[key] = cp.asarray(z[key]) if z[key].ndim >= 2 else z[key]
     return out
+
+
+def _series_order(eta, n, eps=1e-26):
+    """The number of terms with eta^(k+1) below eps for the largest eta of the batch."""
+    e = float(cp.max(eta))
+    if not 0 < e < 0.5:
+        return n
+    return int(min(n, max(4, math.ceil(math.log(eps) / math.log(e)) - 1)))
 
 
 def _host_dd(x):
@@ -408,7 +435,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
     s_r = _to_dd([1 / v for v in _host_dd(r2.c[:, 0, :])])
     yr = tmc.add_const(sp4, tmc.scale(sp4, r2, s_r), -one)
     eta_r = tmc.bound(sp4, yr)
-    pw_r = tmc.powers(sp4, yr, n)
+    pw_r = tmc.powers(sp4, yr, _series_order(eta_r, n))
     ir2 = tmc.scale(sp4, tmc.power_series(sp4, pw_r, -1, eta_r), s_r)
     log_r2 = tmc.log1p_series(sp4, pw_r, eta_r)
     cache = {1: ir2}
@@ -416,7 +443,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
     s_p = _to_dd([1 / v for v in _host_dd(pt.c[:, 0, :])])
     yp = tmc.add_const(sp4, tmc.scale(sp4, pt, s_p), -one)
     eta_p = tmc.bound(sp4, yp)
-    pw_p = tmc.powers(sp4, yp, n)
+    pw_p = tmc.powers(sp4, yp, _series_order(eta_p, n))
     xh = tmc.power_series(sp4, pw_p, Fraction(-1, k0), eta_p)
     log_pt = tmc.log1p_series(sp4, pw_p, eta_p)
     info.update(eta_r=eta_r, eta_p=eta_p, rem_p0=p0.rem / tmc.abs_ub(p0.c[:, :1, :])[0])
