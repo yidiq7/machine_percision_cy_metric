@@ -166,6 +166,7 @@ def form_tm(sp4, sp2, ys, q, absq, deltas):
     """
     w = None
     rem = np.zeros(len(deltas))
+    absb = np.zeros(len(deltas))
     n_p = q[0].nrows()
     for e in range(4):
         y_e, yh_e, b, r = ys[e]
@@ -174,6 +175,7 @@ def form_tm(sp4, sp2, ys, q, absq, deltas):
         b, r = b[:n_p], r[:n_p]
         rem += (2 * np.einsum('ad,ab,bd->d', r, absq[e], b)
                 + np.einsum('ad,ab,bd->d', r, absq[e], r))
+        absb += np.einsum('ad,ab,bd->d', b, absq[e], b)
     c = np.array([acb(0)] * sp4.size, dtype=object)
     for k, (a0, a1, b0, b1) in enumerate(sp4.mons):
         c[k] = w[sp2.index[(a0, a1)], sp2.index[(b0, b1)]]
@@ -184,7 +186,11 @@ def form_tm(sp4, sp2, ys, q, absq, deltas):
             if di + sp2.deg[j] > sp4.n:
                 big[di + sp2.deg[j]] += tb.ub(w[i, j])
     tail = np.array([float(np.sum(big * dl ** np.arange(big.size))) for dl in deltas])
-    return tb.TM(sp4, c, (rem + tail) * SLACK, deltas)
+    out = tb.TM(sp4, c, (rem + tail) * SLACK, deltas)
+    # The dd rounding of the two matrix products on the GPU would add about this much.
+    out.round_dd = 3 * (n_p + 20) * 8 * 2.0 ** -106 * absb
+    out.abs_ratio = absb / tb.ub(c[0])
+    return out
 
 
 def powers(y, k):
@@ -375,6 +381,11 @@ def run_box(job):
     vbar = 512 * arb.pi() ** 4 * k0 ** 2 / arb(0.25).gamma() ** 8
     f = (det * q4).scale(1 / (abs(u.det()) ** 2 * vbar)).add_const(-1)
     times['metric'] = time.perf_counter() - t1
+    bxi = xi.bound()
+    bir = ipow[top].bound()
+    round_psi = sum(fk[kk].round_dd * bxi ** kk for kk in range(top + 1)) * bir
+    round_phi = p0.round_dd / tb.ub(p0.c[0]) + round_psi
+    round_g = round_phi / (d_phi - d_f) ** 2
 
     t1 = time.perf_counter()
     small = float(dl.min())
@@ -403,7 +414,10 @@ def run_box(job):
             'rem_f0': fk[0].rem.tolist(), 'rem_psi': psi.rem.tolist(), 'rem_logpt': log_pt.rem.tolist(),
             'rem_logr2': log_r2.rem.tolist(), 'rem_phi': phi.rem.tolist(),
             'rem_g': g[0, 0].rem.tolist(), 'eta_r': eta_r.tolist(), 'eta_p': eta_p.tolist(),
-            'xi': xi.bound().tolist(), 'check_p': check_p, 'check_f0': check_f0,
+            'xi': bxi.tolist(), 'check_p': check_p, 'check_f0': check_f0,
+            'abs_p0': p0.abs_ratio.tolist(), 'abs_f0': fk[0].abs_ratio.tolist(),
+            'round_p0': (p0.round_dd / tb.ub(p0.c[0])).tolist(), 'round_psi': round_psi.tolist(),
+            'round_g': round_g.tolist(),
             'f_star': f_star, 'gap_star': gap_star, 'rem_star': float(f.rem[int(np.argmin(dl))]),
             'jacobian_rows': jac, 'times': times, 'seconds': time.perf_counter() - t_start}
 
@@ -476,6 +490,9 @@ def main():
                       f'{res["rem_logr2"][i]:.1e}, Phi {res["rem_phi"][i]:.1e}, g_00 '
                       f'{res["rem_g"][i]:.1e}; eta r2 {res["eta_r"][i]:.3f}, p~ '
                       f'{res["eta_p"][i]:.3f}, xi {res["xi"][i]:.1e}', flush=True)
+                print(f'        dd estimate: abs form over value p0 {res["abs_p0"][i]:.1e}, F_0 '
+                      f'{res["abs_f0"][i]:.1e}; rounding p0 {res["round_p0"][i]:.1e} rel, psi '
+                      f'{res["round_psi"][i]:.1e}, g {res["round_g"][i]:.1e}', flush=True)
     if args.out:
         np.save(args.out, np.array(results, dtype=object), allow_pickle=True)
 
