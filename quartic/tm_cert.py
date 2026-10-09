@@ -630,12 +630,31 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False):
     for m in set(orders):
         if m not in xis:
             xis[m] = tmc.truncate(_space(4, m), sp4, xi)
+    # The parts of the remainder of psi, carried through Horner's rule: the remainder of
+    # s enters each later step times the bound of xi.
+    split = {key: cp.zeros(b) for key in ('F_k', 'xi', 'xi cut', 'tails', 'rounding')}
+    split['F_k'] += fk[k_max].rem
     s = fk[k_max]
     for k in range(k_max - 1, -1, -1):
         spk = _space(4, orders[k])
         if orders[k + 1] < orders[k]:
             s = tmc.embed(spk, s)
-        s = tmc.add(spk, fk[k], tmc.mul(spk, xis[orders[k]], s))
+        xk = xis[orders[k]]
+        mp_ = tmc.mul_parts(spk, xk, s)
+        prod = tmc.mul(spk, xk, s)
+        for key in split:
+            split[key] = split[key] * mp_['bx']
+        split['xi'] += xi.rem * (mp_['by'] + s.rem)
+        split['xi cut'] += (xk.rem - xi.rem) * (mp_['by'] + s.rem)
+        split['tails'] += mp_['tail']
+        split['rounding'] += mp_['round'] + 4 * U2 * (tmc.poly_bound(spk, fk[k])
+                                                      + tmc.poly_bound(spk, prod))
+        split['F_k'] += fk[k].rem
+        s = tmc.add(spk, fk[k], prod)
+    info['psi_parts'] = split
+    info['xi_parts'] = dict(xi=xi.rem, xw=xw.rem, ir2=ir2.rem, xh=xh.rem, log_r2=log_r2.rem,
+                            yr=yr.rem, yp=yp.rem, pt=pt.rem / tmc.abs_ub(pt.c[:, :1, :])[0])
+    info['fk_rem'] = cp.stack([fk[k].rem * bxi ** k for k in range(k_max + 1)])
     psi = tmc.TM(s.c, (s.rem + tail * SAFE) * SAFE, s.delta)
     clock('level sum')
     phi = tmc.add(sp4, tmc.add(sp4, tmc.scale(sp4, log_r2, tmc.cconst(k0, b)), log_pt), psi)

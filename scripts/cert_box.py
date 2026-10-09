@@ -163,6 +163,15 @@ def main():
                       f'{pf["round"][i]:.1e}, above the order {pf["high"][i]:.1e}, models '
                       f'{pf["models"][i]:.1e}, radii {pf["radius"][i]:.1e}, sums {pf["sums"][i]:.1e}',
                       flush=True)
+            if 'psi_parts' in info:
+                pp = {k: cp.asnumpy(v) for k, v in info['psi_parts'].items()}
+                xp = {k: cp.asnumpy(v) for k, v in info['xi_parts'].items()}
+                fr_ = cp.asnumpy(info['fk_rem'])
+                for i, dl in enumerate(args.deltas):
+                    kk = int(np.argmax(fr_[:, i]))
+                    print(f'    psi at delta {dl:.4f}: ' + ', '.join(f'{k} {v[i]:.1e}' for k, v in pp.items())
+                          + f'; largest F_k rem xi^k at k = {kk}: {fr_[kk, i]:.1e} | xi parts: '
+                          + ', '.join(f'{k} {v[i]:.1e}' for k, v in xp.items()), flush=True)
             for i, dl in enumerate(args.deltas):
                 print(f'    delta {dl:.4f}: abs(f) <= {float(sup[i]):.2e} (center {float(c0[i]):.2e},'
                       f' polynomial {float(pb[i]):.2e}, remainder {h["rem_f"][i]:.2e}) | h '

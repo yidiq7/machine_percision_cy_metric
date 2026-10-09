@@ -342,6 +342,17 @@ def mul(sp, x, y, threads=64):
     return TM(z, rem, x.delta)
 
 
+def mul_parts(sp, x, y):
+    """The parts of the remainder that mul(sp, x, y) adds: the tail above the degree n,
+    the rounding, and the bounds bx, by of the two polynomial parts."""
+    sp.table()
+    gx, gy = graded(sp, x), graded(sp, y)
+    gxy = cp.einsum('ijd,ib,jb->db', sp.conv, gx, gy) * SAFE
+    return dict(tail=tail_g(gx, gy, x.delta, sp.n),
+                round=poly_bound_g(sp.gamma_deg[:, None] * gxy, x.delta),
+                bx=poly_bound_g(gx, x.delta), by=poly_bound_g(gy, x.delta))
+
+
 def powers(sp, y, k):
     """[1, y, y^2, ..., y^k]; y^j costs one product each."""
     b = y.delta.shape[0]
