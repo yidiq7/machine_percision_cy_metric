@@ -17,12 +17,15 @@ Usage, on one GPU node:
         --forms runs_tm/r20_forms.npz --points 2000 --boxes 8
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import mpmath as mp
 
+# The quartic package imports JAX, which would take most of the GPU memory from CuPy.
+os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -90,7 +93,8 @@ def check_cover(rec, cov, count):
 
 def check_dropped(cov, count):
     s = float(cov['side'])
-    kept = {tuple(np.round(np.asarray(lo) / s).astype(int)) for lo in cov['lo']}
+    side = mp.mpf(s)
+    kept = {tuple(int(v) for v in i) for i in cov['idx']}
     grid = [int(np.ceil(1 / s)), int(np.ceil(0.7072 / s)), int(np.ceil(1 / s)), int(np.ceil(1 / s))]
     bad, tested = 0, 0
     while tested < count:
@@ -98,7 +102,7 @@ def check_dropped(cov, count):
         if idx in kept:
             continue
         tested += 1
-        if cc.may_meet_f([i * s for i in idx], s):
+        if cc.may_meet_f(cc.cell(idx, side)[0], side):
             bad += 1
     print(f'dropped cells: {tested} tested again, {bad} that may meet F', flush=True)
     return bad == 0

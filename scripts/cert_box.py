@@ -13,6 +13,7 @@ Usage, on one GPU node:
         --deltas 0.005 0.01 0.02 0.03 --fref=-3.03e-19,-1.33e-18,-2.23e-19
 """
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,8 @@ import numpy as np
 import cupy as cp
 import mpmath as mp
 
+# The quartic package imports JAX, which would take most of the GPU memory from CuPy.
+os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -121,20 +124,25 @@ def main():
         if args.cover:
             centers = [[list(x) for x in cov['centers'][i]] for i in pick]
             args.deltas = [float(cov['deltas'][i]) for i in pick]
+            hmax = (cp.asarray(np.array([float(cov['hmaxs'][i]) for i in pick] * args.repeat))
+                    if 'hmaxs' in cov.files else None)
             off = [max(abs(tc.dd_mp(c[k]) - tc.dd_mp(cdd[k])) for k in range(2)) for c in centers]
             print(f'reference {ci}: cells {list(pick)}, offsets {[f"{float(o):.3f}" for o in off]}',
                   flush=True)
+        if not args.cover:
+            hmax = None
         deltas = list(args.deltas) * args.repeat
         nb = len(deltas)
         fr = tc.make_frames(centers * args.repeat if args.cover else [cdd] * nb, k0)
         for n, a, td in [(n, a, td) for n in args.orders for a in args.a for td in args.td]:
             a, td = a or None, bool(td)
             if args.repeat > 1:
-                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax, a, td=td)
+                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax, a, td=td, hmax=hmax)
             cp.cuda.Device().synchronize()
             t0 = time.perf_counter()
             f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, deltas, n,
-                                                      n + args.ny_extra, args.kmax, a, td=td)
+                                                      n + args.ny_extra, args.kmax, a, td=td,
+                                                      hmax=hmax)
             sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
             cp.cuda.Device().synchronize()
             sec = time.perf_counter() - t0
@@ -175,7 +183,8 @@ def main():
             for i, dl in enumerate(args.deltas):
                 print(f'    delta {dl:.4f}: abs(f) <= {float(sup[i]):.2e} (center {float(c0[i]):.2e},'
                       f' polynomial {float(pb[i]):.2e}, remainder {h["rem_f"][i]:.2e}) | h '
-                      f'{h["rho_h"][i]:.1e} (lam {h["lam_h"][i]:.2f}), p0 {h["rem_p0"][i]:.1e} rel, '
+                      f'{h["rho_h"][i]:.1e} (lam {h["lam_h"][i]:.2f}, on the cell {h["lam_big"][i]:.2f}), '
+                      f'p0 {h["rem_p0"][i]:.1e} rel, '
                       f'F_0 {h["rem_f0"][i]:.1e}, psi {h["rem_psi"][i]:.1e} (tail {h["tail"][i]:.1e}), '
                       f'log p~ {h["rem_logpt"][i]:.1e}, log r2 {h["rem_logr2"][i]:.1e}, Phi '
                       f'{h["rem_phi"][i]:.1e}, g_00 {h["rem_g"][i]:.1e}; eta r2 {h["eta_r"][i]:.3f}, '

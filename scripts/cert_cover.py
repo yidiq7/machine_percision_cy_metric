@@ -4,11 +4,13 @@ F = {abs(t_1) <= abs(t_0) <= abs(z_2) <= 1, arg t_0 in [0, pi/4], arg t_1 in [0,
 in the chart z_3 = 1, with abs(z_2)^4 = abs(1 + t_0^4 + t_1^4). S_4, the phases and the
 conjugation map every point of X into F.
 
-The cells are cubes of side s in (Re t_0, Im t_0, Re t_1, Im t_1). A cell is dropped only
-when interval arithmetic (mpmath.iv) proves that it does not meet F. Each kept cell gets
-the box at its center c with the radius delta that interval arithmetic proves:
-abs(tau_i) <= delta for every point of X over the cell, with tau = U^-1 (y - p) the
-tangent coordinates of the box (quartic.tm_cert, E = dy/dt at p).
+The cells are cubes of side s in (Re t_0, Im t_0, Re t_1, Im t_1) with corners i s, for
+integers i and the exact binary value s of the side, so neighbor cells meet exactly. A
+cell is dropped only when interval arithmetic (mpmath.iv) proves that it does not meet F.
+Each kept cell gets the box at its center c (exact in dd) with the radius delta and the
+bound hmax that ball arithmetic proves in the frame of `quartic.tm_frame` (the frame of
+the box): every point of X over the cell is p + E tau + h n with abs(tau_i) <= delta and
+abs(h) <= hmax.
 
 The reference centers are the centers of the coarse cells of side S = m s; each kept
 cell belongs to the coarse cell that holds its center.
@@ -23,11 +25,17 @@ Usage, on CPU cores:
 import argparse
 import itertools
 import multiprocessing
+import os
+import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import mpmath as mp
 from mpmath import iv
+
+os.environ.setdefault('JAX_PLATFORMS', 'cpu')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 mp.mp.dps = 30
 iv.dps = 30
@@ -59,42 +67,61 @@ def may_meet_f(lo, s):
     return True
 
 
-def box_radius(lo, s, c):
-    """A delta with abs(tau_i) <= delta on the cell, for the box at the center c.
+def _to_arb(x):
+    """An mpmath mpf as an exact arb."""
+    from flint import arb
+    sign, man, exp, _ = mp.mpf(x)._mpf_
+    v = arb(int(man)) * arb(2) ** int(exp)
+    return -v if sign else v
 
-    tau_i = (t_i - c_i) - h n_i and h = (z2(t) - z2(c) - d . (t - c)) / den, with d = dz2/dt
-    and den = n_2 - d_0 n_0 - d_1 n_1 at c. The numerator is at most half the bound of the
-    second derivatives of z2 = u^(1/4) over the cell times abs(t - c)^2.
+
+def _ball(lo, s):
+    """The arb ball of the interval [lo, lo + s] for exact mpmath numbers lo and s."""
+    from flint import arb
+    return arb(_to_arb(lo + s / 2), _to_arb(s / 2))
+
+
+def box_radius(lo, s, c_dd):
+    """(delta, hmax) for the cell [lo, lo + s]^4 (exact mpmath numbers) and the box at c_dd.
+
+    In the frame of `quartic.tm_frame.frame` a point of X over the cell is p + E tau + h n
+    with tau_i = (t_i - c_i) - h n_i and h = (z2(t) - p_2 - d . (t - c)) / den, d = E_2 and
+    den = n_2 - d_0 n_0 - d_1 n_1. The numerator is at most half the bound of the second
+    derivatives of z2 over the cell times r^2, plus abs(z2(c) - p_2) and
+    abs(d(c) - d_i) r, with d(c) the exact derivative. All bounds come from arb balls.
     """
-    t0, t1 = c
-    u = -(1 + t0 ** 4 + t1 ** 4)
-    z2 = u ** (mp.mpf(1) / 4)
-    grad = [4 * t0 ** 3, 4 * t1 ** 3, 4 * z2 ** 3]
-    norm = mp.sqrt(sum(abs(g) ** 2 for g in grad))
-    n = [mp.conj(g) / norm for g in grad]
-    d = [-t0 ** 3 / z2 ** 3, -t1 ** 3 / z2 ** 3]
-    den = abs(n[2] - d[0] * n[0] - d[1] * n[1])
-    r = mp.sqrt(2) * s / 2                 # abs(t_i - c_i) on the cell
-    # Over the cell: abs(t_i) <= tmax and abs(z2) >= zmin.
-    tmax = [abs(t0) + r, abs(t1) + r]
-    a0, b0, a1, b1 = (iv.mpf([lo[k], lo[k] + s]) for k in range(4))
-    p0, q0 = cpow4(a0, b0)
-    p1, q1 = cpow4(a1, b1)
-    w2 = (1 + p0 + p1) ** 2 + (q0 + q1) ** 2
-    zmin = mp.mpf(w2.a) ** (mp.mpf(1) / 8)
-    if zmin <= 0:
-        return float('inf')
-    # Second derivatives of z2: -3 t_i^2 delta_ij / z2^3 - 3 t_i^3 t_j^3 / z2^7.
-    hs = 0
-    for i in range(2):
-        for j in range(2):
-            v = 3 * tmax[i] ** 3 * tmax[j] ** 3 / zmin ** 7
-            if i == j:
-                v += 3 * tmax[i] ** 2 / zmin ** 3
-            hs += v
-    hmax = hs * r * r / 2 / den
-    delta = max(r + hmax * abs(n[0]), r + hmax * abs(n[1]))
-    return float(delta) * (1 + 1e-9)
+    from flint import acb, arb
+    from quartic.tm_frame import frame, lower, precision, upper
+    f = frame(c_dd, None)
+    A = f['acb']
+    with precision():
+        p, n, y2 = A['p'], A['n'], A['y2']
+        d = [A['e'][0][2], A['e'][1][2]]
+        den = lower(n[2] - d[0] * n[0] - d[1] * n[1])
+        if den <= 0:
+            return float('inf'), float('inf')
+        t = [acb(_ball(lo[0], s), _ball(lo[1], s)), acb(_ball(lo[2], s), _ball(lo[3], s))]
+        # abs(t_i - c_i) <= r on the cell; abs(z2) >= zmin and abs(t_i) <= tmax_i there.
+        r = upper(_to_arb(s) * arb(2).sqrt() / 2)
+        zl = lower(1 + t[0] ** 4 + t[1] ** 4)
+        if zl <= 0:
+            return float('inf'), float('inf')
+        zmin = lower((arb(zl).log() / 4).exp())
+        tmax = [upper(t[i]) for i in range(2)]
+        # Second derivatives of z2: -3 t_i^2 delta_ij / z2^3 - 3 t_i^3 t_j^3 / z2^7.
+        hs = 0.0
+        for i in range(2):
+            for j in range(2):
+                v = 3 * tmax[i] ** 3 * tmax[j] ** 3 / zmin ** 7
+                if i == j:
+                    v += 3 * tmax[i] ** 2 / zmin ** 3
+                hs += v
+        exact_d = [-p[i] ** 3 / y2 ** 3 for i in range(2)]
+        num = (hs * (1 + 1e-12) * r * r / 2 + upper(y2 - p[2])
+               + sum(upper(exact_d[i] - d[i]) for i in range(2)) * r) * (1 + 1e-12)
+        hmax = num / den * (1 + 1e-12)
+        delta = max(r + hmax * upper(n[0]), r + hmax * upper(n[1])) * (1 + 1e-12)
+    return delta, hmax
 
 
 def dd(x):
@@ -103,17 +130,25 @@ def dd(x):
     return [rh, float(x.real - rh), ih, float(x.imag - ih)]
 
 
+def cell(idx, s):
+    """The exact lower corner idx s and the exact dd center of a cell."""
+    lo = [mp.mpf(int(i)) * s for i in idx]
+    c = (mp.mpc(lo[0] + s / 2, lo[1] + s / 2), mp.mpc(lo[2] + s / 2, lo[3] + s / 2))
+    return lo, [dd(c[0]), dd(c[1])]
+
+
 def one_slab(job):
     """All cells of one value of the first coordinate."""
     i0, s, grid = job
+    s = mp.mpf(s)
     out = []
     for i1, i2, i3 in itertools.product(*(range(g) for g in grid[1:])):
-        lo = [i0 * s, i1 * s, i2 * s, i3 * s]
+        idx = (i0, i1, i2, i3)
+        lo, c = cell(idx, s)
         if not may_meet_f(lo, s):
             continue
-        c = (mp.mpc(lo[0] + s / 2, lo[1] + s / 2), mp.mpc(lo[2] + s / 2, lo[3] + s / 2))
-        delta = box_radius(lo, s, c)
-        out.append((lo, [dd(c[0]), dd(c[1])], delta))
+        delta, hmax = box_radius(lo, s, c)
+        out.append((idx, [float(x) for x in lo], c, delta, hmax))
     return out
 
 
@@ -135,19 +170,22 @@ def main():
         for part in pool.imap_unordered(one_slab, jobs):
             cells += part
     cells.sort(key=lambda x: x[0])
-    lo = np.array([c[0] for c in cells])
-    centers = np.array([c[1] for c in cells])          # (n, 2, 4)
-    deltas = np.array([c[2] for c in cells])
+    idx = np.array([c[0] for c in cells], dtype=np.int64)
+    lo = np.array([c[1] for c in cells])
+    centers = np.array([c[2] for c in cells])          # (n, 2, 4)
+    deltas = np.array([c[3] for c in cells])
+    hmaxs = np.array([c[4] for c in cells])
     big = args.coarse * s
     coarse = np.floor((lo + s / 2) / big).astype(np.int64)
     keys, ref = np.unique(coarse, axis=0, return_inverse=True)
     ref_centers = np.array([[dd(mp.mpc((k[0] + 0.5) * big, (k[1] + 0.5) * big)),
                              dd(mp.mpc((k[2] + 0.5) * big, (k[3] + 0.5) * big))] for k in keys])
-    np.savez(args.out, lo=lo, side=s, centers=centers, deltas=deltas, ref=ref.ravel(),
-             ref_centers=ref_centers, coarse=big)
+    np.savez(args.out, idx=idx, lo=lo, side=s, centers=centers, deltas=deltas, hmaxs=hmaxs,
+             ref=ref.ravel(), ref_centers=ref_centers, coarse=big)
     vol = len(cells) * s ** 4
     print(f'side {s}: {len(cells)} cells of {np.prod(grid)} kept, volume {vol:.4f}; delta '
-          f'{deltas.min():.4f} to {deltas.max():.4f} (r = {np.sqrt(2) * s / 2:.4f}); '
+          f'{deltas.min():.4f} to {deltas.max():.4f} (r = {np.sqrt(2) * s / 2:.4f}), hmax up to '
+          f'{hmaxs.max():.2e}; '
           f'{len(keys)} reference centers of side {big:.3f}; {time.perf_counter() - t0:.0f}s',
           flush=True)
 

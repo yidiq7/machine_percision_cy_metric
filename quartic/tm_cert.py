@@ -34,7 +34,9 @@ from . import tmc, ddgemm
 
 U2 = tmc.U2
 SAFE = tmc.SAFE
-mp.mp.dps = 60
+# At 100 digits a sum or product of a few dd numbers is exact, so the host errors of
+# offset_models, delta_model and the weights of reexpand are exact or far below u^2.
+mp.mp.dps = 100
 
 
 def mp_dd(z):
@@ -66,48 +68,27 @@ class Frames:
 
 
 def make_frames(centers, k0):
-    """The frames of boxes with centers t = (t_0, t_1), each given as two dd lists."""
-    vbar = 512 * mp.pi ** 4 * k0 ** 2 / mp.gamma(mp.mpf(1) / 4) ** 8
-    cols = {k: [] for k in ('p', 'e', 'n', 'c1inv', 'vol', 'ha', 'a6', 'a4')}
+    """The frames of boxes with centers t = (t_0, t_1), each given as two dd lists.
+
+    Every number and every error bound comes from `quartic.tm_frame.frame` in ball
+    arithmetic, so the boxes and the cover (scripts/cert_cover.py) use the same frame.
+    """
+    from .tm_frame import frame
+    keys = ('p', 'e', 'n', 'c1inv', 'vol', 'ha', 'a6', 'a4')
+    cols = {k: [] for k in keys}
     errs, host, herr = [], [], []
     for t in centers:
-        t0, t1 = dd_mp(t[0]), dd_mp(t[1])
-        y2 = (-(1 + t0 ** 4 + t1 ** 4)) ** (mp.mpf(1) / 4)
-        p = [mp.mpc(t0), mp.mpc(t1), dd_mp(mp_dd(y2))]
-        e = [[mp.mpc(1), mp.mpc(0), dd_mp(mp_dd(-p[0] ** 3 / p[2] ** 3))],
-             [mp.mpc(0), mp.mpc(1), dd_mp(mp_dd(-p[1] ** 3 / p[2] ** 3))]]
-        grad = [4 * c ** 3 for c in p]
-        norm = mp.sqrt(sum(abs(c) ** 2 for c in grad))
-        n = [dd_mp(mp_dd(mp.conj(c) / norm)) for c in grad]
-        c1 = sum(g * m for g, m in zip(grad, n))
-        c1inv = dd_mp(mp_dd(1 / c1))
-        u = mp.matrix([[e[0][i], e[1][i], n[i]] for i in range(3)])
-        w = 1 / (abs(mp.det(u)) ** 2 * vbar)
-        wd = dd_mp(mp_dd(w))
-        errs.append(float(abs(wd - w) / abs(w)) + 1e-40)
-        cols['p'].append([mp_dd(c) for c in p])
-        cols['e'].append([[mp_dd(c) for c in row] for row in e])
-        cols['n'].append([mp_dd(c) for c in n])
-        cols['c1inv'].append(mp_dd(c1inv))
-        cols['vol'].append(mp_dd(wd))
-        # The map of implicit_h about p: T(h) = kappa h - A(tau) - c1inv N(E tau + h n).
-        ha = [c1inv * (sum(c ** 4 for c in p) + 1),
-              c1inv * sum(g * x for g, x in zip(grad, e[0])),
-              c1inv * sum(g * x for g, x in zip(grad, e[1]))]
-        a6 = [6 * c ** 2 for c in p]
-        a4 = [4 * c for c in p]
-        err = lambda v: float(abs(dd_mp(mp_dd(v)) - v)) * (1 + 1e-9) + 1e-55
-        cols['ha'].append([mp_dd(v) for v in ha])
-        cols['a6'].append([mp_dd(v) for v in a6])
-        cols['a4'].append([mp_dd(v) for v in a4])
-        herr.append([err(v) for v in ha] + [float(abs(1 - c1inv * c1)) * (1 + 1e-9) + 1e-55,
-                                            max(err(v) for v in a6), max(err(v) for v in a4)])
-        host.append(dict(p=p, e=e, n=n, c1inv=c1inv, w=wd))
-    to = lambda key, axes: cp.asarray(np.moveaxis(np.array(cols[key]), 0, -1))
-    return Frames(p=to('p', None), e=to('e', None), n=to('n', None), c1inv=to('c1inv', None),
-                  vol=to('vol', None), vol_err=cp.asarray(np.array(errs)), host=host,
-                  ha=to('ha', None), a6=to('a6', None), a4=to('a4', None),
-                  h_err=cp.asarray(np.array(herr).T))
+        f = frame(t, k0)
+        for k in keys:
+            cols[k].append(f[k])
+        errs.append(f['vol_err'])
+        herr.append(f['h_err'])
+        host.append(dict(p=[dd_mp(v) for v in f['p']], e=[[dd_mp(v) for v in row] for row in f['e']],
+                         n=[dd_mp(v) for v in f['n']], c1inv=dd_mp(f['c1inv']), w=dd_mp(f['vol'])))
+    to = lambda key: cp.asarray(np.moveaxis(np.array(cols[key], dtype=np.float64), 0, -1))
+    return Frames(p=to('p'), e=to('e'), n=to('n'), c1inv=to('c1inv'), vol=to('vol'),
+                  vol_err=cp.asarray(np.array(errs)), host=host, ha=to('ha'), a6=to('a6'),
+                  a4=to('a4'), h_err=cp.asarray(np.array(herr).T))
 
 
 def neg(k):
@@ -136,7 +117,7 @@ def p_value(sp, ys):
     return tmc.add_const(sp, total, tmc.cconst(1, total.delta.shape[0]))
 
 
-def implicit_h(sp, fr, delta):
+def implicit_h(sp, fr, delta, hmax=None):
     """The models of y(tau) = p + E tau + h n on X, with a strict remainder of h.
 
     T(h) = h - c1inv P(y(h)). If T maps the ball abs(h - P_h) <= rho into itself with a
@@ -144,7 +125,13 @@ def implicit_h(sp, fr, delta):
     T(h) = kappa h - A(tau) - c1inv N(w): kappa = 1 - c1inv c1, A = c1inv (P(p) + grad.E tau)
     and N(w) = sum over k of w_k^2 (6 p_k^2 + w_k (4 p_k + w_k)). The host gives A, 6 p_k^2
     and 4 p_k as dd numbers with their errors; kappa h goes to the error. So the rounding
-    acts only on the small terms of N. Returns ys, rho, lam and the model of h.
+    acts only on the small terms of N.
+
+    With hmax (B,), a bound of abs(h) for every point of X over the cell of the box (from
+    the cover), T must also contract on the ball of radius R = hmax + B(h) + rho around
+    the model, which holds both that point and the root: then they are the same point.
+    A box whose bound lam_big of T' on that ball is not below 1 gets rho = inf.
+    Returns ys, rho, lam, the model of h, and lam_big (NaN without hmax).
     """
     b = delta.shape[0]
     zero = cp.zeros((4, b))
@@ -189,9 +176,15 @@ def implicit_h(sp, fr, delta):
     lam = (lam0 + r * second * iabs) * SAFE
     good = ok & (lam < 1) & ((bd + lam * r) * SAFE <= r)
     rho = cp.where(good, r, cp.inf)
+    lam_big = cp.full(b, cp.nan)
+    if hmax is not None:
+        big = (cp.asarray(hmax) + tmc.bound(sp, h) + r) * SAFE
+        second_big = sum(12 * nabs[k] ** 2 * (by[k] + big * nabs[k]) ** 2 for k in range(3))
+        lam_big = (lam0 + big * second_big * iabs) * SAFE
+        rho = cp.where(lam_big < 1, rho, cp.inf)
     h = tmc.TM(h.c, rho, delta)
     ys = [tmc.add(sp, lin[k], tmc.scale(sp, h, fr.n[k])) for k in range(3)]
-    return ys, rho, lam, h
+    return ys, rho, lam, h, lam_big
 
 
 def offset_models(sp, fr, h, ref, delta):
@@ -526,10 +519,11 @@ def delta_form(sp4, sp_low, mats, q, q_rad, q_abs, delta, dl, bdl, td=False):
     return s
 
 
-def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False):
+def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hmax=None):
     """The model of f on a batch of boxes that share the reference center of `local`.
 
     td: the compositions with the forms take the triple-double products of ddgemm.
+    hmax: the bound of abs(h) over the cell of each box, for the check in implicit_h.
 
     Returns f (on delta_f), the radii (box, f, Phi) and the parts of the remainder.
     """
@@ -545,8 +539,8 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False):
     # The forms are sums over e of abs(y_2)^(2e) Q_e, or over j of Delta^j R_j.
     mode_j = 's2' in local
     tag = 'j' if mode_j else 'e'
-    ys, rho, lam, hm = implicit_h(sp2, fr, d_phi)
-    info['rho_h'], info['lam_h'] = rho, lam
+    ys, rho, lam, hm, lam_big = implicit_h(sp2, fr, d_phi, hmax)
+    info['rho_h'], info['lam_h'], info['lam_big'] = rho, lam, lam_big
     yc = [conj_tm(y) for y in ys]
     cref = [dd_mp(cp.asnumpy(cp.asarray(local['c']))[i]) for i in range(2)]
     base_t, v2 = offset_models(sp2, fr, hm, cref, d_phi)
@@ -584,7 +578,8 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False):
     log_r2 = tmc.log1p_series(sp4, pw_r, eta_r)
     cache = {1: ir2}
     pt = tmc.mul(sp4, p0, _power(sp4, ir2, k0, cache))
-    s_p = _to_dd([1 / v for v in _host_dd(pt.c[:, 0, :])])
+    # A real s_p, so that p~^(-1/k0) = xh s_p^(1/k0) holds with the real root below.
+    s_p = _to_dd([mp.mpc(1 / v.real) for v in _host_dd(pt.c[:, 0, :])])
     yp = tmc.add_const(sp4, tmc.scale(sp4, pt, s_p), -one)
     eta_p = tmc.bound(sp4, yp)
     pw_p = tmc.powers(sp4, yp, _series_order(eta_p, n))
@@ -599,9 +594,12 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False):
     xc_raw = [v.real ** (mp.mpf(1) / k0) * w for v, w in
               zip(sp_host, _host_dd(tmc.mul(sp4, ir2, xh).c[:, 0, :]))]
     zeta = [dd_mp(mp_dd(x / x0 - 1)) for x in xc_raw]
-    kappa = [v.real ** (mp.mpf(1) / k0) / (x0 * (1 + z)) for v, z in zip(sp_host, zeta)]
-    kappa_dd = _to_dd(kappa)
-    kap_err = cp.asarray(np.array([float(abs(dd_mp(mp_dd(k)) - k)) for k in kappa]) + 1e-300)
+    # kappa = s_p^(1/k0) / (x0 (1 + zeta)) in ball arithmetic; any dd zeta is exact.
+    from .tm_frame import kappa as _kappa
+    x0_dd = list(np.asarray(local['x0']))
+    kap = [_kappa(mp_dd(v), k0, x0_dd, mp_dd(z)) for v, z in zip(sp_host, zeta)]
+    kappa_dd = cp.asarray(np.array([k[0] for k in kap]).T)
+    kap_err = cp.asarray(np.array([k[1] for k in kap]) * (1 + 1e-9) + 1e-300)
     xw = tmc.mul(sp4, ir2, xh)
     xi = tmc.add_const(sp4, tmc.scale(sp4, xw, kappa_dd), -one)
     xi.rem = (xi.rem + kap_err * tmc.bound(sp4, xw)) * SAFE
