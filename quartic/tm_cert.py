@@ -197,32 +197,44 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     """The model in four variables of sum over e of Y_e Q_e Y_e^H, with all remainders.
 
     q[e]: (nq, 4, n, n) with nq = 1 (shared) or B; q_rad[e], q_abs[e]: (nq, n, n) FP64.
-    The true form differs from Y_low Q Y_low^H by the parts of degree above sp_low.n in
-    tau or sigma, by the remainders of the monomial models, by the radii of Q, and by the
-    rounding of the two products (2.1 gamma abs(Y) abs(Q) abs(Y)^H) and of the sums.
+    Only the entries of total degree <= n are formed. The true form differs from that
+    polynomial by the entries of total degree above n (bounded by the graded bounds of
+    the columns of Y_e and abs(Q_e)), by the parts of degree above sp_low.n of the
+    monomial models, by their remainders, by the radii of Q, and by the rounding of
+    the two products (2.1 gamma abs(Y) abs(Q) abs(Y)^H) and of the sums over e.
     """
     n = q[0].shape[-1]
     b = delta.shape[0]
     w = None
     rem = cp.zeros(b)
     g = ddgemm.gamma(n)
-    quad = lambda u, m, v: cp.einsum('ab,bac,cb->b', u, m, v)
+    quad = lambda u, m, v: cp.matmul(cp.matmul(u.T[:, None, :], m), v.T[:, :, None])[:, 0, 0]
+    deg = cp.asarray(sp_low.deg.astype(np.int32))
+    d = np.arange(sp_low.n + 1)
+    over = cp.asarray((d[:, None] + d[None, :] > sp4.n).astype(np.float64))
+    onehot = cp.asarray((sp_low.deg[:, None] == d[None, :]).astype(np.float64))     # (S, D+1)
+    pw = delta[None, :] ** cp.asarray(sp_low.deg)[:, None]                           # (S, B)
     for e in range(4):
         y, b_low, b_high, r = mats[e]
         y = cp.ascontiguousarray(y[:, :, :, :n])
         b_low, b_high, r = b_low[:n], b_high[:n], r[:n]
         t = ddgemm.zgemm(y, q[e], mode=0)
-        part = ddgemm.zgemm(t, y, mode=1)
+        part = ddgemm.zgemm(t, y, mode=1, rdeg=deg, cdeg=deg, dmax=sp4.n)
         if w is not None:
-            rem += 4 * U2 * (_bnorm(sp_low, w, delta) + _bnorm(sp_low, part, delta))
+            rem += 4 * U2 * (_bnorm_low(sp4, sp_low, w, delta) + _bnorm_low(sp4, sp_low, part, delta))
         w = part if w is None else _add_mats(w, part)
         qa = cp.broadcast_to(q_abs[e], (b, n, n))
         qr = cp.broadcast_to(q_rad[e], (b, n, n))
         full = b_low + b_high + r
-        rem += (2.1 * g * quad(b_low, qa, b_low) + 2 * quad(b_high, qa, b_low)
+        # The entries of total degree above n: G[alpha, d, b] = sum of abs(Y) delta^d by degree.
+        ay = ddgemm.cabs(y) * pw.T[:, :, None]                                       # (B, S, n)
+        gcol = cp.matmul(ay.transpose(0, 2, 1), onehot) * SAFE                       # (B, n, D+1)
+        hq = cp.matmul(cp.matmul(gcol.transpose(0, 2, 1), qa), gcol) * SAFE          # (B, D+1, D+1)
+        tail = cp.sum(hq * over[None], axis=(1, 2))
+        rem += (tail + 2.1 * g * quad(b_low, qa, b_low) + 2 * quad(b_high, qa, b_low)
                 + quad(b_high, qa, b_high) + 2 * quad(r, qa, b_low + b_high) + quad(r, qa, r)
                 + quad(full, qr, full)) * SAFE
-    return _from_bidegree(sp4, sp_low, w, rem * SAFE, delta)
+    return _from_bidegree(sp4, sp_low, w, rem * SAFE, delta, tail_done=True)
 
 
 def _add_mats(x, y):
@@ -242,10 +254,20 @@ def _bnorm(sp_low, w, delta):
     return cp.einsum('bij,bi,bj->b', a, pw, pw) * SAFE
 
 
-def _from_bidegree(sp4, sp_low, w, rem, delta):
+def _bnorm_low(sp4, sp_low, w, delta):
+    """sum of abs(w_ij) delta^(deg i + deg j) over the entries of total degree <= n."""
+    rows, cols = tmc.split_index(sp4, sp_low)
+    a = ddgemm.cabs(w)[:, cp.asarray(rows), cp.asarray(cols)]                    # (B, S4)
+    d = cp.asarray(sp4.deg)
+    return cp.sum(a * delta[:, None] ** d[None, :], axis=1) * SAFE
+
+
+def _from_bidegree(sp4, sp_low, w, rem, delta, tail_done=False):
     rows, cols = tmc.split_index(sp4, sp_low)
     rows, cols = cp.asarray(rows), cp.asarray(cols)
     c = cp.moveaxis(w[:, :, rows, cols], 0, -1)                # (4, S4, B)
+    if tail_done:
+        return tmc.TM(cp.ascontiguousarray(c), rem * SAFE, delta)
     a = ddgemm.cabs(w)
     d = sp_low.deg
     mask = cp.asarray(((d[:, None] + d[None, :]) > sp4.n).astype(np.float64))

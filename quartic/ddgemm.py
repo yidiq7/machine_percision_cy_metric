@@ -27,12 +27,23 @@ _SRC = _DD_SRC.split('// Z[k] = sum over t')[0] + r'''
 // mode 1 (conjugate transpose); C (nb, 4, M, N).
 extern "C" __global__ void zgemm_dd(const double* __restrict__ A, const double* __restrict__ Bm,
                                     double* __restrict__ C, int M, int N, int K, int bstride,
-                                    int mode) {
+                                    int mode, const int* __restrict__ rdeg,
+                                    const int* __restrict__ cdeg, int dmax) {
     __shared__ double sa[4][TILE][TILE + 1];
     __shared__ double sb[4][TILE][TILE + 1];
     int b = blockIdx.z;
     int row = blockIdx.y * TILE + threadIdx.y;
     int col = blockIdx.x * TILE + threadIdx.x;
+    // A tile whose first row and first column already pass the degree dmax is skipped,
+    // and its entries are set to zero; the caller bounds them in another way.
+    if (dmax >= 0 && rdeg[blockIdx.y * TILE] + cdeg[blockIdx.x * TILE] > dmax) {
+        if (row < M && col < N) {
+            double* c = C + (size_t)b * 4 * M * N;
+            size_t partC = (size_t)M * N, at = (size_t)row * N + col;
+            c[at] = 0.0; c[partC + at] = 0.0; c[2 * partC + at] = 0.0; c[3 * partC + at] = 0.0;
+        }
+        return;
+    }
     const double* a = A + (size_t)b * 4 * M * K;
     const double* bb = Bm + (size_t)b * bstride;
     size_t partA = (size_t)M * K, partB = (size_t)K * N;
@@ -87,8 +98,21 @@ def gamma(k):
     return (6.2 * k + 6) * U2
 
 
-def zgemm(a, b, mode=0):
-    """C = A op(B) for batches of complex dd matrices; B may have a batch of 1."""
+_NODEG = None
+
+
+def zgemm(a, b, mode=0, rdeg=None, cdeg=None, dmax=-1):
+    """C = A op(B) for batches of complex dd matrices; B may have a batch of 1.
+
+    With rdeg, cdeg (degrees of the rows and columns, nondecreasing) and dmax >= 0, the
+    tiles whose smallest row degree plus smallest column degree exceed dmax are skipped
+    and set to zero.
+    """
+    global _NODEG
+    if _NODEG is None:
+        _NODEG = cp.zeros(1, cp.int32)
+    rd = _NODEG if rdeg is None else rdeg
+    cd = _NODEG if cdeg is None else cdeg
     nb, _, m, k = a.shape
     if mode == 0:
         nbb, _, kb, n = b.shape
@@ -101,7 +125,7 @@ def zgemm(a, b, mode=0):
     grid = ((n + TILE - 1) // TILE, (m + TILE - 1) // TILE, nb)
     _kernel()(grid, (TILE, TILE), (cp.ascontiguousarray(a), cp.ascontiguousarray(b), c,
                                    np.int32(m), np.int32(n), np.int32(k), np.int32(stride),
-                                   np.int32(mode)))
+                                   np.int32(mode), rd, cd, np.int32(dmax)))
     return c
 
 
