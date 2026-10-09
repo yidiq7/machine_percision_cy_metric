@@ -408,6 +408,8 @@ def main():
     ap.add_argument('--exact-mul', action='store_true',
                     help='the exact dd product in the base path; dd.mul_fast gives 2^-79, '
                          'a floor on abs(f) near 1e-24')
+    ap.add_argument('--invariant-base', action='store_true',
+                    help='the base in the monomial basis, exactly invariant under S_4')
     ap.add_argument('--eval-offset', type=int, default=0)
     ap.add_argument('--eval-total', type=int, default=0,
                     help='with --eval-offset, the size of the whole hold-out sample; each '
@@ -469,6 +471,12 @@ def main():
     sections.PREPARE_DD = True
     parts0 = jax.jit(lambda t: analytic.point_matrices(lay0, t))(theta0)
     mats0 = sections.prepare(lay0, theta0)
+    # With --invariant-base the dd paths take the base in the monomial basis, exactly
+    # invariant under S_4; the level bases keep the frame form of lay0.
+    lay0d = lay0
+    if args.invariant_base:
+        from quartic import invariant
+        lay0d, parts0 = invariant.monomial_base(lay0, parts0)
     counts = vf.hn_counts(max(args.k1))
     record = {'args': vars(args), 'levels': {}}
 
@@ -486,7 +494,7 @@ def main():
     elif args.joint_basis:
         t1 = time.perf_counter()
         jbuild = cf.load_points(args.n_build, args.build_seed)
-        values = level_values_dd(lay0, parts0, levels, jbuild, args.chunk)
+        values = level_values_dd(lay0d, parts0, levels, jbuild, args.chunk)
         say(f'dd values of every level at the {args.n_build} build points on X in dd in '
             f'{time.perf_counter() - t1:.0f}s')
         t1 = time.perf_counter()
@@ -523,11 +531,11 @@ def main():
         total = int(starts[-1])
 
     if args.eval_only:
-        evaluate_only(lay0, parts0, levels, joint, hold, args, out_dir, tag)
+        evaluate_only(lay0d, parts0, levels, joint, hold, args, out_dir, tag)
         return
 
     t1 = time.perf_counter()
-    v0, lrows = fit_rows(lay0, parts0, levels, fit_set, args.chunk, joint)
+    v0, lrows = fit_rows(lay0d, parts0, levels, fit_set, args.chunk, joint)
     mass = fit_set['mass'] / jnp.sum(fit_set['mass'])
     f0 = analytic.residual_from_volumes(v0, mass)
     m0 = float(dd.to_fp(dd.dot_dd_fp(v0, mass, axis=0)))
@@ -583,7 +591,7 @@ def main():
     del lrows
     coeffs = np.stack(coeffs, axis=1)
 
-    program = residual_program(lay0, parts0, levels, args.chunk, joint)
+    program = residual_program(lay0d, parts0, levels, args.chunk, joint)
     t1 = time.perf_counter()
     f_fit = np.array(vdf.residuals(program, coeffs, fit_set, args.block))
     say(f'the fit set in dd in {time.perf_counter() - t1:.0f}s')

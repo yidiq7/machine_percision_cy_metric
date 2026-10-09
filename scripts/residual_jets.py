@@ -58,6 +58,12 @@ def load_model(args):
     sections.PREPARE_DD = True
     parts0 = jax.jit(lambda t: analytic.point_matrices(lay0, t))(theta0)
     mats0 = sections.prepare(lay0, theta0)
+    # With --invariant-base the dd paths take the base in the monomial basis, exactly
+    # invariant under S_4; the level bases keep the frame form of lay0.
+    lay0d = lay0
+    if args.invariant_base:
+        from quartic import invariant
+        lay0d, parts0 = invariant.monomial_base(lay0, parts0)
     counts = vf.hn_counts(max(args.k1 + args.stage1_k1))
 
     def load_levels(directory, degrees):
@@ -85,7 +91,7 @@ def load_model(args):
     what1 = joint_dd.effective_weights(jm1, w1, sizes1)
     what2 = joint_dd.effective_weights(jm2, w2, sizes2)
     s1 = st.Stage1(levels1, jm1, w1, shift)
-    return dict(lay0=lay0, parts0=parts0, levels1=levels1, levels2=levels2, what1=what1,
+    return dict(lay0=lay0d, parts0=parts0, levels1=levels1, levels2=levels2, what1=what1,
                 what2=what2, shift=shift, s1=s1, jm2=jm2, prefix2=prefix2,
                 coeffs=np.load(run / f'vpa_stage2_coeffs_{tag}.npy'))
 
@@ -359,6 +365,8 @@ def main():
     ap.add_argument('--col', type=int, default=1,
                     help='the column of the second-stage coefficients for the final fit')
     ap.add_argument('--exact-mul', action='store_true')
+    ap.add_argument('--invariant-base', action='store_true',
+                    help='the base in the monomial basis, exactly invariant under S_4')
     ap.add_argument('--n', type=int, default=32_768)
     ap.add_argument('--seed', type=int, default=20271001)
     ap.add_argument('--other-chart', action='store_true',

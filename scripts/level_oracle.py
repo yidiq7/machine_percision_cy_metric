@@ -55,6 +55,12 @@ def export(args):
     sections.PREPARE_DD = True
     parts0 = jax.jit(lambda t: analytic.point_matrices(lay0, t))(theta0)
     mats0 = sections.prepare(lay0, theta0)
+    # With --invariant-base the dd paths take the base in the monomial basis, exactly
+    # invariant under S_4; the level bases keep the frame form of lay0.
+    lay0d = lay0
+    if args.invariant_base:
+        from quartic import invariant
+        lay0d, parts0 = invariant.monomial_base(lay0, parts0)
     counts = vf.hn_counts(max(args.k1))
 
     class LoadArgs:
@@ -71,7 +77,7 @@ def export(args):
     ratio = size.min(axis=1) / size.max(axis=1)
     picks = np.array([int(np.argmin(np.abs(ratio - r))) for r in args.ratios])
     sub = {key: val[picks] for key, val in batch.items()}
-    program = vl.residual_program(lay0, parts0, levels, args.chunk, joint)
+    program = vl.residual_program(lay0d, parts0, levels, args.chunk, joint)
     t1 = time.perf_counter()
     v1 = vl.volumes(program, coeffs, sub, args.chunk)
     v2 = vl.volumes(program, coeffs, sl.other_chart(sub), args.chunk)
@@ -84,8 +90,8 @@ def export(args):
            'ratio': ratio[picks], 'v1_hi': v1[0], 'v1_lo': v1[1], 'v2_hi': v2[0],
            'v2_lo': v2[1], 'j_sel': jm.sel, 'j_level': jm.level, 'j_h': jm.h,
            'j_hlo': jm.h_lo, 'j_gamma_hi': jm.gamma[0], 'j_gamma_lo': jm.gamma[1],
-           'j_prefix': prefix, 'n_groups': len(lay0.groups)}
-    for i, (g, (hi, lo)) in enumerate(zip(lay0.groups, parts0)):
+           'j_prefix': prefix, 'n_groups': len(lay0d.groups)}
+    for i, (g, (hi, lo)) in enumerate(zip(lay0d.groups, parts0)):
         out[f'g{i}_exps'] = np.asarray(g.exps)
         out[f'g{i}_frame'] = np.asarray(g.frame)
         out[f'g{i}_res'] = np.asarray(g.residues)
@@ -465,6 +471,8 @@ def main():
     ex.add_argument('--load-joint', type=str, required=True)
     ex.add_argument('--coeffs', type=str, required=True)
     ex.add_argument('--exact-mul', action='store_true')
+    ex.add_argument('--invariant-base', action='store_true',
+                    help='the base in the monomial basis, exactly invariant under S_4')
     ex.add_argument('--n', type=int, default=4000)
     ex.add_argument('--seed', type=int, default=20264813)
     ex.add_argument('--ratios', type=float, nargs='+', default=[0.9, 0.4, 0.1])

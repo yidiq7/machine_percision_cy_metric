@@ -113,6 +113,8 @@ def main():
     ap.add_argument('--load-joint', type=str, required=True)
     ap.add_argument('--coeffs', type=str, required=True)
     ap.add_argument('--exact-mul', action='store_true')
+    ap.add_argument('--invariant-base', action='store_true',
+                    help='the base in the monomial basis, exactly invariant under S_4')
     ap.add_argument('--n', type=int, default=131_072)
     ap.add_argument('--seed', type=int, default=20263813)
     ap.add_argument('--chunk', type=int, default=256)
@@ -126,6 +128,12 @@ def main():
     sections.PREPARE_DD = True
     parts0 = jax.jit(lambda t: analytic.point_matrices(lay0, t))(theta0)
     mats0 = sections.prepare(lay0, theta0)
+    # With --invariant-base the dd paths take the base in the monomial basis, exactly
+    # invariant under S_4; the level bases keep the frame form of lay0.
+    lay0d = lay0
+    if args.invariant_base:
+        from quartic import invariant
+        lay0d, parts0 = invariant.monomial_base(lay0, parts0)
     counts = vf.hn_counts(max(args.k1))
 
     class LoadArgs:
@@ -136,7 +144,7 @@ def main():
     prefix = np.cumsum([int(np.sum(jm.level == i)) for i in range(len(levels))])
     joint = (jm, None, tuple(int(x) for x in prefix))
     coeffs = np.load(args.coeffs)
-    program = seam_program(lay0, parts0, levels, args.chunk, joint)
+    program = seam_program(lay0d, parts0, levels, args.chunk, joint)
 
     batch = cf.load_points(args.n, args.seed)
     second = other_chart(batch)

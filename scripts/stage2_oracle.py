@@ -85,6 +85,12 @@ def export(args):
     sections.PREPARE_DD = True
     parts0 = jax.jit(lambda t: analytic.point_matrices(lay0, t))(theta0)
     mats0 = sections.prepare(lay0, theta0)
+    # With --invariant-base the dd paths take the base in the monomial basis, exactly
+    # invariant under S_4; the level bases keep the frame form of lay0.
+    lay0d = lay0
+    if args.invariant_base:
+        from quartic import invariant
+        lay0d, parts0 = invariant.monomial_base(lay0, parts0)
     counts = vf.hn_counts(max(args.k1 + args.stage1_k1))
 
     def load_levels(directory, degrees):
@@ -116,7 +122,7 @@ def export(args):
     else:
         picks = np.array([int(np.argmin(np.abs(ratio - r))) for r in args.ratios])
     sub = {key: val[picks] for key, val in batch.items()}
-    program = st.residual_program(lay0, parts0, s1, levels, args.chunk, joint)
+    program = st.residual_program(lay0d, parts0, s1, levels, args.chunk, joint)
     t1 = time.perf_counter()
     v1 = vl.volumes(program, coeffs, sub, args.chunk)
     v2 = vl.volumes(program, coeffs, sl.other_chart(sub), args.chunk)
@@ -126,10 +132,10 @@ def export(args):
     out = {'k0': args.k0, 'perms': np.asarray(arnoldi.PERMS), 'shift': s1.shift,
            'z_hi': np.asarray(sub['points_hi']), 'z_lo': np.asarray(sub['points_lo']),
            'patch': np.asarray(sub['patch']), 'ratio': ratio[picks], 'v1_hi': v1[0],
-           'v1_lo': v1[1], 'v2_hi': v2[0], 'v2_lo': v2[1], 'n_groups': len(lay0.groups)}
+           'v1_lo': v1[1], 'v2_hi': v2[0], 'v2_lo': v2[1], 'n_groups': len(lay0d.groups)}
     if args.sample:
         out['mass'] = np.asarray(sub['mass'])
-    for i, (g, (hi, lo_part)) in enumerate(zip(lay0.groups, parts0)):
+    for i, (g, (hi, lo_part)) in enumerate(zip(lay0d.groups, parts0)):
         out[f'g{i}_exps'] = np.asarray(g.exps)
         out[f'g{i}_frame'] = np.asarray(g.frame)
         out[f'g{i}_res'] = np.asarray(g.residues)
@@ -479,6 +485,8 @@ def main():
     ex.add_argument('--run', type=str, required=True,
                     help='the output directory of the second-stage fit')
     ex.add_argument('--exact-mul', action='store_true')
+    ex.add_argument('--invariant-base', action='store_true',
+                    help='the base in the monomial basis, exactly invariant under S_4')
     ex.add_argument('--n', type=int, default=4000)
     ex.add_argument('--seed', type=int, default=20264813)
     ex.add_argument('--ratios', type=float, nargs='+', default=[0.9, 0.4, 0.1])

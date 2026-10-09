@@ -493,6 +493,8 @@ def main():
     ap.add_argument('--joint-block', type=int, default=256)
     ap.add_argument('--prefixes', type=int, nargs='+', default=None)
     ap.add_argument('--exact-mul', action='store_true')
+    ap.add_argument('--invariant-base', action='store_true',
+                    help='the base in the monomial basis, exactly invariant under S_4')
     ap.add_argument('--refine', type=int, default=3)
     ap.add_argument('--check', type=int, default=0,
                     help='only run the three tests of the jets at this many points')
@@ -528,6 +530,12 @@ def main():
     sections.PREPARE_DD = True
     parts0 = jax.jit(lambda t: analytic.point_matrices(lay0, t))(theta0)
     mats0 = sections.prepare(lay0, theta0)
+    # With --invariant-base the dd paths take the base in the monomial basis, exactly
+    # invariant under S_4; the level bases keep the frame form of lay0.
+    lay0d = lay0
+    if args.invariant_base:
+        from quartic import invariant
+        lay0d, parts0 = invariant.monomial_base(lay0, parts0)
     counts = vf.hn_counts(max(args.k1 + args.stage1_k1))
 
     def sample(n, seed):
@@ -573,7 +581,7 @@ def main():
         say(f'the constant C of psi_1 from {args.record}: {s1.shift!r}')
     else:
         probe = jtu.tree_map(lambda x: x[:4096], fit_set)
-        v1 = np.asarray(psi1_program(lay0, parts0, s1, args.chunk)(probe)[0][0])
+        v1 = np.asarray(psi1_program(lay0d, parts0, s1, args.chunk)(probe)[0][0])
         w = np.asarray(probe['mass']) / float(np.sum(probe['mass']))
         s1.shift = float(np.sum(w * v1))
         spread = float(np.max(np.abs(v1 - s1.shift)))
@@ -589,8 +597,8 @@ def main():
                                 out_dir)
         levels.append(lev)
     if args.check:
-        check(lay0, parts0, s1, levels, fit_set, args)
-        finite_differences(lay0, parts0, s1, fit_set, args)
+        check(lay0d, parts0, s1, levels, fit_set, args)
+        finite_differences(lay0d, parts0, s1, fit_set, args)
         return
 
     tag = f"k0_{args.k0}_s1_{'_'.join(str(k) for k in args.stage1_k1)}_s2_" + \
@@ -601,7 +609,7 @@ def main():
         say(f'joint map loaded from {args.load_joint}')
     else:
         jbuild = cf.load_points(args.n_build, args.build_seed)
-        values = level_values(lay0, parts0, s1, levels, jbuild, args.chunk)
+        values = level_values(lay0d, parts0, s1, levels, jbuild, args.chunk)
         # Host copies, so that the joint build holds the values of one level at a time.
         values = [tuple(np.asarray(a) for a in v) for v in values]
         say(f'dd values of every second-stage level at {args.n_build} build points in '
@@ -619,7 +627,7 @@ def main():
         f'enter, smallest new part {jm.ratio.min():.3e}; psi_N - 1 has the norm '
         f'{jm.gap:.3e} on the build points')
     if evaluate:
-        evaluate_saved(lay0, parts0, s1, levels, joint, hold, args, out_dir, tag)
+        evaluate_saved(lay0d, parts0, s1, levels, joint, hold, args, out_dir, tag)
         return
     chosen = args.prefixes or list(range(1, len(levels) + 1))
     n_joint = int(prefix[-1])
@@ -632,7 +640,7 @@ def main():
               'joint': {'entered': counts_in, 'ratio_min': float(jm.ratio.min())}}
 
     t1 = time.perf_counter()
-    v0, lrows = fit_rows(lay0, parts0, s1, levels, fit_set, args.chunk, joint)
+    v0, lrows = fit_rows(lay0d, parts0, s1, levels, fit_set, args.chunk, joint)
     mass = fit_set['mass'] / jnp.sum(fit_set['mass'])
     # The sampled mean, as in vpa_dd_levels.py: `vpa_dd_levels.factor` takes its derivative.
     f0 = analytic.residual_from_volumes(v0, mass)
@@ -668,7 +676,7 @@ def main():
                                                    'predicted_loss': predicted[0]})
     del lrows
     coeffs = np.stack(coeffs, axis=1)
-    program = residual_program(lay0, parts0, s1, levels, args.chunk, joint)
+    program = residual_program(lay0d, parts0, s1, levels, args.chunk, joint)
 
     def residuals(cc, batch):
         hi, lo = vl.volumes(program, cc, batch, args.block)
