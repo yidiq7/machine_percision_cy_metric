@@ -88,8 +88,8 @@ class Space:
                 pos = np.where(valid, pos, 0)
                 big_i = np.where(valid, ii[pos], self.size)
                 big_j = np.where(valid, jj[pos], self.size)
-                out.append((jnp.asarray(ks), jnp.asarray(big_i, dtype=jnp.int32),
-                            jnp.asarray(big_j, dtype=jnp.int32), int(w)))
+                # NumPy constants, so that a table made inside one trace serves the next.
+                out.append((ks, big_i.astype(np.int32), big_j.astype(np.int32), int(w)))
             self._buckets = out
             self.max_width = int(width.max())
         return self._buckets
