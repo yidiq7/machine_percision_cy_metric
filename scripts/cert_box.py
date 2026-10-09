@@ -104,6 +104,8 @@ def main():
         nb = len(deltas)
         fr = tc.make_frames([cdd] * nb, k0)
         for n in args.orders:
+            if args.repeat > 1:
+                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax)
             cp.cuda.Device().synchronize()
             t0 = time.perf_counter()
             f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, deltas, n,

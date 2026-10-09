@@ -16,8 +16,9 @@ dd_add at most 3.1 u^2 of the sum, u = 2^-53.
 
 **Rounding bounds.** A coefficient that is a sum of c complex products has an error
 of at most (6.2 c + 6) u^2 sum abs(a_i) abs(b_j), with abs = abs(re) + abs(im). So a
-product adds G_w B(A) B(B) to the remainder, G_w = (2 w + 20) 8 u^2 with w the
-largest c, and B(A) = sum of abs(a) delta^(deg a). A sum adds 4 u^2 (B(A) + B(B)).
+product adds sum over d of G_d (gA * gB)[d] delta^d to the remainder, with
+G_d = (2 c_d + 20) 8 u^2, c_d the largest c of the outputs of degree d, and gA the
+sums of abs(a) by degree. A sum adds 4 u^2 (B(A) + B(B)), B(A) = sum abs(a) delta^deg.
 
 **Bounds in FP64.** Every bound is a sum or a product of non-negative FP64 numbers,
 times SAFE = 1 + 1e-9 at each step, which is strict for fewer than 1e6 operations.
@@ -186,6 +187,13 @@ class Space:
             ii, jj, kk = ii[order], jj[order], kk[order]
             cnt = np.bincount(kk, minlength=self.size)
             start = np.concatenate([[0], np.cumsum(cnt)[:-1]])
+            # The rounding factor for each output degree, from its largest count of pairs.
+            cmax = np.zeros(self.n + 1)
+            np.maximum.at(cmax, self.deg, cnt)
+            self.gamma_deg = cp.asarray((2 * cmax + 20) * 8 * U2)
+            d = np.arange(self.n + 1)
+            self.conv = cp.asarray((d[:, None, None] + d[None, :, None] == d[None, None, :])
+                                   .astype(np.float64))
             self._table = (cp.asarray(start, cp.int32), cp.asarray(cnt, cp.int32),
                            cp.asarray(ii, cp.int32), cp.asarray(jj, cp.int32), int(cnt.max()))
         return self._table
@@ -320,9 +328,12 @@ def mul(sp, x, y, threads=64):
          np.int32(s), np.int32(b)))
     gx, gy = graded(sp, x), graded(sp, y)
     bx, by = poly_bound_g(gx, x.delta), poly_bound_g(gy, x.delta)
-    gamma = (2 * wmax + 20) * 8 * U2
+    # The outputs of degree d hold sums of at most cmax(d) pairs, whose abs values add up
+    # to at most (gx * gy)[d], the convolution of the graded bounds.
+    gxy = cp.einsum('ijd,ib,jb->db', sp.conv, gx, gy) * SAFE
+    rnd = poly_bound_g(sp.gamma_deg[:, None] * gxy, x.delta)
     rem = (tail_g(gx, gy, x.delta, sp.n) + bx * y.rem + x.rem * by + x.rem * y.rem
-           + gamma * bx * by) * SAFE
+           + rnd) * SAFE
     return TM(z, rem, x.delta)
 
 
@@ -468,7 +479,7 @@ def tensor(sp4, sp2, z, w):
     gz, gw = graded(sp2, z), graded(sp2, w)
     bz, bw = poly_bound_g(gz, z.delta), poly_bound_g(gw, z.delta)
     out.rem = (tail_g(gz, gw, z.delta, sp4.n) + bz * w.rem + z.rem * bw + z.rem * w.rem
-               + 20 * 8 * U2 * bz * bw) * SAFE
+               + 16 * U2 * bz * bw) * SAFE
     return out
 
 
