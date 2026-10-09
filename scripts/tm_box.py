@@ -184,7 +184,38 @@ class TM:
         lag = np.where(eta < 1, lag, np.inf)
         out = s.scale(prefactor)
         out.rem = out.rem + lag * ub(prefactor)
+        out.eta = eta
         return out
+
+
+def tm_power(x, n):
+    """x^n for an integer n >= 1, by repeated squares."""
+    out, base = None, x
+    while n:
+        if n & 1:
+            out = base if out is None else out * base
+        n >>= 1
+        if n:
+            base = base * base
+    return out
+
+
+def radius_model(sp4, sp_n, chart, z1, w1, deltas):
+    """abs(z)^2 = 1 + t_0 w_0 + t_1 w_1 + z_m w_m in the chart, as a Taylor model."""
+    c = np.array([acb(0)] * sp4.size, dtype=object)
+    c[0] = acb(1)
+    for i in range(2):
+        ci = chart.c[i]
+        e_s = [0, 0, 0, 0]
+        e_r = [0, 0, 0, 0]
+        e_s[i], e_r[2 + i] = 1, 1
+        both = [0, 0, 0, 0]
+        both[i], both[2 + i] = 1, 1
+        c[0] += ci * ci.conjugate()
+        c[sp4.index[tuple(e_s)]] += ci.conjugate()
+        c[sp4.index[tuple(e_r)]] += ci
+        c[sp4.index[tuple(both)]] += acb(1)
+    return TM(sp4, c, np.zeros(len(deltas)), deltas) + tensor(sp4, sp_n, z1, w1, deltas)
 
 
 # ---------------------------------------------------------------------------------------
@@ -463,6 +494,7 @@ def tensor(sp4, sp_n, x, y, deltas):
 # ---------------------------------------------------------------------------------------
 
 D = {}
+FACTOR = {'on': False}
 
 
 def load(args):
@@ -631,14 +663,26 @@ def run_box(job):
     t1 = time.perf_counter()
     COUNT['mac'] = 0.0
     p = fb[0, 0]
-    ip = p.binomial(arb(-1), p.c[0] ** -1)
+    alpha_u = arb(-1) / k0
+    if FACTOR['on']:
+        # p0 = abs(z)^(2 k0) p~, so that the binomial series act on functions that vary slowly.
+        r2 = radius_model(sp4, sp_n, chart, z[1], w[1], deltas)
+        ir2 = r2.binomial(arb(-1), r2.c[0] ** -1)
+        ir2k = tm_power(ir2, k0)
+        pt = p * ir2k
+        ipt = pt.binomial(arb(-1), pt.c[0] ** -1)
+        ip = ir2k * ipt
+        u = ir2 * pt.binomial(alpha_u, pt.c[0] ** alpha_u)
+        etas = {'abs(z)^2': ir2.eta, 'p~': ipt.eta}
+    else:
+        ip = p.binomial(arb(-1), p.c[0] ** -1)
+        u = p.binomial(alpha_u, p.c[0] ** alpha_u)
+        etas = {'p0': ip.eta}
     pa = [fb[1 + a, 0] * ip for a in range(2)]
     pb = [fb[0, 1 + b] * ip for b in range(2)]
     pab = {(a, b): fb[1 + a, 1 + b] * ip for a in range(2) for b in range(2)}
     pp = {(a, b): pa[a] * pb[b] for a in range(2) for b in range(2)}
     g = {key: pab[key] - pp[key] for key in pab}
-    alpha_u = arb(-1) / k0
-    u = p.binomial(alpha_u, p.c[0] ** alpha_u)
     powers = {1: u}
 
     def upow(L):
@@ -703,6 +747,7 @@ def run_box(job):
             'rem_p': (p.rem / ub(p.c[0])).tolist(),
             'rem': f.rem.tolist(), 'rem_ip': ip.rem.tolist(), 'rem_u': u.rem.tolist(),
             'rem_g': [float(x) for x in g[0, 0].rem], 'times': times,
+            'etas': {key: [float(x) for x in val] for key, val in etas.items()},
             'mac_forms': mac_forms, 'mac_assembly': COUNT['mac'],
             'seconds': time.perf_counter() - t0}
 
@@ -718,9 +763,12 @@ def main():
     ap.add_argument('--deltas', type=float, nargs='+', default=[0.005, 0.01, 0.02, 0.04])
     ap.add_argument('--prec', type=int, default=160)
     ap.add_argument('--procs', type=int, default=9)
+    ap.add_argument('--factor', action='store_true',
+                    help='take the binomial series of p0 / abs(z)^(2 k0) and of abs(z)^2')
     ap.add_argument('--out', type=str, default='')
     args = ap.parse_args()
     t0 = time.perf_counter()
+    FACTOR['on'] = args.factor
     load(args)
     print(f'loaded: k0 {D["k0"]}, levels {[lv[0] for lv in D["levels"]]}, '
           f'{len(D["z"])} points with min/max abs(z) {D["ratio"]}, '
@@ -736,6 +784,9 @@ def main():
                   f'{res["mac_assembly"]:.2e} MAC; times '
                   + ', '.join(f'{key} {val:.0f}s' for key, val in res['times'].items()),
                   flush=True)
+            print('    eta of the binomial series by delta: ' + '; '.join(
+                f'{key} ' + ' '.join(f'{x:.3f}' for x in val)
+                for key, val in res['etas'].items()), flush=True)
             print(f'    check at a point of the smallest box: p0 {res["check_p"]:.1e} '
                   f'(remainder {res["rem_p"][0]:.1e}), top form {res["check_n"]:.1e}, '
                   'both relative to the center value', flush=True)
