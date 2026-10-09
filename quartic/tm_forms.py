@@ -1,0 +1,218 @@
+"""The forms of a level fit as global polynomials in the chart z_3 = 1, m = 2, in arb.
+
+In the chart, z = (t_0, t_1, z_2, 1) with z_2^4 = u_m = -(1 + t_0^4 + t_1^4). A block
+term abs(z^r)^2 (u^E)^T C u^E is z_2^(r_2) w_2^(r_2) times sum over E, F of
+C[E, F] h_E(t) h_F(w), with the integer polynomial
+h_E(t) = t_0^(r_0 + 4 E_0) t_1^(r_1 + 4 E_1) u_m(t)^(E_2). So each form is
+
+    sum over e = 0..3 of z_2(t)^e w_2(w)^e Q_e(t, w),   Q_e = sum over r with r_2 = e of V_r^T C_r V_r,
+
+with V_r[E, alpha] the coefficient of t^alpha in h_E. The coefficients of Q_e are real
+and symmetric, and they are formed in arb from the stored dd numbers of C_r, so each
+one carries a strict radius.
+
+A level form N_L of `level_matrices.py` is a sum over S_4 of one block of each orbit.
+Each orbit block goes to the residues r' = sigma r with the monomial matrix
+Pi_sigma (F C_o F^T) Pi_sigma^T, and the matrices of one residue are summed first.
+
+M_L = N_L abs(z)^(2 (20 - L)) with abs(z)^2 = 1 + t_0 w_0 + t_1 w_1 + z_2 w_2, and
+z_2^4 w_2^4 = u_m(t) u_m(w), so the product stays in the same form.
+"""
+import itertools
+
+import numpy as np
+import flint
+from flint import arb, arb_mat
+
+from . import blocks
+
+S4 = list(itertools.permutations(range(4)))
+J, M, FREE = 3, 2, (0, 1)
+
+
+def monomials2(d):
+    """The monomials (a, b) of t_0^a t_1^b of degree <= d, in the order of tm_gpu.Space(2, d)."""
+    return [(a, s - a) for s in range(d + 1) for a in range(s, -1, -1)]
+
+
+class Poly2:
+    """Polynomials in t_0, t_1 of degree <= d as integer coefficient vectors."""
+
+    def __init__(self, d):
+        self.d = d
+        self.mons = monomials2(d)
+        self.index = {e: i for i, e in enumerate(self.mons)}
+        self.size = len(self.mons)
+
+    def zero(self):
+        return np.zeros(self.size, dtype=object)
+
+    def mono(self, a, b):
+        v = self.zero()
+        v[self.index[(a, b)]] = 1
+        return v
+
+    def mul(self, x, y):
+        out = self.zero()
+        for i, ei in enumerate(self.mons):
+            if x[i] == 0:
+                continue
+            for j, ej in enumerate(self.mons):
+                if y[j] == 0:
+                    continue
+                e = (ei[0] + ej[0], ei[1] + ej[1])
+                if e[0] + e[1] > self.d:
+                    raise ValueError('a product beyond the degree of the space')
+                out[self.index[e]] += x[i] * y[j]
+        return out
+
+    def power(self, x, n):
+        out = self.mono(0, 0)
+        for _ in range(n):
+            out = self.mul(out, x)
+        return out
+
+    def u_m(self):
+        """u_m = -(1 + t_0^4 + t_1^4)."""
+        v = self.zero()
+        v[self.index[(0, 0)]] = -1
+        v[self.index[(4, 0)]] = -1
+        v[self.index[(0, 4)]] = -1
+        return v
+
+
+def h_matrix(p2, r, exps):
+    """V[E, alpha]: the integer coefficients of h_E(t) for the residue r, as an arb_mat."""
+    um = p2.u_m()
+    rows = []
+    for e in exps:
+        v = p2.mul(p2.mono(r[FREE[0]] + 4 * e[FREE[0]], r[FREE[1]] + 4 * e[FREE[1]]),
+                   p2.power(um, e[M]))
+        rows.append(v)
+    return arb_mat(len(exps), p2.size, [arb(int(x)) for row in rows for x in row])
+
+
+def form_q(p2, blocks_list):
+    """Q_e for e = 0..3 from (r, exps, C) blocks, C an arb_mat in the monomial basis."""
+    q = [arb_mat(p2.size, p2.size) for _ in range(4)]
+    for r, exps, c in blocks_list:
+        v = h_matrix(p2, r, exps)
+        q[r[M]] += v.transpose() * c * v
+    return q
+
+
+def base_blocks(data):
+    """(r, exps, C) of every block of the invariant base in an export of level_oracle."""
+    out = []
+    for i in range(int(data['n_groups'])):
+        frame = data[f'g{i}_frame']
+        if frame.shape[0] != frame.shape[1] or not np.array_equal(frame, np.eye(frame.shape[0])):
+            raise SystemExit('the export does not hold the invariant base (--invariant-base)')
+        exps = [tuple(int(x) for x in e) for e in data[f'g{i}_exps']]
+        hhi, hlo = data[f'g{i}_hhi'], data[f'g{i}_hlo']
+        n = len(exps)
+        for b, r in enumerate(data[f'g{i}_res'].tolist()):
+            c = arb_mat(n, n, [arb(float(x)) + arb(float(y))
+                               for x, y in zip(hhi[b].ravel(), hlo[b].ravel())])
+            out.append((tuple(int(x) for x in r), exps, c))
+    return out
+
+
+def level_blocks(forms, k1):
+    """(r', exps, C') for every residue of the level form N_L: the S_4 sum by residue."""
+    groups = {}
+    for gi in range(int(forms[f'L{k1}_n_groups'])):
+        exps = [tuple(int(x) for x in e) for e in forms[f'L{k1}_g{gi}_exps']]
+        groups[gi] = (exps, forms[f'L{k1}_g{gi}_frame'])
+    acc = {}
+    for oi in range(int(forms[f'L{k1}_n_orbits'])):
+        gi = int(forms[f'L{k1}_o{oi}_group'])
+        exps, frame = groups[gi]
+        r0 = tuple(int(x) for x in forms[f'L{k1}_o{oi}_r'])
+        cs = forms[f'L{k1}_o{oi}_C']
+        d = cs.shape[0]
+        c_o = arb_mat(d, d, [arb(str(x)) for x in cs.ravel()])
+        f = arb_mat(frame.shape[0], d, [arb(float(x)) for x in frame.ravel()])
+        c_mono = f * c_o * f.transpose()
+        n = len(exps)
+        index = {e: i for i, e in enumerate(exps)}
+        for s in S4:
+            rp = blocks.act(s, r0)
+            pi = [index[blocks.act(s, e)] for e in exps]
+            perm = arb_mat(n, n)
+            for i in range(n):
+                perm[pi[i], i] = 1
+            term = perm * c_mono * perm.transpose()
+            key = (rp, gi)
+            acc[key] = term if key not in acc else acc[key] + term
+    return [(rp, groups[gi][0], c) for (rp, gi), c in acc.items()]
+
+
+def times_radius(p2, q):
+    """Q_e of the form times abs(z)^2 = 1 + t_0 w_0 + t_1 w_1 + z_2 w_2."""
+    n = p2.size
+    shifts = []
+    for axis in range(2):
+        s = arb_mat(n, n)
+        for i, e in enumerate(p2.mons):
+            f = list(e)
+            f[axis] += 1
+            if sum(f) <= p2.d:
+                s[p2.index[tuple(f)], i] = 1
+            elif any(q[k][i, j] != 0 for k in range(4) for j in range(n)):
+                raise ValueError('the degree of the space is too small for abs(z)^2')
+        shifts.append(s)
+    um = p2.u_m()
+    u = arb_mat(n, n)
+    for i, e in enumerate(p2.mons):
+        for j, ej in enumerate(p2.mons):
+            if um[j] != 0:
+                f = (e[0] + ej[0], e[1] + ej[1])
+                if sum(f) <= p2.d:
+                    u[p2.index[f], i] = int(um[j])
+    out = []
+    for e in range(4):
+        x = q[e] + shifts[0] * q[e] * shifts[0].transpose() + shifts[1] * q[e] * shifts[1].transpose()
+        if e == 0:
+            x += u * q[3] * u.transpose()
+        else:
+            x += q[e - 1]
+        out.append(x)
+    return out
+
+
+def to_dd(q):
+    """An arb_mat as (hi, lo, rad): the dd midpoint and an upper bound of the distance to it."""
+    n, m = q.nrows(), q.ncols()
+    hi = np.zeros((n, m))
+    lo = np.zeros((n, m))
+    rad = np.zeros((n, m))
+    for i in range(n):
+        for j in range(m):
+            x = q[i, j]
+            mid = x.mid()
+            h = float(mid)
+            l_ = float(mid - arb(h))
+            rest = abs(mid - arb(h) - arb(l_))
+            rad[i, j] = (float(x.rad()) + float(rest.mid()) + float(rest.rad())) * (1 + 1e-12) \
+                + 1e-300
+            hi[i, j], lo[i, j] = h, l_
+    return hi, lo, rad
+
+
+def chart_forms(data, forms, prec=256):
+    """Q_e of the base (degree k0) and of each M_L (degree 20) in the chart, as dd + radius."""
+    flint.ctx.prec = prec
+    k0 = int(data['k0'])
+    top = int(max(forms['k1']))
+    out = {'k0': k0, 'top': top, 'levels': [int(x) for x in forms['k1']]}
+    pb = Poly2(k0)
+    qb = form_q(pb, base_blocks(data))
+    out['base'] = [to_dd(x) for x in qb]
+    p2 = Poly2(top)
+    for k1 in out['levels']:
+        q = form_q(p2, level_blocks(forms, k1))
+        for _ in range(top - k1):
+            q = times_radius(p2, q)
+        out[f'M{k1}'] = [to_dd(x) for x in q]
+    return out
