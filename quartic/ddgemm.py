@@ -174,7 +174,114 @@ extern "C" __global__ void zgemm_td(const double* __restrict__ A, const double* 
     }
 }
 '''
+_TT_SRC = r'''
+#define TT 16
+// C[b] = A[b] op(B[b]) for td arrays: A (nb, 6, M, K), B (nbB, 6, K, N) or (nbB, 6, N, K) for
+// mode 1 (conjugate transpose). out_td = 1: C (nb, 6, M, N); else C (nb, 4, M, N) as dd.
+// Err (nb, M, N): the running error bound of acc_tt / levels_dd.
+extern "C" __global__ void zgemm_tt(const double* __restrict__ A, const double* __restrict__ Bm,
+                                    double* __restrict__ C, double* __restrict__ Err,
+                                    int M, int N, int K, int bstride, int mode, int out_td) {
+    __shared__ double sa[6][TT][TT + 1];
+    __shared__ double sb[6][TT][TT + 1];
+    int b = blockIdx.z;
+    int row = blockIdx.y * TT + threadIdx.y;
+    int col = blockIdx.x * TT + threadIdx.x;
+    const double* a = A + (size_t)b * 6 * M * K;
+    const double* bb = Bm + (size_t)b * bstride;
+    size_t partA = (size_t)M * K, partB = (size_t)K * N;
+    double r0 = 0.0, r1 = 0.0, r2 = 0.0, i0 = 0.0, i1 = 0.0, i2 = 0.0, E = 0.0;
+    for (int k0 = 0; k0 < K; k0 += TT) {
+        int ka = k0 + threadIdx.x;
+        for (int q = 0; q < 6; ++q)
+            sa[q][threadIdx.y][threadIdx.x] = (row < M && ka < K) ? a[q * partA + (size_t)row * K + ka] : 0.0;
+        int kb = k0 + threadIdx.y;
+        for (int q = 0; q < 6; ++q) {
+            double v = 0.0;
+            if (col < N && kb < K) {
+                if (mode == 0) v = bb[q * partB + (size_t)kb * N + col];
+                else v = bb[q * partB + (size_t)col * K + kb];
+            }
+            sb[q][threadIdx.y][threadIdx.x] = (mode == 1 && q >= 3) ? -v : v;
+        }
+        __syncthreads();
+        int kmax = min(TT, K - k0);
+        for (int t = 0; t < kmax; ++t) {
+            double x0 = sa[0][threadIdx.y][t], x1 = sa[1][threadIdx.y][t], x2 = sa[2][threadIdx.y][t];
+            double x3 = sa[3][threadIdx.y][t], x4 = sa[4][threadIdx.y][t], x5 = sa[5][threadIdx.y][t];
+            double y0 = sb[0][t][threadIdx.x], y1 = sb[1][t][threadIdx.x], y2 = sb[2][t][threadIdx.x];
+            double y3 = sb[3][t][threadIdx.x], y4 = sb[4][t][threadIdx.x], y5 = sb[5][t][threadIdx.x];
+            acc_tt(r0, r1, r2, E, x0, x1, x2, y0, y1, y2);
+            acc_tt(r0, r1, r2, E, -x3, -x4, -x5, y3, y4, y5);
+            acc_tt(i0, i1, i2, E, x0, x1, x2, y3, y4, y5);
+            acc_tt(i0, i1, i2, E, x3, x4, x5, y0, y1, y2);
+        }
+        __syncthreads();
+    }
+    if (row < M && col < N) {
+        size_t partC = (size_t)M * N, at = (size_t)row * N + col;
+        if (out_td) {
+            double* c = C + (size_t)b * 6 * M * N;
+            double c0, c1, c2;
+            levels_td(r0, r1, r2, c0, c1, c2);
+            c[at] = c0; c[partC + at] = c1; c[2 * partC + at] = c2;
+            levels_td(i0, i1, i2, c0, c1, c2);
+            c[3 * partC + at] = c0; c[4 * partC + at] = c1; c[5 * partC + at] = c2;
+        } else {
+            double* c = C + (size_t)b * 4 * M * N;
+            double h, l;
+            levels_dd(r0, r1, r2, h, l, E);
+            c[at] = h; c[partC + at] = l;
+            levels_dd(i0, i1, i2, h, l, E);
+            c[2 * partC + at] = h; c[3 * partC + at] = l;
+        }
+        Err[(size_t)b * M * N + at] = E * UNIT;
+    }
+}
+'''
 _MOD = None
+_TT_MOD = None
+
+
+def zgemm_tt(a, b, mode=0, out_td=True):
+    """C = A op(B) for batches of complex td matrices (nb, 6, rows, cols); B may have a batch
+    of 1. Returns C (td, or dd with out_td=False) and Err (nb, rows, cols), a bound of the
+    error of each entry of C (abs re + abs im), from the running bound of the kernel."""
+    global _TT_MOD
+    if _TT_MOD is None:
+        from .tmtd import TD_SRC
+        _TT_MOD = cp.RawModule(code=TD_SRC + _TT_SRC, options=('--fmad=false', '-std=c++14'))
+    nb, _, m, k = a.shape
+    if mode == 0:
+        nbb, _, kb, n = b.shape
+    else:
+        nbb, _, n, kb = b.shape
+    if kb != k or nbb not in (1, nb):
+        raise ValueError('shapes do not match')
+    c = cp.empty((nb, 6 if out_td else 4, m, n))
+    err = cp.empty((nb, m, n))
+    stride = 0 if nbb == 1 else 6 * k * n
+    grid = ((n + TILE - 1) // TILE, (m + TILE - 1) // TILE, nb)
+    _TT_MOD.get_function('zgemm_tt')(
+        grid, (TILE, TILE), (cp.ascontiguousarray(a), cp.ascontiguousarray(b), c, err,
+                             np.int32(m), np.int32(n), np.int32(k), np.int32(stride),
+                             np.int32(mode), np.int32(1 if out_td else 0)))
+    from .tmtd import ERR_SAFE
+    return c, err * ERR_SAFE
+
+
+def td_of_dd(x):
+    """A complex dd array (..., 4, r, c) as td (..., 6, r, c): exact, a zero third limb."""
+    shape = x.shape[:-3] + (6,) + x.shape[-2:]
+    out = cp.zeros(shape)
+    out[..., 0, :, :], out[..., 1, :, :] = x[..., 0, :, :], x[..., 1, :, :]
+    out[..., 3, :, :], out[..., 4, :, :] = x[..., 2, :, :], x[..., 3, :, :]
+    return out
+
+
+def tcabs(x):
+    """An upper bound of abs(re) + abs(im) of each entry of a td array (..., 6, r, c)."""
+    return cp.sum(cp.abs(x), axis=-3) * (1.0 + 1e-15)
 
 
 def _kernel(td=False):
