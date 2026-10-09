@@ -28,7 +28,7 @@ import math
 
 import numpy as np
 import flint
-from flint import arb, arb_mat
+from flint import acb, arb, arb_mat
 
 from . import blocks
 
@@ -273,4 +273,86 @@ def save_gpu(path, data, forms, x0, prec=256):
             out[f'{name}_e{e}_hi'], out[f'{name}_e{e}_lo'], out[f'{name}_e{e}_rad'] = hi, lo, rad
             out[f'{name}_e{e}_abs'] = abs_bounds(q)
     np.savez(path, **out)
+    return out
+
+
+def shift_matrix(p2, c):
+    """T with sum over a of q_a t^a = sum over a' of (T q)_a' (t - c)^a', for t^a in p2.
+
+    c is a pair of exact acb numbers.
+    """
+    from flint import acb, acb_mat
+    vals = []
+    for ap in p2.mons:
+        for a in p2.mons:
+            if ap[0] <= a[0] and ap[1] <= a[1]:
+                vals.append(math.comb(a[0], ap[0]) * math.comb(a[1], ap[1])
+                            * c[0] ** (a[0] - ap[0]) * c[1] ** (a[1] - ap[1]))
+            else:
+                vals.append(acb(0))
+    return acb_mat(p2.size, p2.size, vals)
+
+
+def conj_transpose(m):
+    from flint import acb_mat
+    return acb_mat(m.ncols(), m.nrows(), [m[i, j].conjugate() for j in range(m.ncols())
+                                           for i in range(m.nrows())])
+
+
+def to_dd_complex(q):
+    """An acb_mat as (4, n, m) dd parts, an upper bound of the distance to it, and abs bounds."""
+    n, m = q.nrows(), q.ncols()
+    parts = np.zeros((4, n, m))
+    rad = np.zeros((n, m))
+    absb = np.zeros((n, m))
+    for i in range(n):
+        for j in range(m):
+            x = q[i, j]
+            err = 0.0
+            for k, part in enumerate((x.real, x.imag)):
+                mid = part.mid()
+                h = float(mid)
+                l_ = float(mid - arb(h))
+                rest = abs(mid - arb(h) - arb(l_))
+                parts[2 * k, i, j], parts[2 * k + 1, i, j] = h, l_
+                err += float(part.rad()) + float(rest.mid()) + float(rest.rad())
+            rad[i, j] = err * (1 + 1e-12) + 1e-300
+            a = abs(x)
+            absb[i, j] = (float(a.mid()) + float(a.rad())) * (1 + 1e-12)
+    return parts, rad, absb
+
+
+def local_forms(cf, c, x0):
+    """The base and the M~_m at x0, moved to t = c in arb, as dd parts, radii, abs bounds.
+
+    M~_m = sum over L of C(L, m) x0^L N_L, with N_L the chart polynomials of the levels.
+    A box with x_c = x0 (1 + zeta) takes
+    F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m - k) M~_m, and these terms do
+    not cancel, so the cancellation of the levels happens here in arb only.
+    """
+    from flint import acb_mat
+    out = {}
+    tb = shift_matrix(Poly2(cf['k0']), c)
+    tbh = conj_transpose(tb)
+    tl = shift_matrix(Poly2(cf['top']), c)
+    tlh = conj_transpose(tl)
+    moved = {k1: [tl * acb_mat(q) * tlh for q in cf[f'N{k1}']] for k1 in cf['levels']}
+    named = [('base', [tb * acb_mat(q) * tbh for q in cf['base']])]
+    for m in range(cf['top'] + 1):
+        qs = []
+        for e in range(4):
+            acc = None
+            for k1 in cf['levels']:
+                if m > k1:
+                    continue
+                term = moved[k1][e] * acb(arb(math.comb(k1, m)) * x0 ** k1)
+                acc = term if acc is None else acc + term
+            qs.append(acc)
+        named.append((f'mt{m}', qs))
+    for name, qs in named:
+        for e, q in enumerate(qs):
+            parts, rad, absb = to_dd_complex(q)
+            out[f'{name}_e{e}'] = parts
+            out[f'{name}_e{e}_rad'] = rad
+            out[f'{name}_e{e}_abs'] = absb
     return out
