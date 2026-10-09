@@ -474,7 +474,8 @@ def load(args):
               for k in range(data['z_hi'].shape[0])]
     D['patch'] = data['patch'].tolist()
     D['ratio'] = data['ratio'].tolist()
-    D['v1'] = [acb(float(a)) + acb(float(b)) for a, b in zip(data['v1_hi'], data['v1_lo'])]
+    D['v1'] = [acb(float(a)) + acb(float(b))
+               for a, b in zip(data['v1_hi'][:, args.col], data['v1_lo'][:, args.col])]
     base = []
     for i in range(int(data['n_groups'])):
         frame = data[f'g{i}_frame']
@@ -711,6 +712,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--data', type=str, required=True)
     ap.add_argument('--forms', type=str, required=True)
+    ap.add_argument('--col', type=int, default=3, help='the column of the export v')
     ap.add_argument('--points', type=int, nargs='+', default=[0, 1, 2])
     ap.add_argument('--orders', type=int, nargs='+', default=[12, 16, 20])
     ap.add_argument('--deltas', type=float, nargs='+', default=[0.005, 0.01, 0.02, 0.04])
