@@ -31,6 +31,7 @@ def base(k, seed=1, size=1e-3):
     noise = np.random.default_rng(seed).normal(size=lay.n_theta) * size
     theta = sections.fubini_study_theta(lay) + jnp.asarray(noise)
     analytic.GRAM_DD, analytic.H_LOW, analytic.END_DD = True, True, True
+    analytic.EXACT_MUL = True
     sections.PREPARE_DD = True
     parts = jax.jit(lambda t: analytic.point_matrices(lay, t))(theta)
     return lay, theta, parts
@@ -78,29 +79,32 @@ def test_potential_is_invariant_in_mpmath():
         print(f"  k = {k}: max over S_4 of abs(p0(sigma z) / p0(z) - 1) = {worst:.1e}")
 
 
-def _p_dd(lay, parts, points):
-    extras = dd_metric.point_extras(points)
-    xs = (extras['points_hi'], (extras['points_hi'], extras['points_lo'], extras['patch']))
+def _p_program(lay, parts):
+    """p0 in dd at FP64 points of X, through the dd point of `point_extras`, compiled once."""
     fn = jax.jit(jax.vmap(lambda z, e: correction.base_state_dd(lay, parts, z, e,
                                                               with_p=True)[2]))
-    return fn(*xs)
+
+    def run(points):
+        extras = dd_metric.point_extras(points)
+        return fn(extras['points_hi'],
+                  (extras['points_hi'], extras['points_lo'], extras['patch']))
+    return run
 
 
 def test_dd_path_is_invariant_and_close_to_the_frame_base():
-    """Under jit: the monomial base is invariant to dd, and within 1e-12 of the old base."""
+    """Under jit, with the exact dd product: the monomial base is invariant to dd."""
     k = 14
     lay, _, parts = base(k)
     lay_m, parts_m = invariant.monomial_base(lay, parts)
     points = np.asarray(data.make(20, 11)['points'])[:40]
-    p_new = _p_dd(lay_m, parts_m, points)
-    p_old = _p_dd(lay, parts, points)
+    run_new, run_old = _p_program(lay_m, parts_m), _p_program(lay, parts)
+    p_new, p_old = run_new(points), run_old(points)
     gap_old = float(np.max(np.abs(dd.to_fp(dd.add(p_new, dd.neg(p_old)))
                                   / dd.to_fp(p_old))))
     worst_new, worst_old = 0.0, 0.0
     for s in PERMS[1:]:
         perm_pts = points[:, list(s)]
-        q_new = _p_dd(lay_m, parts_m, perm_pts)
-        q_old = _p_dd(lay, parts, perm_pts)
+        q_new, q_old = run_new(perm_pts), run_old(perm_pts)
         worst_new = max(worst_new, float(np.max(np.abs(
             dd.to_fp(dd.add(q_new, dd.neg(p_new))) / dd.to_fp(p_new)))))
         worst_old = max(worst_old, float(np.max(np.abs(
