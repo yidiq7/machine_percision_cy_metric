@@ -5,7 +5,8 @@ chart z_3 = 1), the script moves the chart polynomials of the base and of the le
 to t = c, and combines the levels at x0 = p0(c)^(-1/k0) into M~_m (see
 `quartic.tm_forms.local_forms`). All of it is in arb. Each center gives one file
 with the dd parts, the radii and the absolute-value bounds of every matrix, and the
-exact dd numbers c and x0.
+exact dd numbers c and x0. With --delta, each form is the four R_j of
+`quartic.tm_forms.delta_split`, and the file also holds the exact dd number s2.
 
 The centers come from --points (the export points of the data, moved into F) or from
 a cover of scripts/cert_cover.py (--centers, its ref_centers).
@@ -84,9 +85,13 @@ def one(job):
     p0 = chart_value(G['cf'], G['cf']['base'], G['cf']['k0'], c, y2)
     # x0 is a dd number, so that the GPU holds exactly the x0 of the M~_m.
     x0 = from_dd(dd_of(exact((p0.real.log() * (-arb(1) / G['cf']['k0'])).exp())))
-    out = tm_forms.local_forms(G['cf'], c, x0)
+    # s2 is a dd number near abs(y2)^2, taken as exact; the GPU forms Delta = abs(y2)^2 - s2.
+    s2 = from_dd(dd_of(exact(acb(abs(y2) ** 2)))).real if G['delta'] else None
+    out = tm_forms.local_forms(G['cf'], c, x0, s2)
     out['c'] = np.array([t[0], t[1]])
     out['x0'] = np.array(dd_of(x0))
+    if s2 is not None:
+        out['s2'] = np.array(dd_of(acb(s2)))
     out['k0'] = G['cf']['k0']
     out['top'] = G['cf']['top']
     np.savez(Path(G['out']) / f'center_{i}.npz', **out)
@@ -109,8 +114,10 @@ def main():
     ap.add_argument('--out', type=str, required=True)
     ap.add_argument('--prec', type=int, default=256)
     ap.add_argument('--procs', type=int, default=4)
+    ap.add_argument('--delta', action='store_true',
+                    help='write each form as R_j in Delta = abs(y2)^2 - s2 (tm_forms.delta_split)')
     args = ap.parse_args()
-    G['prec'], G['out'] = args.prec, args.out
+    G['prec'], G['out'], G['delta'] = args.prec, args.out, args.delta
     Path(args.out).mkdir(parents=True, exist_ok=True)
     flint.ctx.prec = args.prec
     data, forms = np.load(args.data), np.load(args.forms)

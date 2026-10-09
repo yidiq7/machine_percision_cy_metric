@@ -58,13 +58,18 @@ class Frames:
     vol: cp.ndarray        # (4, B): 1 / (abs(det U)^2 vbar), U = [E, n]
     vol_err: cp.ndarray    # (B,): a bound of the error of vol relative to its value
     host: list             # mpmath values of each box, for checks
+    ha: cp.ndarray = None  # (3, 4, B): c1inv P(p), c1inv grad.E_0, c1inv grad.E_1
+    a6: cp.ndarray = None  # (3, 4, B): 6 p_k^2
+    a4: cp.ndarray = None  # (3, 4, B): 4 p_k
+    h_err: cp.ndarray = None   # (6, B): the errors of ha (3), abs(1 - c1inv c1), and the
+                               # largest errors of a6 and a4
 
 
 def make_frames(centers, k0):
     """The frames of boxes with centers t = (t_0, t_1), each given as two dd lists."""
     vbar = 512 * mp.pi ** 4 * k0 ** 2 / mp.gamma(mp.mpf(1) / 4) ** 8
-    cols = {k: [] for k in ('p', 'e', 'n', 'c1inv', 'vol')}
-    errs, host = [], []
+    cols = {k: [] for k in ('p', 'e', 'n', 'c1inv', 'vol', 'ha', 'a6', 'a4')}
+    errs, host, herr = [], [], []
     for t in centers:
         t0, t1 = dd_mp(t[0]), dd_mp(t[1])
         y2 = (-(1 + t0 ** 4 + t1 ** 4)) ** (mp.mpf(1) / 4)
@@ -85,10 +90,24 @@ def make_frames(centers, k0):
         cols['n'].append([mp_dd(c) for c in n])
         cols['c1inv'].append(mp_dd(c1inv))
         cols['vol'].append(mp_dd(wd))
+        # The map of implicit_h about p: T(h) = kappa h - A(tau) - c1inv N(E tau + h n).
+        ha = [c1inv * (sum(c ** 4 for c in p) + 1),
+              c1inv * sum(g * x for g, x in zip(grad, e[0])),
+              c1inv * sum(g * x for g, x in zip(grad, e[1]))]
+        a6 = [6 * c ** 2 for c in p]
+        a4 = [4 * c for c in p]
+        err = lambda v: float(abs(dd_mp(mp_dd(v)) - v)) * (1 + 1e-9) + 1e-55
+        cols['ha'].append([mp_dd(v) for v in ha])
+        cols['a6'].append([mp_dd(v) for v in a6])
+        cols['a4'].append([mp_dd(v) for v in a4])
+        herr.append([err(v) for v in ha] + [float(abs(1 - c1inv * c1)) * (1 + 1e-9) + 1e-55,
+                                            max(err(v) for v in a6), max(err(v) for v in a4)])
         host.append(dict(p=p, e=e, n=n, c1inv=c1inv, w=wd))
     to = lambda key, axes: cp.asarray(np.moveaxis(np.array(cols[key]), 0, -1))
     return Frames(p=to('p', None), e=to('e', None), n=to('n', None), c1inv=to('c1inv', None),
-                  vol=to('vol', None), vol_err=cp.asarray(np.array(errs)), host=host)
+                  vol=to('vol', None), vol_err=cp.asarray(np.array(errs)), host=host,
+                  ha=to('ha', None), a6=to('a6', None), a4=to('a4', None),
+                  h_err=cp.asarray(np.array(herr).T))
 
 
 def neg(k):
@@ -120,18 +139,42 @@ def p_value(sp, ys):
 def implicit_h(sp, fr, delta):
     """The models of y(tau) = p + E tau + h n on X, with a strict remainder of h.
 
-    T(h) = h - P(y(h)) / c1. If T maps the ball abs(h - P_h) <= rho into itself with a
-    contraction factor lam < 1, the root of each tau lies in that ball.
+    T(h) = h - c1inv P(y(h)). If T maps the ball abs(h - P_h) <= rho into itself with a
+    contraction factor lam < 1, the root of each tau lies in that ball. With w = E tau + h n,
+    T(h) = kappa h - A(tau) - c1inv N(w): kappa = 1 - c1inv c1, A = c1inv (P(p) + grad.E tau)
+    and N(w) = sum over k of w_k^2 (6 p_k^2 + w_k (4 p_k + w_k)). The host gives A, 6 p_k^2
+    and 4 p_k as dd numbers with their errors; kappa h goes to the error. So the rounding
+    acts only on the small terms of N. Returns ys, rho, lam and the model of h.
     """
-    lin = [lin_tm(sp, fr.p[k], fr.e[0, k], fr.e[1, k], delta) for k in range(3)]
     b = delta.shape[0]
+    zero = cp.zeros((4, b))
+    lin0 = [lin_tm(sp, zero, fr.e[0, k], fr.e[1, k], delta) for k in range(3)]
+    a_tau = lin_tm(sp, fr.ha[0], fr.ha[1], fr.ha[2], delta)
+
+    def t_map(h):
+        ws = [tmc.add(sp, lin0[k], tmc.scale(sp, h, fr.n[k])) for k in range(3)]
+        nw = None
+        for k in range(3):
+            inner = tmc.add_const(sp, tmc.mul(sp, ws[k], tmc.add_const(sp, ws[k], fr.a4[k])),
+                                  fr.a6[k])
+            term = tmc.mul(sp, tmc.mul(sp, ws[k], ws[k]), inner)
+            nw = term if nw is None else tmc.add(sp, nw, term)
+        return tmc.neg(tmc.add(sp, a_tau, tmc.scale(sp, nw, fr.c1inv))), ws
+
     h = tmc.TM(tmc.zeros(sp, b), cp.zeros(b), delta)
     for _ in range(sp.n + 2):
-        ys = [tmc.add(sp, lin[k], tmc.scale(sp, h, fr.n[k])) for k in range(3)]
-        h = tmc.sub(sp, h, tmc.scale(sp, p_value(sp, ys), fr.c1inv))
+        h, _ = t_map(h)
         h = tmc.TM(h.c, cp.zeros(b), delta)
+    th, ws = t_map(h)
+    bw = [tmc.bound(sp, w) for w in ws]
+    iabs = tmc.abs_ub(fr.c1inv[:, None, :])[0]
+    he = fr.h_err
+    # The terms that T(h) above leaves out or rounds on the host.
+    eps = (he[0] + (he[1] + he[2]) * delta + he[3] * tmc.bound(sp, h)
+           + iabs * sum(he[4] * x ** 2 + he[5] * x ** 3 for x in bw)) * SAFE
+    bd = (tmc.bound(sp, tmc.sub(sp, th, h)) + eps) * SAFE
+    lin = [lin_tm(sp, fr.p[k], fr.e[0, k], fr.e[1, k], delta) for k in range(3)]
     ys = [tmc.add(sp, lin[k], tmc.scale(sp, h, fr.n[k])) for k in range(3)]
-    bd = tmc.bound(sp, tmc.scale(sp, p_value(sp, ys), fr.c1inv))
     dp = None
     for k in range(3):
         cube = tmc.mul(sp, tmc.mul(sp, ys[k], ys[k]), ys[k])
@@ -140,7 +183,6 @@ def implicit_h(sp, fr, delta):
     lam0 = tmc.bound(sp, tmc.add_const(sp, tmc.scale(sp, dp, -fr.c1inv), tmc.cconst(1, b)))
     by = [tmc.bound(sp, y) for y in ys]
     nabs = [tmc.abs_ub(fr.n[k][:, None, :])[0] for k in range(3)]
-    iabs = tmc.abs_ub(fr.c1inv[:, None, :])[0]
     ok = lam0 < 1
     r = cp.where(ok, 2 * bd / cp.where(ok, 1 - lam0, 1.0), cp.inf) * SAFE
     second = sum(12 * nabs[k] ** 2 * (by[k] + r * nabs[k]) ** 2 for k in range(3))
@@ -149,7 +191,27 @@ def implicit_h(sp, fr, delta):
     rho = cp.where(good, r, cp.inf)
     h = tmc.TM(h.c, rho, delta)
     ys = [tmc.add(sp, lin[k], tmc.scale(sp, h, fr.n[k])) for k in range(3)]
-    return ys, rho, lam
+    return ys, rho, lam, h
+
+
+def offset_models(sp, fr, h, ref, delta):
+    """The models of t_i - ref_i (i = 0, 1) and of y_2 - p_2, from h and the frames.
+
+    The constant p_i - ref_i comes from the host, rounded to dd with its error, so no
+    difference of two near values rounds on the GPU.
+    """
+    b = delta.shape[0]
+    out = []
+    for i in range(2):
+        vals = [hb['p'][i] - ref[i] for hb in fr.host]
+        dp = _to_dd(vals)
+        err = cp.asarray(np.array([float(abs(dd_mp(mp_dd(v)) - v)) * (1 + 1e-9) + 1e-60
+                                   for v in vals]))
+        x = tmc.add(sp, lin_tm(sp, dp, fr.e[0, i], fr.e[1, i], delta), tmc.scale(sp, h, fr.n[i]))
+        out.append(tmc.TM(x.c, (x.rem + err) * SAFE, x.delta))
+    v = tmc.add(sp, lin_tm(sp, cp.zeros((4, b)), fr.e[0, 2], fr.e[1, 2], delta),
+                tmc.scale(sp, h, fr.n[2]))
+    return out, v
 
 
 def conj_tm(x):
@@ -158,20 +220,21 @@ def conj_tm(x):
     return tmc.TM(c, x.rem.copy(), x.delta)
 
 
-def monomial_mats(sp2, sp_low, ys, cr, top, n_list):
-    """For e = 0..3: the coefficients of y_2^e (t - c_r)^alpha, alpha of degree <= top.
+def monomial_mats(sp2, sp_low, base_t, y2, top):
+    """The coefficients of y_2^e (t - c_r)^alpha, alpha of degree <= top, for e = 0..3,
+    or for e = 0 only if y2 is None.
 
-    Returns, for each e: Y (B, 4, S_low, n_top) for the degrees <= sp_low.n in tau, and
-    (n_top, B) arrays of the bound of that part, of the bound of the rest of the
-    polynomial (degrees above sp_low.n), and of the remainder.
+    base_t: the models of t_i - c_r,i (offset_models). Returns, for each e: Y (B, 4,
+    S_low, n_top) for the degrees <= sp_low.n in tau, and (n_top, B) arrays of the bound
+    of that part, of the bound of the rest of the polynomial (degrees above sp_low.n),
+    and of the remainder.
     """
     from .tm_forms import Poly2
     p2 = Poly2(top)
-    b = ys[0].delta.shape[0]
-    base_t = [tmc.add_const(sp2, ys[i], -cr[i][:, None].repeat(b, axis=1)) for i in range(2)]
+    b = base_t[0].delta.shape[0]
     # The monomials of one degree come from those of the degree below in one product,
     # with the monomials stacked along the batch axis.
-    mono = {(0, 0): tmc.const(sp2, tmc.cconst(1, b), ys[0].delta)}
+    mono = {(0, 0): tmc.const(sp2, tmc.cconst(1, b), base_t[0].delta)}
     for d in range(1, top + 1):
         layer = [(d - j, j) for j in range(d + 1)]
         srcs = [mono[(a - 1, c)] if a else mono[(0, c - 1)] for a, c in layer]
@@ -179,15 +242,17 @@ def monomial_mats(sp2, sp_low, ys, cr, top, n_list):
         prod = _batched_mul(sp2, srcs, facs)
         for m, x in zip(layer, prod):
             mono[m] = x
-    y2e = [None, ys[2], tmc.mul(sp2, ys[2], ys[2])]
-    y2e.append(tmc.mul(sp2, y2e[2], ys[2]))
+    n_e = 1 if y2 is None else 4
+    if y2 is not None:
+        y2e = [None, y2, tmc.mul(sp2, y2, y2)]
+        y2e.append(tmc.mul(sp2, y2e[2], y2))
     low = sp_low.size
     deg = cp.asarray(sp2.deg)
-    pw = ys[0].delta[None, :] ** deg[:, None]                 # (S2, B)
+    pw = base_t[0].delta[None, :] ** deg[:, None]             # (S2, B)
     is_low = cp.asarray((sp2.deg <= sp_low.n).astype(np.float64))[:, None]
     out = []
     monos = [mono[m] for m in p2.mons]
-    for e in range(4):
+    for e in range(n_e):
         tms = monos if e == 0 else _batched_mul(sp2, [y2e[e]] * len(monos), monos)
         cs = cp.stack([t.c for t in tms], axis=2)             # (4, S2, n_top, B)
         a = tmc.abs_ub(cs.reshape(4, sp2.size, -1)).reshape(sp2.size, len(tms), b)
@@ -229,6 +294,8 @@ def mats_at(mats, sp_k):
 def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     """The model in four variables of sum over e of Y_e Q_e Y_e^H, with all remainders.
 
+    The sum runs over the blocks of q; mats[e] belongs to q[e].
+
     q[e]: (nq, 4, n, n) with nq = 1 (shared) or B; q_rad[e], q_abs[e]: (nq, n, n) FP64.
     The true form differs from the polynomial of total degree <= n by the entries of W
     of higher total degree (their exact sizes; a majorant from abs(Q) is far too large,
@@ -243,7 +310,7 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     parts = {k: cp.zeros(b) for k in ('round', 'high', 'models', 'radius', 'sums', 'abs')}
     g = ddgemm.gamma(n)
     quad = lambda u, m, v: cp.matmul(cp.matmul(u.T[:, None, :], m), v.T[:, :, None])[:, 0, 0]
-    for e in range(4):
+    for e in range(len(q)):
         y, b_low, b_high, r = mats[e][:4]
         y = cp.ascontiguousarray(y[:, :, :, :n])
         b_low, b_high, r = b_low[:n], b_high[:n], r[:n]
@@ -309,12 +376,13 @@ def _from_bidegree(sp4, sp_low, w, rem, delta, tail_done=False):
     return tmc.TM(cp.ascontiguousarray(c), (rem + tail) * SAFE, delta)
 
 
-def reexpand(local, zeta_host, k_max, top):
+def reexpand(local, zeta_host, k_max, top, tag='e'):
     """Per box: the matrices of F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m-k) M~_m.
 
     For each e this is one product of the weights (B, k_max + 1, top + 1), formed in
     mpmath and rounded to dd (2 u^2 each), with the stacked M~_m (top + 1, n^2) by
-    `ddgemm.zgemm`. Returns, for each k <= k_max, a list over e of (q (B, 4, n, n),
+    `ddgemm.zgemm`. tag 'j' takes the R_j of tm_forms.delta_split in place of the Q_e.
+    Returns, for each k <= k_max, a list over e of (q (B, 4, n, n),
     rad (B, n, n), abs (B, n, n)); rad holds the radii of the M~_m, the rounding of the
     weights and that of the product.
     """
@@ -333,11 +401,11 @@ def reexpand(local, zeta_host, k_max, top):
     g = ddgemm.gamma(nm)
     out = [[None] * 4 for _ in range(k_max + 1)]
     for e in range(4):
-        n = local[f'mt0_e{e}'].shape[-1]
-        mt = cp.stack([local[f'mt{m}_e{e}'].reshape(4, n * n) for m in range(nm)], axis=1)
+        n = local[f'mt0_{tag}{e}'].shape[-1]
+        mt = cp.stack([local[f'mt{m}_{tag}{e}'].reshape(4, n * n) for m in range(nm)], axis=1)
         q = ddgemm.zgemm(wd, mt[None], mode=0)                          # (B, 4, K+1, n*n)
-        ma = cp.stack([local[f'mt{m}_e{e}_abs'].reshape(n * n) for m in range(nm)])
-        mr = cp.stack([local[f'mt{m}_e{e}_rad'].reshape(n * n) for m in range(nm)])
+        ma = cp.stack([local[f'mt{m}_{tag}{e}_abs'].reshape(n * n) for m in range(nm)])
+        mr = cp.stack([local[f'mt{m}_{tag}{e}_rad'].reshape(n * n) for m in range(nm)])
         absq = cp.matmul(wa, ma) * SAFE                                  # (B, K+1, n*n)
         rad = (cp.matmul(wa, mr) + (g + 2 * U2) * absq) * SAFE
         for k in range(k_max + 1):
@@ -385,19 +453,24 @@ def _power(sp, x, m, cache):
     return cache[m]
 
 
-def form_abs(mats, q_abs):
-    """A bound of a form on the polydisc from abs(Q): the sum of full^T abs(Q) full over e."""
+def form_abs(mats, q_abs, bdl=None):
+    """A bound of a form on the polydisc from abs(Q): the sum of full^T abs(Q) full over e.
+
+    With bdl (the bound of Delta), the blocks are the R_j and block j has the factor bdl^j.
+    """
     out = None
     for e in range(4):
-        _, b_low, b_high, r = mats[e][:4]
+        _, b_low, b_high, r = mats[0 if bdl is not None else e][:4]
         n = q_abs[e].shape[-1]
         full = (b_low + b_high + r)[:n]
         v = cp.einsum('ab,bac,cb->b', full, q_abs[e], full)
+        if bdl is not None:
+            v = v * bdl ** e
         out = v if out is None else out + v
     return out * SAFE
 
 
-def reexpand_abs(local, zeta_host, k, top):
+def reexpand_abs(local, zeta_host, k, top, tag='e'):
     """abs bounds of the matrices of F_k only, (B, n, n) for each e."""
     b = len(zeta_host)
     ms = list(range(k, top + 1))
@@ -407,10 +480,47 @@ def reexpand_abs(local, zeta_host, k, top):
     for e in range(4):
         acc = None
         for w, m in zip(wa, ms):
-            a = local[f'mt{m}_e{e}_abs'][None] * w[:, None, None]
+            a = local[f'mt{m}_{tag}{e}_abs'][None] * w[:, None, None]
             acc = a if acc is None else acc + a
         out.append(acc * SAFE)
     return out
+
+
+def delta_model(sp4, sp2, fr, v, local, delta):
+    """Delta = abs(y_2)^2 - s2 = (abs(p_2)^2 - s2) + conj(p_2) v + p_2 conj(v) + v conj(v).
+
+    v = y_2 - p_2 has no constant from p_2, and abs(p_2)^2 - s2 comes from the host, so
+    Delta has no rounding of the size of abs(y_2)^2.
+    """
+    b = delta.shape[0]
+    s2 = dd_mp(np.asarray(local['s2'])).real
+    vals = [abs(hb['p'][2]) ** 2 - s2 for hb in fr.host]
+    d0 = _to_dd(vals)
+    err = cp.asarray(np.array([float(abs(dd_mp(mp_dd(x)) - x)) * (1 + 1e-9) + 1e-60
+                               for x in vals]))
+    one = tmc.const(sp2, tmc.cconst(1, b), delta)
+    vc = conj_tm(v)
+    p2c = fr.p[2].copy()
+    p2c[2:] = -p2c[2:]
+    t1 = tmc.tensor(sp4, sp2, tmc.scale(sp2, v, p2c), one)
+    t2 = tmc.tensor(sp4, sp2, one, tmc.scale(sp2, vc, fr.p[2]))
+    t3 = tmc.tensor(sp4, sp2, v, vc)
+    x = tmc.add_const(sp4, tmc.add(sp4, tmc.add(sp4, t1, t2), t3), d0)
+    return tmc.TM(x.c, (x.rem + err) * SAFE, x.delta)
+
+
+def delta_form(sp4, sp_low, mats, q, q_rad, q_abs, delta, dl, bdl):
+    """sum over j of Delta^j W_j with W_j = Y R_j Y^H, by Horner's rule in Delta.
+
+    The parts of the remainder are those of the W_j, with the factor bdl^j.
+    """
+    ws = [compose(sp4, sp_low, mats[:1], [q[j]], [q_rad[j]], [q_abs[j]], delta)
+          for j in range(4)]
+    s = ws[3]
+    for j in (2, 1, 0):
+        s = tmc.add(sp4, ws[j], tmc.mul(sp4, dl, s))
+    s.parts = {key: sum(ws[j].parts[key] * bdl ** j for j in range(4)) for key in ws[0].parts}
+    return s
 
 
 def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
@@ -427,19 +537,35 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
     sp2, sp_low, sp4 = _space(2, ny), _space(2, n), _space(4, n)
     info = {}
     clock = _Clock()
-    ys, rho, lam = implicit_h(sp2, fr, d_phi)
+    # The forms are sums over e of abs(y_2)^(2e) Q_e, or over j of Delta^j R_j.
+    mode_j = 's2' in local
+    tag = 'j' if mode_j else 'e'
+    ys, rho, lam, hm = implicit_h(sp2, fr, d_phi)
     info['rho_h'], info['lam_h'] = rho, lam
     yc = [conj_tm(y) for y in ys]
-    cr = cp.asarray(local['c'])                                  # (2, 4)
+    cref = [dd_mp(cp.asnumpy(cp.asarray(local['c']))[i]) for i in range(2)]
+    base_t, v2 = offset_models(sp2, fr, hm, cref, d_phi)
     clock('h')
-    mats = monomial_mats(sp2, sp_low, ys, cr, top, None)
+    mats = monomial_mats(sp2, sp_low, base_t, None if mode_j else ys[2], top)
+    dls, bdl = {}, None
+    if mode_j:
+        dls[n] = delta_model(sp4, sp2, fr, v2, local, d_phi)
+        bdl = tmc.bound(sp4, dls[n])
+        info['bound_delta'] = bdl
     clock('monomials')
 
+    def form(sp4k, splk, mk, q, rr, aa):
+        if not mode_j:
+            return compose(sp4k, splk, mk, q, rr, aa, d_phi)
+        if sp4k.n not in dls:
+            dls[sp4k.n] = tmc.truncate(sp4k, sp4, dls[n])
+        return delta_form(sp4k, splk, mk, q, rr, aa, d_phi, dls[sp4k.n], bdl)
+
     # The base and abs(y)^2.
-    qb = [local[f'base_e{e}'][None] for e in range(4)]
-    rb = [local[f'base_e{e}_rad'][None] for e in range(4)]
-    ab = [local[f'base_e{e}_abs'][None] for e in range(4)]
-    p0 = compose(sp4, sp_low, mats, qb, rb, ab, d_phi)
+    qb = [local[f'base_{tag}{e}'][None] for e in range(4)]
+    rb = [local[f'base_{tag}{e}_rad'][None] for e in range(4)]
+    ab = [local[f'base_{tag}{e}_abs'][None] for e in range(4)]
+    p0 = form(sp4, sp_low, mats, qb, rb, ab)
     one = tmc.cconst(1, b)
     r2 = tmc.const(sp4, one, d_phi)
     for k in range(3):
@@ -478,7 +604,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
 
     clock('base')
     # F_k for k <= k_max as models; the rest through a bound.
-    fq = reexpand(local, zeta, k_max, top)
+    fq = reexpand(local, zeta, k_max, top, tag)
     clock('reexpand')
     # F_k enters psi as xi^k F_k, and xi is of degree 1 up to a rounding, so F_k needs
     # only the order n - (k - k_full) for k > k_full; the rest goes to its remainder.
@@ -490,10 +616,10 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
         aa = [x[2] for x in fq[k]]
         sp4k, splk = _space(4, orders[k]), _space(2, orders[k])
         mk = mats if orders[k] == n else mats_at(mats, splk)
-        fk.append(compose(sp4k, splk, mk, q, rr, aa, d_phi))
+        fk.append(form(sp4k, splk, mk, q, rr, aa))
     tail = cp.zeros(b)
     for k in range(k_max + 1, top + 1):
-        tail += form_abs(mats, reexpand_abs(local, zeta, k, top)) * bxi ** k
+        tail += form_abs(mats, reexpand_abs(local, zeta, k, top, tag), bdl) * bxi ** k
     clock('forms')
     xis = {n: xi}
     for m in set(orders):
@@ -528,7 +654,8 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
     f = tmc.add_const(sp4, v, -one)
     clock('metric')
     info.update(rem_g=g[0, 0].rem, rem_f=f.rem, times=clock.times)
-    return f, (d, d_f, d_phi), info, dict(p0=p0, f0=fk[0], ys=ys, sp4=sp4, sp2=sp2)
+    return f, (d, d_f, d_phi), info, dict(p0=p0, f0=fk[0], ys=ys, sp4=sp4, sp2=sp2,
+                                          delta=dls.get(n))
 
 
 _SPACES = {}

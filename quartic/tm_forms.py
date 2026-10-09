@@ -325,13 +325,31 @@ def to_dd_complex(q):
     return parts, rad, absb
 
 
-def local_forms(cf, c, x0):
+def delta_split(qs, s2):
+    """R_j = sum over e >= j of C(e, j) s2^(e - j) Q_e, for j = 0..3.
+
+    With Delta = abs(z_2)^2 - s2, sum over e of abs(z_2)^(2e) Q_e = sum over j of
+    Delta^j R_j. Near the curves z_a = 0 the Q_e cancel strongly and R_0 does not.
+    """
+    out = []
+    for j in range(4):
+        acc = None
+        for e in range(j, 4):
+            term = qs[e] * (math.comb(e, j) * s2 ** (e - j))
+            acc = term if acc is None else acc + term
+        out.append(acc)
+    return out
+
+
+def local_forms(cf, c, x0, s2=None):
     """The base and the M~_m at x0, moved to t = c in arb, as dd parts, radii, abs bounds.
 
     M~_m = sum over L of C(L, m) x0^L N_L, with N_L the chart polynomials of the levels.
     A box with x_c = x0 (1 + zeta) takes
     F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m - k) M~_m, and these terms do
     not cancel, so the cancellation of the levels happens here in arb only.
+    With an exact real s2, each form is written as R_j of `delta_split` (keys
+    `<name>_j<j>`) and not as Q_e (keys `<name>_e<e>`).
     """
     from flint import acb_mat
     out = {}
@@ -352,10 +370,13 @@ def local_forms(cf, c, x0):
                 acc = term if acc is None else acc + term
             qs.append(acc)
         named.append((f'mt{m}', qs))
+    tag = 'e' if s2 is None else 'j'
     for name, qs in named:
+        if s2 is not None:
+            qs = delta_split(qs, acb(s2))
         for e, q in enumerate(qs):
             parts, rad, absb = to_dd_complex(q)
-            out[f'{name}_e{e}'] = parts
-            out[f'{name}_e{e}_rad'] = rad
-            out[f'{name}_e{e}_abs'] = absb
+            out[f'{name}_{tag}{e}'] = parts
+            out[f'{name}_{tag}{e}_rad'] = rad
+            out[f'{name}_{tag}{e}_abs'] = absb
     return out

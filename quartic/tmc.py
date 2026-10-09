@@ -289,6 +289,11 @@ def sub(sp, x, y):
     return TM(c, (x.rem + y.rem + err) * SAFE, x.delta)
 
 
+def neg(x):
+    """-x; a change of sign is exact."""
+    return TM(-x.c, x.rem.copy(), x.delta)
+
+
 def scale_raw(c, k):
     """c (4, S, B) times a complex dd number k (4, B) for each box; each entry rounds by
     at most 16 u^2 of abs(c) abs(k)."""

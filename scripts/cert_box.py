@@ -65,8 +65,13 @@ def local_p0(local, y, k0):
     mono = [s[0] ** a * s[1] ** b for a, b in p2.mons]
     monoc = [mp.conj(m) for m in mono]
     total = mp.mpc(0)
+    # Each block e has the factor abs(y_2)^(2e), or Delta^j with Delta = abs(y_2)^2 - s2.
+    if 's2' in local.files:
+        tag, factor = 'j', abs(y[2]) ** 2 - tc.dd_mp(local['s2']).real
+    else:
+        tag, factor = 'e', abs(y[2]) ** 2
     for e in range(4):
-        q = local[f'base_e{e}']
+        q = local[f'base_{tag}{e}']
         part = mp.mpc(0)
         for i in range(p2.size):
             row = mp.mpc(0)
@@ -75,7 +80,7 @@ def local_p0(local, y, k0):
                            mp.mpf(q[2, i, j]) + mp.mpf(q[3, i, j]))
                 row += v * monoc[j]
             part += mono[i] * row
-        total += part * abs(y[2]) ** (2 * e)
+        total += part * factor ** e
     return total
 
 
@@ -89,6 +94,8 @@ def main():
     ap.add_argument('--kmax', type=int, default=20,
                     help='the largest k with a full model of F_k; the rest enter by a bound')
     ap.add_argument('--repeat', type=int, default=1, help='copies of each box, for the timing')
+    ap.add_argument('--a', type=float, nargs='+', default=[0.0],
+                    help='the gap fractions of the Cauchy estimate (0: 2 / order)')
     ap.add_argument('--deltas', type=float, nargs='+', default=[0.005, 0.01, 0.02, 0.03])
     ap.add_argument('--cover', type=str, default='',
                     help='take the boxes from the cells of a cover (with --ref and --ncell)')
@@ -118,19 +125,23 @@ def main():
         deltas = list(args.deltas) * args.repeat
         nb = len(deltas)
         fr = tc.make_frames(centers * args.repeat if args.cover else [cdd] * nb, k0)
-        for n in args.orders:
+        for n, a in [(n, a) for n in args.orders for a in args.a]:
+            a = a or None
             if args.repeat > 1:
-                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax)
+                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax, a)
             cp.cuda.Device().synchronize()
             t0 = time.perf_counter()
             f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, deltas, n,
-                                                      n + args.ny_extra, args.kmax)
+                                                      n + args.ny_extra, args.kmax, a)
             sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
             cp.cuda.Device().synchronize()
             sec = time.perf_counter() - t0
             fc = tc.dd_mp(cp.asnumpy(f.c[:, 0, 0]))
             ref = f', tm_box {args.fref[ci]:+.10e}' if ci < len(args.fref) else ''
-            print(f'center {ci}, order {n} (tau alone {n + args.ny_extra}): f(c) '
+            extra = (f', bound of Delta {float(cp.max(info["bound_delta"])):.2e}'
+                     if 'bound_delta' in info else '')
+            print(f'center {ci}, order {n} (tau alone {n + args.ny_extra}), a '
+                  f'{a or 2 / n:.3f}{extra}: f(c) '
                   f'{mp.nstr(fc.real, 11)}{ref}; {sec:.1f}s for {nb} boxes ('
                   + ', '.join(f'{k} {v:.2f}s' for k, v in info['times'].items()) + ')', flush=True)
             # The model of p0 at a point of the smallest box against mpmath.
