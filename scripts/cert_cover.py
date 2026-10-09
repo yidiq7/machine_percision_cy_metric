@@ -103,10 +103,15 @@ def box_radius(lo, s, c_dd):
         t = [acb(_ball(lo[0], s), _ball(lo[1], s)), acb(_ball(lo[2], s), _ball(lo[3], s))]
         # abs(t_i - c_i) <= r on the cell; abs(z2) >= zmin and abs(t_i) <= tmax_i there.
         r = upper(_to_arb(s) * arb(2).sqrt() / 2)
-        zl = lower(1 + t[0] ** 4 + t[1] ** 4)
-        if zl <= 0:
+        # abs(z2)^8 = abs(1 + t_0^4 + t_1^4)^2 from real intervals (mpmath.iv), which is
+        # sharper than the complex ball of the cell.
+        a0, b0, a1, b1 = (iv.mpf([lo[k], lo[k] + s]) for k in range(4))
+        p0, q0 = cpow4(a0, b0)
+        p1, q1 = cpow4(a1, b1)
+        w2 = (1 + p0 + p1) ** 2 + (q0 + q1) ** 2
+        if not w2.a > 0:
             return float('inf'), float('inf')
-        zmin = lower((arb(zl).log() / 4).exp())
+        zmin = lower((_to_arb(w2.a).log() / 8).exp())
         tmax = [upper(t[i]) for i in range(2)]
         # Second derivatives of z2: -3 t_i^2 delta_ij / z2^3 - 3 t_i^3 t_j^3 / z2^7.
         hs = 0.0
