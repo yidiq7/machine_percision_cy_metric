@@ -143,6 +143,13 @@ def main():
             print(f'    check p0 at a point: gap {float(abs(p_tm - p_mp)):.2e}, remainder '
                   f'{float(parts["p0"].rem[k]):.2e}, value {float(abs(p_mp)):.3e}', flush=True)
             h = {key: cp.asnumpy(val) for key, val in info.items() if isinstance(val, cp.ndarray)}
+            pf = {k: cp.asnumpy(v) for k, v in info['parts_f0'].items()}
+            for i in range(len(deltas[:len(args.deltas)])):
+                print(f'    F_0 at box {i}: value {h["value_f0"][i]:.3e}, abs form over value '
+                      f'{pf["abs"][i] / h["value_f0"][i]:.2e}; remainder parts: rounding '
+                      f'{pf["round"][i]:.1e}, above the order {pf["high"][i]:.1e}, models '
+                      f'{pf["models"][i]:.1e}, radii {pf["radius"][i]:.1e}, sums {pf["sums"][i]:.1e}',
+                      flush=True)
             for i, dl in enumerate(args.deltas):
                 print(f'    delta {dl:.4f}: abs(f) <= {float(sup[i]):.2e} (center {float(c0[i]):.2e},'
                       f' polynomial {float(pb[i]):.2e}, remainder {h["rem_f"][i]:.2e}) | h '

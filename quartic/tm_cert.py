@@ -240,6 +240,7 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     b = delta.shape[0]
     w = None
     rem = cp.zeros(b)
+    parts = {k: cp.zeros(b) for k in ('round', 'high', 'models', 'radius', 'sums', 'abs')}
     g = ddgemm.gamma(n)
     quad = lambda u, m, v: cp.matmul(cp.matmul(u.T[:, None, :], m), v.T[:, :, None])[:, 0, 0]
     for e in range(4):
@@ -249,16 +250,24 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
         t = ddgemm.zgemm(y, q[e], mode=0)
         part = ddgemm.zgemm(t, y, mode=1)
         if w is not None:
-            rem += 4 * U2 * (_bnorm(sp_low, w, delta) + _bnorm(sp_low, part, delta))
+            sums = 4 * U2 * (_bnorm(sp_low, w, delta) + _bnorm(sp_low, part, delta))
+            parts['sums'] += sums
+            rem += sums
         w = part if w is None else _add_mats(w, part)
         qa = cp.broadcast_to(q_abs[e], (b, n, n))
         qr = cp.broadcast_to(q_rad[e], (b, n, n))
         full = b_low + b_high + r
-        rem += (2.1 * g * quad(b_low, qa, b_low) + 2 * quad(b_high, qa, b_low)
-                + quad(b_high, qa, b_high) + 2 * quad(r, qa, b_low + b_high) + quad(r, qa, r)
-                + quad(full, qr, full)) * SAFE
+        ab = quad(b_low, qa, b_low)
+        terms = {'round': 2.1 * g * ab, 'high': 2 * quad(b_high, qa, b_low) + quad(b_high, qa, b_high),
+                 'models': 2 * quad(r, qa, b_low + b_high) + quad(r, qa, r),
+                 'radius': quad(full, qr, full), 'abs': ab}
+        for k, v in terms.items():
+            parts[k] += v
+        rem += (terms['round'] + terms['high'] + terms['models'] + terms['radius']) * SAFE
     # The entries of total degree above n go to the remainder with their exact sizes.
-    return _from_bidegree(sp4, sp_low, w, rem * SAFE, delta)
+    out = _from_bidegree(sp4, sp_low, w, rem * SAFE, delta)
+    out.parts = parts
+    return out
 
 
 def _add_mats(x, y):
@@ -450,7 +459,8 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
     pw_p = tmc.powers(sp4, yp, _series_order(eta_p, n))
     xh = tmc.power_series(sp4, pw_p, Fraction(-1, k0), eta_p)
     log_pt = tmc.log1p_series(sp4, pw_p, eta_p)
-    info.update(eta_r=eta_r, eta_p=eta_p, rem_p0=p0.rem / tmc.abs_ub(p0.c[:, :1, :])[0])
+    info.update(eta_r=eta_r, eta_p=eta_p, rem_p0=p0.rem / tmc.abs_ub(p0.c[:, :1, :])[0],
+                parts_p0=p0.parts)
 
     # x = r2^-1 p~^(-1/k0) = ir2 xh s_p^(1/k0); x_c = x0 (1 + zeta) with an exact dd zeta.
     x0 = dd_mp(np.asarray(local['x0']))
@@ -498,6 +508,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
     psi = tmc.TM(s.c, (s.rem + tail * SAFE) * SAFE, s.delta)
     clock('level sum')
     phi = tmc.add(sp4, tmc.add(sp4, tmc.scale(sp4, log_r2, tmc.cconst(k0, b)), log_pt), psi)
+    info.update(parts_f0=fk[0].parts, value_f0=tmc.abs_ub(fk[0].c[:, :1, :])[0])
     info.update(rem_f0=fk[0].rem, rem_psi=psi.rem, rem_logpt=log_pt.rem, rem_logr2=log_r2.rem,
                 rem_phi=phi.rem, bxi=bxi, tail=tail, zeta=zeta)
 
