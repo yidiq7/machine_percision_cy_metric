@@ -119,7 +119,7 @@ def _layout(k):
     groups, orbits = [], []
     for gi, g in enumerate(lay.groups):
         frame = np.asarray(g.frame)
-        groups.append({'exps': np.asarray(g.exps).tolist(), 'm': int(g.m),
+        groups.append({'exps': np.asarray(g.exps).tolist(), 'm': int(g.m), 'frame': frame,
                        'frame_t': _cmat(frame.shape[1], frame.shape[0], frame.T)})
         for o, sl in enumerate(g.slices):
             b = int(np.flatnonzero(np.asarray(g.orbit_of) == o)[0])
@@ -406,6 +406,23 @@ def main():
         terms.append(np.array([float(x * p ** power) for x, p in zip(nc, p0c)]))
         abs_terms.append(absform * np.array([float(p ** power) for p in p0c]))
         out[f'theta_{lev["k1"]}'] = np.array([_text(t) for t in theta])
+        # The form itself, for a Taylor model: C_o of each orbit, its block and group.
+        start = 0
+        for oi, orb in enumerate(lay['orbits']):
+            n = len(orb['mats'])
+            c = sum((t * _mat(orb['d'], orb['d'], m)
+                     for t, m in zip(theta[start:start + n], orb['mats'])),
+                    arb_mat(orb['d'], orb['d']))
+            out[f'L{lev["k1"]}_o{oi}_C'] = np.array(
+                [[_text(c[i, j]) for j in range(orb['d'])] for i in range(orb['d'])])
+            out[f'L{lev["k1"]}_o{oi}_r'] = np.array(orb['r'])
+            out[f'L{lev["k1"]}_o{oi}_group'] = orb['group']
+            start += n
+        out[f'L{lev["k1"]}_n_orbits'] = len(lay['orbits'])
+        for gi, g in enumerate(lay['groups']):
+            out[f'L{lev["k1"]}_g{gi}_exps'] = np.array(g['exps'])
+            out[f'L{lev["k1"]}_g{gi}_frame'] = g['frame']
+        out[f'L{lev["k1"]}_n_groups'] = len(lay['groups'])
         out[f'fit_residual_{lev["k1"]}'] = resid
         out[f'check_error_{lev["k1"]}'] = err
         out[f'abs_over_value_{lev["k1"]}'] = ratio
