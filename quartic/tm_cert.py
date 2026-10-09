@@ -378,12 +378,13 @@ def _from_bidegree(sp4, sp_low, w, rem, delta, tail_done=False):
     return tmc.TM(cp.ascontiguousarray(c), (rem + tail) * SAFE, delta)
 
 
-def reexpand(local, zeta_host, k_max, top, tag='e'):
+def reexpand(local, zeta_host, k_max, top, tag='e', td=False):
     """Per box: the matrices of F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m-k) M~_m.
 
     For each e this is one product of the weights (B, k_max + 1, top + 1), formed in
     mpmath and rounded to dd (2 u^2 each), with the stacked M~_m (top + 1, n^2) by
-    `ddgemm.zgemm`. tag 'j' takes the R_j of tm_forms.delta_split in place of the Q_e.
+    `ddgemm.zgemm`. tag 'j' takes the R_j of tm_forms.delta_split in place of the Q_e;
+    td takes the triple-double product, whose rounding is (lin + cub) abs(w) abs(M~).
     Returns, for each k <= k_max, a list over e of (q (B, 4, n, n),
     rad (B, n, n), abs (B, n, n)); rad holds the radii of the M~_m, the rounding of the
     weights and that of the product.
@@ -400,12 +401,12 @@ def reexpand(local, zeta_host, k_max, top, tag='e'):
                 wabs[i, k, m] = float(abs(v)) * (1 + 1e-12)
     wd = cp.asarray(w)
     wa = cp.asarray(wabs)
-    g = ddgemm.gamma(nm)
+    g = sum(ddgemm.gamma_td(nm)) if td else ddgemm.gamma(nm)
     out = [[None] * 4 for _ in range(k_max + 1)]
     for e in range(4):
         n = local[f'mt0_{tag}{e}'].shape[-1]
         mt = cp.stack([local[f'mt{m}_{tag}{e}'].reshape(4, n * n) for m in range(nm)], axis=1)
-        q = ddgemm.zgemm(wd, mt[None], mode=0)                          # (B, 4, K+1, n*n)
+        q = ddgemm.zgemm(wd, mt[None], mode=0, td=td)                   # (B, 4, K+1, n*n)
         ma = cp.stack([local[f'mt{m}_{tag}{e}_abs'].reshape(n * n) for m in range(nm)])
         mr = cp.stack([local[f'mt{m}_{tag}{e}_rad'].reshape(n * n) for m in range(nm)])
         absq = cp.matmul(wa, ma) * SAFE                                  # (B, K+1, n*n)
@@ -608,7 +609,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False):
 
     clock('base')
     # F_k for k <= k_max as models; the rest through a bound.
-    fq = reexpand(local, zeta, k_max, top, tag)
+    fq = reexpand(local, zeta, k_max, top, tag, td)
     clock('reexpand')
     # F_k enters psi as xi^k F_k, and xi is of degree 1 up to a rounding, so F_k needs
     # only the order n - (k - k_full) for k > k_full; the rest goes to its remainder.
