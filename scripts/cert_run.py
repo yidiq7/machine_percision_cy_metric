@@ -58,6 +58,7 @@ def main():
     ap.add_argument('--batch', type=int, default=64)
     ap.add_argument('--refs', type=int, nargs='*', default=None,
                     help='only these reference centers (default: every one with a file)')
+    ap.add_argument('--verbose', action='store_true')
     ap.add_argument('--out', type=str, required=True)
     args = ap.parse_args()
     cov = np.load(args.cover)
@@ -83,11 +84,18 @@ def main():
             sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
             sup, c0, pb, rem = (cp.asnumpy(x) for x in (sup, c0, pb, f.rem))
             n_boxes += len(batch)
+            n_split = 0
             for j, (lo, s, cen, dl, depth) in enumerate(batch):
                 if rem[j] > args.target and depth < args.depth:
                     queue += [(sub, h, c, rad, depth + 1) for sub, h, c, rad in split(lo, s)]
+                    n_split += 1
                     continue
                 records.append((r, depth, *lo, s, dl, sup[j], c0[j], pb[j], rem[j]))
+            if args.verbose:
+                print(f'    batch of {len(batch)} (depth {batch[0][4]} to {batch[-1][4]}): {n_split} '
+                      f'split, largest remainder {rem.max():.2e}, largest bound {sup.max():.2e}, '
+                      f'radius {min(deltas):.4f} to {max(deltas):.4f}; queue {len(queue)}; '
+                      f'{time.perf_counter() - t1:.1f}s', flush=True)
         done = [x for x in records if x[0] == r]
         worst = max(x[9] for x in done) if done else float('nan')
         print(f'reference {r}: {len(idx)} cells, {len(done)} final boxes, largest bound '
