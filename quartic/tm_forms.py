@@ -17,8 +17,14 @@ Pi_sigma (F C_o F^T) Pi_sigma^T, and the matrices of one residue are summed firs
 
 M_L = N_L abs(z)^(2 (20 - L)) with abs(z)^2 = 1 + t_0 w_0 + t_1 w_1 + z_2 w_2, and
 z_2^4 w_2^4 = u_m(t) u_m(w), so the product stays in the same form.
+
+The levels cancel strongly, so they are combined here in arb, at a fixed x0:
+M~_m = sum over L of C(L, m) x0^L M_L. A box with x_c = x0 (1 + zeta) then takes
+F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m - k) M~_m, which is the exact
+sum over L of C(L, k) x_c^L M_L, and its terms do not cancel.
 """
 import itertools
+import math
 
 import numpy as np
 import flint
@@ -225,4 +231,45 @@ def chart_forms(data, forms, prec=256):
     out = chart_forms_arb(data, forms, prec)
     for key in ['base'] + [f'M{k1}' for k1 in out['levels']]:
         out[key] = [to_dd(x) for x in out[key]]
+    return out
+
+
+def combine_levels(cf, x0):
+    """M~_m = sum over L of C(L, m) x0^L M_L for m = 0..top, x0 an exact arb number."""
+    out = []
+    for m in range(cf['top'] + 1):
+        q = []
+        for e in range(4):
+            acc = None
+            for k1 in cf['levels']:
+                if m > k1:
+                    continue
+                term = cf[f'M{k1}'][e] * (arb(math.comb(k1, m)) * x0 ** k1)
+                acc = term if acc is None else acc + term
+            q.append(acc)
+        out.append(q)
+    return out
+
+
+def abs_bounds(q):
+    """Upper bounds of abs of the entries of an arb_mat, as a NumPy array."""
+    out = np.zeros((q.nrows(), q.ncols()))
+    for i in range(q.nrows()):
+        for j in range(q.ncols()):
+            a = abs(q[i, j])
+            out[i, j] = (float(a.mid()) + float(a.rad())) * (1 + 1e-12)
+    return out
+
+
+def save_gpu(path, data, forms, x0, prec=256):
+    """The base and the M~_m at x0 as dd + radius + abs bounds, for the GPU."""
+    cf = chart_forms_arb(data, forms, prec)
+    mt = combine_levels(cf, arb(x0))
+    out = {'k0': cf['k0'], 'top': cf['top'], 'levels': np.array(cf['levels']), 'x0': x0}
+    for name, qs in [('base', cf['base'])] + [(f'mt{m}', q) for m, q in enumerate(mt)]:
+        for e, q in enumerate(qs):
+            hi, lo, rad = to_dd(q)
+            out[f'{name}_e{e}_hi'], out[f'{name}_e{e}_lo'], out[f'{name}_e{e}_rad'] = hi, lo, rad
+            out[f'{name}_e{e}_abs'] = abs_bounds(q)
+    np.savez(path, **out)
     return out

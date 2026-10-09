@@ -270,6 +270,7 @@ def load(args):
     G['abs_M'] = {k1: [abs_np(m) for m in cf[f'M{k1}']] for k1 in cf['levels']}
     G['seconds_forms'] = time.perf_counter() - t0
     G['a'] = args.a
+    G['extra_y'] = args.extra_y
 
 
 def run_box(job):
@@ -282,13 +283,15 @@ def run_box(job):
     dl = np.asarray(base_deltas, float)
     d_f = dl * (1 + a)
     d_phi = d_f * (1 + a)
-    sp2, sp4 = tb.Space(2, n), tb.Space(4, n)
+    # The models in tau alone go to a higher order, so that their truncation, which the
+    # absolute-value form multiplies, stays far below the tail of the composed form.
+    sp2, sp4 = tb.Space(2, n + G['extra_y']), tb.Space(4, n)
     sp2.table()
     sp4.table()
     times['tables'] = time.perf_counter() - t_start
 
     t1 = time.perf_counter()
-    z = D_z(k)
+    z = to_region(D_z(k))
     p = [exact(z[i] / z[3]) for i in range(3)]
     vecs, nrm, u, c1 = frame(p)
     lin, h, lam = implicit_h(sp2, p, vecs, nrm, c1, d_phi)
@@ -407,7 +410,8 @@ def run_box(job):
     var = f.add_const(-f_c)
     jac = tangent_jacobian(p, u)
     f_dd = tb.D['v1'][k] / vbar - 1
-    return {'point': k, 'ratio': tb.D['ratio'][k], 'n': n, 'a': a, 'deltas': dl.tolist(),
+    return {'point': k, 'ratio': tb.D['ratio'][k], 'n': n, 'ny': sp2.n, 'a': a,
+            'deltas': dl.tolist(),
             'f_center': float(f_c.real), 'f_dd': float(f_dd.real), 'center_gap': tb.ub(f_c - f_dd),
             'poly': tb.poly_bound(var.graded(), dl).tolist(), 'rem': f.rem.tolist(),
             'rem_h': h.rem.tolist(), 'lam': lam.tolist(), 'rem_p0': (p0.rem / tb.ub(p0.c[0])).tolist(),
@@ -426,10 +430,16 @@ def D_z(k):
     return tb.D['z'][k]
 
 
+def to_region(z):
+    """The S_4 image with abs(z_1) <= abs(z_0) <= abs(z_2) <= abs(z_3); f is the same there."""
+    order = sorted(range(4), key=lambda i: tb.ub(z[i]))
+    return [z[order[1]], z[order[0]], z[order[2]], z[order[3]]]
+
+
 def point_f(zstar, k):
-    """f at a point of X from `tm_box.py` at order 2, in the chart of the export point k."""
+    """f at a point of X from `tm_box.py` at order 2, in the chart z_3 = 1, m = 2."""
     tb.D['z'].append(zstar)
-    tb.D['patch'].append(tb.D['patch'][k])
+    tb.D['patch'].append([2, 0, 1])
     tb.D['ratio'].append(0.0)
     tb.D['v1'].append(acb(0))
     res = tb.run_box((len(tb.D['z']) - 1, 2, [1e-4]))
@@ -458,6 +468,8 @@ def main():
                     default=[0.005, 0.01, 0.02, 0.03, 0.04, 0.06])
     ap.add_argument('--a', type=float, default=0.0,
                     help='the radius steps 1 + a between box, f and Phi; 0 means 2 / order')
+    ap.add_argument('--extra-y', type=int, default=10,
+                    help='the order of the models in tau alone above the order of the box')
     ap.add_argument('--prec', type=int, default=192)
     ap.add_argument('--procs', type=int, default=6)
     ap.add_argument('--out', type=str, default='')
@@ -473,7 +485,8 @@ def main():
     with multiprocessing.get_context('fork').Pool(args.procs) as pool:
         for res in pool.imap_unordered(run_box, jobs):
             results.append(res)
-            print(f'point {res["point"]} (rho {res["ratio"]:.3f}), order {res["n"]}, a {res["a"]:.3f}: '
+            print(f'point {res["point"]} (rho {res["ratio"]:.3f}), order {res["n"]} (tau alone '
+                  f'{res["ny"]}), a {res["a"]:.3f}: '
                   f'f(c) {res["f_center"]:+.4e}, dd {res["f_dd"]:+.4e}, gap {res["center_gap"]:.1e}; '
                   f'{res["seconds"]:.0f}s (' + ', '.join(f'{key} {val:.0f}s'
                                                        for key, val in res['times'].items())
