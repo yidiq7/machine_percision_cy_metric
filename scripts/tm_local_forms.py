@@ -8,7 +8,7 @@ with the dd parts, the radii and the absolute-value bounds of every matrix, and 
 exact dd numbers c and x0.
 
 The centers come from --points (the export points of the data, moved into F) or from
-a file of centers (--centers, an npz with c_hi, c_lo of shape (n, 2) complex).
+a cover of scripts/cert_cover.py (--centers, its ref_centers).
 
 Usage, on CPU cores:
     JAX_PLATFORMS=cpu uv run --extra gpu --with python-flint python -u \\
@@ -124,9 +124,9 @@ def main():
         t = [z[0] / z[3], z[1] / z[3]]
         centers.append([dd_of(exact(x)) for x in t])
     if args.centers:
-        cz = np.load(args.centers)
-        for hi, lo in zip(cz['c_hi'], cz['c_lo']):
-            centers.append([[hi[k].real, lo[k].real, hi[k].imag, lo[k].imag] for k in range(2)])
+        # The reference centers of a cover of scripts/cert_cover.py, (n, 2, 4) dd parts.
+        for c in np.load(args.centers)['ref_centers']:
+            centers.append([list(c[0]), list(c[1])])
     jobs = list(enumerate(centers))
     with multiprocessing.get_context('fork').Pool(args.procs) as pool:
         for i, sec in pool.imap_unordered(one, jobs):
