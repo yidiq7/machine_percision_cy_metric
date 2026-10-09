@@ -10,7 +10,7 @@ local forms; and f(c) against --fref (values from tm_box.py or tm_ref.py).
 Usage, on one GPU node:
     uv run --extra gpu --with cupy-cuda12x python -u scripts/cert_box.py \\
         --local runs_tm/local_r20i --centers 0 1 2 --orders 16 20 24 --ny-extra 6 \\
-        --deltas 0.005 0.01 0.02 0.03
+        --deltas 0.005 0.01 0.02 0.03 --fref=-3.03e-19,-1.33e-18,-2.23e-19
 """
 import argparse
 import sys
@@ -88,8 +88,10 @@ def main():
     ap.add_argument('--ny-extra', type=int, default=6)
     ap.add_argument('--kmax', type=int, default=12)
     ap.add_argument('--deltas', type=float, nargs='+', default=[0.005, 0.01, 0.02, 0.03])
-    ap.add_argument('--fref', type=float, nargs='*', default=[])
+    ap.add_argument('--fref', type=str, default='',
+                    help='reference values of f(c), separated by commas')
     args = ap.parse_args()
+    args.fref = [float(x) for x in args.fref.split(',') if x]
     print(cp.cuda.runtime.getDeviceProperties(0)['name'], flush=True)
     for ci in args.centers:
         local = tc.local_on_gpu(Path(args.local) / f'center_{ci}.npz')
