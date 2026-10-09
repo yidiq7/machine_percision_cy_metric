@@ -66,16 +66,17 @@ next fit is D = 24.
 3. **Composition.** `W = Σ_e Y_e Q_e^(r) Y_eᴴ` gives the bidegree coefficients of a form up
    to (N_y, N_y). The model in (τ, σ) takes the terms of total degree ≤ N; the tail
    comes from the exact entries of W. This is done for p̄₀ and for each N_L.
-4. **The base over its holomorphic part.** `A(τ) = p̄₀(τ, σ = 0) / sqrt(p̄₀(c))`,
-   `D = p̄₀ / (A Ā)`. log A is holomorphic, so `∂∂̄ log p̄₀ = ∂∂̄ log D`, and D − 1 has
-   only mixed terms of size g δ². The products with 1/A go on the bidegree
-   coefficients, so no bound of a product tail enters.
-5. **The level sum in the affine chart.** `x = p̄₀^(−1/k₀) = p̄₀(c)^(−1/k₀) a ā D^(−1/k₀)`
-   with `a = (A / A(0))^(−1/k₀)`, `ξ = x / x_c − 1`, and
-   `ψ = Σ_k F_k ξ^k`, `F_k = Σ_L C(L, k) x_c^L N_L`. The F_k are formed from the
-   composed W of each level, so the cancellation of the levels happens in the
-   coefficients and not in the remainders. No factor abs(y)^(±2 top) enters.
-6. **The metric.** `Φ = log D + ψ`. g is the exact derivative of the polynomial part of
+4. **The base.** `r = abs(y)² = 1 + Σ y_k ȳ_k` (tensors of the τ models),
+   `p̃ = p̄₀ r^(−k₀)`, `log p̄₀ = k₀ log r + log p̃`, from binomial and log series in
+   `r / r(c) − 1` and `p̃ / p̃(c) − 1`. (The quotient `D = p̄₀ / (A Ā)` with
+   `A = p̄₀(τ, σ = 0)` was measured too: A varies by 36 percent over a box of
+   δ = 0.03, so its series in τ converge slowly, and it gains nothing.)
+5. **The level sum in the affine chart.** `x = p̄₀^(−1/k₀) = r^(−1) p̃^(−1/k₀)`,
+   `ξ = x / x_c − 1`, and `ψ = Σ_k F_k ξ^k`, `F_k = Σ_L C(L, k) x_c^L N_L`. The F_k are
+   formed from the composed W of each level, so the cancellation of the levels
+   happens in the coefficients and not in the remainders. No factor abs(y)^(±2 top)
+   enters.
+6. **The metric.** `Φ = log p̄₀ + ψ`. g is the exact derivative of the polynomial part of
    Φ; the remainder of g comes from a Cauchy estimate on `δ_Φ`. det g,
    `v = det(g) abs(∂P/∂h)² / abs(det U)²` with `U = [E, n]`, and `f = v / v̄ − 1` follow
    on `δ_f`.
@@ -129,9 +130,10 @@ next fit is D = 24.
 | tangent coordinates, M_L = N_L abs(y)^(2(20−L)) | 4.5e-8 | 2.4e-11 |
 | the same, models in τ to order N + 10 | 3.4e-8 | 2.4e-11 |
 | affine sum of N_L x^L | 2.1e-10 | 2.3e-13 |
+| the same at order 20 | 1.9e-16 | 6.2e-20 |
 
 * The tangent coordinates raise the radius of convergence at ρ ≈ 0.9 from 0.13 to
-  0.28. At ρ ≤ 0.4 the radius is about 0.35 in both coordinates.
+  0.28; with the affine sum it is 0.38 at ρ = 0.9 and 0.53 at ρ = 0.4.
 * `abs(y)^(±40)` vary by 30 percent over a box and cancel in their product, and the
   tail of a product adds absolute values. The affine sum removes them.
 * The local forms (`--shift`) reduce the estimated dd rounding in g from 1e-13 to
