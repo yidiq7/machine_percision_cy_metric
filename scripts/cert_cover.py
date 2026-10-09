@@ -83,7 +83,7 @@ def box_radius(lo, s, c):
     w2 = (1 + p0 + p1) ** 2 + (q0 + q1) ** 2
     zmin = mp.mpf(w2.a) ** (mp.mpf(1) / 8)
     if zmin <= 0:
-        return mp.inf
+        return float('inf')
     # Second derivatives of z2: -3 t_i^2 delta_ij / z2^3 - 3 t_i^3 t_j^3 / z2^7.
     hs = 0
     for i in range(2):
