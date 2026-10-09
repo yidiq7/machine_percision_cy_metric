@@ -288,10 +288,12 @@ def load(args):
     G.update(cf)
     G['abs_base'] = [abs_np(m) for m in cf['base']]
     G['abs_M'] = {k1: [abs_np(m) for m in cf[f'M{k1}']] for k1 in cf['levels']}
+    G['abs_N'] = {k1: [abs_np(m) for m in cf[f'N{k1}']] for k1 in cf['levels']}
     G['seconds_forms'] = time.perf_counter() - t0
     G['a'] = args.a
     G['extra_y'] = args.extra_y
     G['shift'] = args.shift
+    G['affine'] = args.affine
 
 
 def run_box(job):
@@ -358,19 +360,22 @@ def run_box(job):
     r2 = tb.TM.const(sp4, 1, d_phi)
     for i in range(3):
         r2 = r2 + tb.tensor(sp4, sp2, ys[i], ysc[i], d_phi)
-    xc = exact(r2.c[0] * (p0.c[0].log() * (-arb(1) / k0)).exp())
+    # --affine: psi = sum of N_L x'^L with x' = p0^(-1/k0) in the chart, so no abs(y)^(+-2 top).
+    affine = G['affine']
+    lev, labs = ('N', G['abs_N']) if affine else ('M', G['abs_M'])
+    xc = exact((p0.c[0].log() * (-arb(1) / k0)).exp() * (1 if affine else r2.c[0]))
     fk = []
     for kk in range(top + 1):
         q, aq = [], []
         for e in range(4):
-            qe, ae = None, np.zeros_like(G['abs_M'][levels[0]][e])
+            qe, ae = None, np.zeros_like(labs[levels[0]][e])
             for k1 in levels:
                 if kk > k1:
                     continue
                 w = arb(math.comb(k1, kk)) * xc.real ** k1
-                term = G[f'M{k1}'][e] * w
+                term = G[f'{lev}{k1}'][e] * w
                 qe = term if qe is None else qe + term
-                ae = ae + tb.ub(w) * G['abs_M'][k1][e]
+                ae = ae + tb.ub(w) * labs[k1][e]
             if G['shift']:
                 qe = tl_ * acb_mat(qe) * tlh
                 ae = abs_np(qe)
@@ -393,7 +398,8 @@ def run_box(job):
             ipow[m] = ipower(m // 2) * ipower(m // 2) if m % 2 == 0 else ipower(m - 1) * ir2
         return ipow[m]
     ipower(k0)
-    ipower(top)
+    if not G['affine']:
+        ipower(top)
     pt = p0 * ipow[k0]
     mp = exact(pt.c[0])
     yp = pt.scale(1 / mp).add_const(-1)
@@ -401,11 +407,11 @@ def run_box(job):
     pwp = powers(yp, n)
     xm = binomial(pwp, Fraction(-1, k0), eta_p).scale((mp.log() * (-arb(1) / k0)).exp())
     log_pt = log1p(pwp, eta_p)
-    xi = xm.scale(1 / xc).add_const(-1)
+    xi = (ir2 * xm if affine else xm).scale(1 / xc).add_const(-1)
     s = fk[top]
     for kk in range(top - 1, -1, -1):
         s = fk[kk] + xi * s
-    psi = ipow[top] * s
+    psi = s if affine else ipow[top] * s
     phi = log_r2.scale(k0) + log_pt + psi
     times['potential'] = time.perf_counter() - t1
 
@@ -422,7 +428,7 @@ def run_box(job):
     f = (det * q4).scale(1 / (abs(u.det()) ** 2 * vbar)).add_const(-1)
     times['metric'] = time.perf_counter() - t1
     bxi = xi.bound()
-    bir = ipow[top].bound()
+    bir = 1.0 if G['affine'] else ipow[top].bound()
     round_psi = sum(fk[kk].round_dd * bxi ** kk for kk in range(top + 1)) * bir
     round_phi = p0.round_dd / tb.ub(p0.c[0]) + round_psi
     round_g = round_phi / (d_phi - d_f) ** 2
@@ -509,6 +515,8 @@ def main():
                     help='the order of the models in tau alone above the order of the box')
     ap.add_argument('--shift', action='store_true',
                     help='move the chart forms to the center in arb before the composition')
+    ap.add_argument('--affine', action='store_true',
+                    help='expand sum of N_L x^L with x = p0^(-1/k0), with no factor abs(y)^(2 top)')
     ap.add_argument('--prec', type=int, default=192)
     ap.add_argument('--procs', type=int, default=6)
     ap.add_argument('--out', type=str, default='')

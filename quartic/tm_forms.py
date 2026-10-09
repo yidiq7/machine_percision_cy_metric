@@ -211,7 +211,7 @@ def to_dd(q):
 
 
 def chart_forms_arb(data, forms, prec=256):
-    """Q_e of the base (degree k0) and of each M_L (degree top) in the chart, as arb_mat."""
+    """Q_e of the base (degree k0), of each N_L and of each M_L (degree top), as arb_mat."""
     flint.ctx.prec = prec
     k0 = int(data['k0'])
     top = int(max(forms['k1']))
@@ -220,6 +220,7 @@ def chart_forms_arb(data, forms, prec=256):
     p2 = Poly2(top)
     for k1 in out['levels']:
         q = form_q(p2, level_blocks(forms, k1))
+        out[f'N{k1}'] = q
         for cur in range(k1, top):
             q = times_radius(p2, q, cur)
         out[f'M{k1}'] = q
@@ -229,7 +230,7 @@ def chart_forms_arb(data, forms, prec=256):
 def chart_forms(data, forms, prec=256):
     """The same forms as dd + radius."""
     out = chart_forms_arb(data, forms, prec)
-    for key in ['base'] + [f'M{k1}' for k1 in out['levels']]:
+    for key in ['base'] + [f'{x}{k1}' for k1 in out['levels'] for x in 'NM']:
         out[key] = [to_dd(x) for x in out[key]]
     return out
 
