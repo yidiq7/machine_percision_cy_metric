@@ -5,9 +5,10 @@ at the center p, in the affine chart z_3 = 1 with y = (z_0, z_1, z_2):
 
     y(tau) = p + E tau + h(tau) n,    P(y) = y_0^4 + y_1^4 + y_2^4 + 1 = 0,
 
-with n the unit normal conj(grad P(p)) / abs(grad P(p)) and E a unit frame of the tangent
-plane. h comes from a fixed point in Taylor-model arithmetic, with a strict bound from the
-contraction. The conjugate side takes sigma = conj(tau) as independent variables.
+with n the unit normal conj(grad P(p)) / abs(grad P(p)) and E = dy/dt at p, so that
+tau = t - c to first order. h comes from a fixed point in Taylor-model arithmetic, with
+a strict bound from the contraction. The conjugate side takes sigma = conj(tau) as
+independent variables.
 
 Each form is the sum over e of y_2^e conj(y_2)^e Q_e(y_0, y_1, conj(y_0), conj(y_1)), with the
 global polynomials Q_e of `quartic.tm_forms`. The potential is
@@ -59,23 +60,20 @@ def exact(x):
     return acb(x.real.mid(), x.imag.mid())
 
 
-def hdot(a, b):
-    return sum((x.conjugate() * y for x, y in zip(a, b)), acb(0))
-
-
 def frame(p):
-    """n, the tangent frame E, det [E, n] and c1 = dP/dh at p, as exact numbers."""
+    """n, the frame E = dy/dt of the tangent plane, det [E, n] and c1 = dP/dh at p, exact.
+
+    With E = dy/dt, tau = t - c to first order, so a polydisc in tau matches one in t.
+    """
     grad = [4 * c ** 3 for c in p]
     norm = sum((abs(c) ** 2 for c in grad), arb(0)).sqrt()
     n = [exact(c.conjugate() / norm) for c in grad]
     vecs = []
-    for k in sorted(range(3), key=lambda i: tb.ub(n[i]))[:2]:
-        v = [acb(1) if i == k else acb(0) for i in range(3)]
-        for u in [n] + vecs:
-            c = hdot(u, v)
-            v = [x - c * y for x, y in zip(v, u)]
-        size = sum((abs(x) ** 2 for x in v), arb(0)).sqrt()
-        vecs.append([exact(x / size) for x in v])
+    for k in range(2):
+        v = [acb(0)] * 3
+        v[k] = acb(1)
+        v[2] = exact(-(p[k] ** 3) / p[2] ** 3)
+        vecs.append(v)
     u = acb_mat(3, 3, [[vecs[0][i], vecs[1][i], n[i]][j] for i in range(3) for j in range(3)])
     c1 = exact(sum((g * m for g, m in zip(grad, n)), acb(0)))
     return vecs, n, u, c1
