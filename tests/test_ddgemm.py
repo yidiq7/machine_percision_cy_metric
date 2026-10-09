@@ -31,13 +31,29 @@ def to_mp(x):
     return mp.mpc(mp.mpf(x[0]) + mp.mpf(x[1]), mp.mpf(x[2]) + mp.mpf(x[3]))
 
 
-def run(nb, m, k, n, mode, shared):
+def cancel_pair(a, b, mode):
+    """[A, A] and [B; -B + small] along the inner dimension: A B cancels to about 1e-20."""
+    a2 = np.concatenate([a, a], axis=-1)
+    neg = -b.copy()
+    lo = (1, 3)
+    for q in lo:
+        part = neg[..., q, :, :]
+        neg[..., q, :, :] = part + 1e-20 * np.abs(b[..., q - 1, :, :]) * RNG.normal(size=part.shape)
+    b2 = np.concatenate([b, neg], axis=-2 if mode == 0 else -1)
+    return a2, b2
+
+
+def run(nb, m, k, n, mode, shared, td=False, cancel=False):
     a = random_dd((nb, 4, m, k), 1.0)
     bshape = (1 if shared else nb, 4) + ((k, n) if mode == 0 else (n, k))
     b = random_dd(bshape, 1e3)
-    c = cp.asnumpy(ddgemm.zgemm(cp.asarray(a), cp.asarray(b), mode))
+    if cancel:
+        a, b = cancel_pair(a, b, mode)
+        k = 2 * k
+    c = cp.asnumpy(ddgemm.zgemm(cp.asarray(a), cp.asarray(b), mode, td=td))
     g = ddgemm.gamma(k)
-    worst = 0.0
+    lin, cub = ddgemm.gamma_td(k)
+    worst, gain = 0.0, 0.0
     for bi in range(nb):
         bb = b[0 if shared else bi]
         for i in range(0, m, max(1, m // 5)):
@@ -51,14 +67,23 @@ def run(nb, m, k, n, mode, shared):
                     absum += float((abs(x.real) + abs(x.imag)) * (abs(y.real) + abs(y.imag)))
                 got = to_mp(c[bi, :, i, j])
                 err = abs(got.real - exact.real) + abs(got.imag - exact.imag)
-                assert err <= g * absum, (mode, bi, i, j, float(err), g * absum)
-                worst = max(worst, float(err / (g * absum)))
-    print(f'  mode {mode}, shared B {shared}, ({m} x {k}) ({k} x {n}): largest error over the '
-          f'bound {worst:.2e}', flush=True)
+                if td:
+                    bound = lin * float(abs(exact.real) + abs(exact.imag)) + cub * absum
+                else:
+                    bound = g * absum
+                assert err <= bound, (mode, bi, i, j, float(err), bound)
+                worst = max(worst, float(err / bound))
+                gain = max(gain, float(bound / (g * absum)))
+    print(f'  mode {mode}, shared B {shared}, td {td}, cancel {cancel}, ({m} x {k}) ({k} x {n}): '
+          f'largest error over the bound {worst:.2e}; bound over the dd bound up to {gain:.2e}',
+          flush=True)
 
 
 if __name__ == '__main__':
-    for mode in (0, 1):
-        for shared in (True, False):
-            run(3, 37, 53, 29, mode, shared)
+    for td in (False, True):
+        for mode in (0, 1):
+            for shared in (True, False):
+                run(3, 37, 53, 29, mode, shared, td)
+        for mode in (0, 1):
+            run(2, 21, 231, 19, mode, False, td, cancel=True)
     print('\nall ddgemm tests pass')

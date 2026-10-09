@@ -96,6 +96,8 @@ def main():
     ap.add_argument('--repeat', type=int, default=1, help='copies of each box, for the timing')
     ap.add_argument('--a', type=float, nargs='+', default=[0.0],
                     help='the gap fractions of the Cauchy estimate (0: 2 / order)')
+    ap.add_argument('--td', type=int, nargs='+', default=[0],
+                    help='1: the triple-double products for the compositions')
     ap.add_argument('--deltas', type=float, nargs='+', default=[0.005, 0.01, 0.02, 0.03])
     ap.add_argument('--cover', type=str, default='',
                     help='take the boxes from the cells of a cover (with --ref and --ncell)')
@@ -125,14 +127,14 @@ def main():
         deltas = list(args.deltas) * args.repeat
         nb = len(deltas)
         fr = tc.make_frames(centers * args.repeat if args.cover else [cdd] * nb, k0)
-        for n, a in [(n, a) for n in args.orders for a in args.a]:
-            a = a or None
+        for n, a, td in [(n, a, td) for n in args.orders for a in args.a for td in args.td]:
+            a, td = a or None, bool(td)
             if args.repeat > 1:
-                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax, a)
+                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax, a, td=td)
             cp.cuda.Device().synchronize()
             t0 = time.perf_counter()
             f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, deltas, n,
-                                                      n + args.ny_extra, args.kmax, a)
+                                                      n + args.ny_extra, args.kmax, a, td=td)
             sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
             cp.cuda.Device().synchronize()
             sec = time.perf_counter() - t0
@@ -141,7 +143,7 @@ def main():
             extra = (f', bound of Delta {float(cp.max(info["bound_delta"])):.2e}'
                      if 'bound_delta' in info else '')
             print(f'center {ci}, order {n} (tau alone {n + args.ny_extra}), a '
-                  f'{a or 2 / n:.3f}{extra}: f(c) '
+                  f'{a or 2 / n:.3f}, td {td}{extra}: f(c) '
                   f'{mp.nstr(fc.real, 11)}{ref}; {sec:.1f}s for {nb} boxes ('
                   + ', '.join(f'{k} {v:.2f}s' for k, v in info['times'].items()) + ')', flush=True)
             # The model of p0 at a point of the smallest box against mpmath.

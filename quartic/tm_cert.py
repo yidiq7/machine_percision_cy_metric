@@ -291,7 +291,7 @@ def mats_at(mats, sp_k):
     return out
 
 
-def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
+def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta, td=False):
     """The model in four variables of sum over e of Y_e Q_e Y_e^H, with all remainders.
 
     The sum runs over the blocks of q; mats[e] belongs to q[e].
@@ -301,21 +301,23 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     of higher total degree (their exact sizes; a majorant from abs(Q) is far too large,
     because those entries cancel strongly), by the parts of degree above sp_low.n of
     the monomial models, by their remainders, by the radii of Q, and by the rounding of
-    the two products (2.1 gamma abs(Y) abs(Q) abs(Y)^H) and of the sums over e.
+    the two products (2.1 gamma abs(Y) abs(Q) abs(Y)^H) and of the sums over e. With td,
+    the products take the triple-double accumulators, and their rounding is
+    2.01 (lin + cub) abs(Y) abs(Q) abs(Y)^H with (lin, cub) of `ddgemm.gamma_td`.
     """
     n = q[0].shape[-1]
     b = delta.shape[0]
     w = None
     rem = cp.zeros(b)
     parts = {k: cp.zeros(b) for k in ('round', 'high', 'models', 'radius', 'sums', 'abs')}
-    g = ddgemm.gamma(n)
+    g = 2.01 * sum(ddgemm.gamma_td(n)) if td else 2.1 * ddgemm.gamma(n)
     quad = lambda u, m, v: cp.matmul(cp.matmul(u.T[:, None, :], m), v.T[:, :, None])[:, 0, 0]
     for e in range(len(q)):
         y, b_low, b_high, r = mats[e][:4]
         y = cp.ascontiguousarray(y[:, :, :, :n])
         b_low, b_high, r = b_low[:n], b_high[:n], r[:n]
-        t = ddgemm.zgemm(y, q[e], mode=0)
-        part = ddgemm.zgemm(t, y, mode=1)
+        t = ddgemm.zgemm(y, q[e], mode=0, td=td)
+        part = ddgemm.zgemm(t, y, mode=1, td=td)
         if w is not None:
             sums = 4 * U2 * (_bnorm(sp_low, w, delta) + _bnorm(sp_low, part, delta))
             parts['sums'] += sums
@@ -325,7 +327,7 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
         qr = cp.broadcast_to(q_rad[e], (b, n, n))
         full = b_low + b_high + r
         ab = quad(b_low, qa, b_low)
-        terms = {'round': 2.1 * g * ab, 'high': 2 * quad(b_high, qa, b_low) + quad(b_high, qa, b_high),
+        terms = {'round': g * ab, 'high': 2 * quad(b_high, qa, b_low) + quad(b_high, qa, b_high),
                  'models': 2 * quad(r, qa, b_low + b_high) + quad(r, qa, r),
                  'radius': quad(full, qr, full), 'abs': ab}
         for k, v in terms.items():
@@ -509,12 +511,12 @@ def delta_model(sp4, sp2, fr, v, local, delta):
     return tmc.TM(x.c, (x.rem + err) * SAFE, x.delta)
 
 
-def delta_form(sp4, sp_low, mats, q, q_rad, q_abs, delta, dl, bdl):
+def delta_form(sp4, sp_low, mats, q, q_rad, q_abs, delta, dl, bdl, td=False):
     """sum over j of Delta^j W_j with W_j = Y R_j Y^H, by Horner's rule in Delta.
 
     The parts of the remainder are those of the W_j, with the factor bdl^j.
     """
-    ws = [compose(sp4, sp_low, mats[:1], [q[j]], [q_rad[j]], [q_abs[j]], delta)
+    ws = [compose(sp4, sp_low, mats[:1], [q[j]], [q_rad[j]], [q_abs[j]], delta, td)
           for j in range(4)]
     s = ws[3]
     for j in (2, 1, 0):
@@ -523,8 +525,10 @@ def delta_form(sp4, sp_low, mats, q, q_rad, q_abs, delta, dl, bdl):
     return s
 
 
-def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
+def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False):
     """The model of f on a batch of boxes that share the reference center of `local`.
+
+    td: the compositions with the forms take the triple-double products of ddgemm.
 
     Returns f (on delta_f), the radii (box, f, Phi) and the parts of the remainder.
     """
@@ -556,10 +560,10 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
 
     def form(sp4k, splk, mk, q, rr, aa):
         if not mode_j:
-            return compose(sp4k, splk, mk, q, rr, aa, d_phi)
+            return compose(sp4k, splk, mk, q, rr, aa, d_phi, td)
         if sp4k.n not in dls:
             dls[sp4k.n] = tmc.truncate(sp4k, sp4, dls[n])
-        return delta_form(sp4k, splk, mk, q, rr, aa, d_phi, dls[sp4k.n], bdl)
+        return delta_form(sp4k, splk, mk, q, rr, aa, d_phi, dls[sp4k.n], bdl, td)
 
     # The base and abs(y)^2.
     qb = [local[f'base_{tag}{e}'][None] for e in range(4)]
