@@ -445,22 +445,28 @@ def cauchy_mixed(sp, x, a, b, delta_small):
     """d^2 / dx_a dx_b of x on delta_small: exact derivative and Cauchy's estimate.
 
     The rest of x is at most x.rem on x.delta, so its mixed derivative is at most
-    x.rem / (x.delta - delta_small)^2 on delta_small. The two dd products by integers
-    alpha_a, alpha_b <= n round by 6 u^2 each, which adds 20 u^2 n^2 B / delta_small^2.
+    x.rem / (x.delta - delta_small)^2 on delta_small. The two dd products by the exact
+    integers alpha_a, alpha_b round by 6 u^2 each, relative to their results, so each
+    computed coefficient is within 13 u^2 of its abs value; on delta_small that adds
+    13 u^2 times the bound of the computed derivative.
     """
     if a == b:
         raise ValueError('cauchy_mixed takes two different variables')
     c2 = deriv_coeffs(sp, deriv_coeffs(sp, x.c, a), b)
     gap = (x.delta - delta_small) * (1.0 - 1e-15)
-    err = 20 * U2 * poly_bound(sp, x) * sp.n ** 2 / delta_small ** 2
+    err = 13 * U2 * poly_bound(sp, TM(c2, x.rem, delta_small))
     return TM(c2, (x.rem / (gap * gap) + err) * SAFE, delta_small)
 
 
 def deriv1(sp, x, a, delta_small):
-    """d/dx_a of x on delta_small, with Cauchy's estimate for the rest."""
+    """d/dx_a of x on delta_small, with Cauchy's estimate for the rest.
+
+    The dd product by the exact integer alpha_a rounds by 6 u^2 of its result, so the
+    rounding adds 7 u^2 times the bound of the computed derivative on delta_small.
+    """
     c1 = deriv_coeffs(sp, x.c, a)
     gap = (x.delta - delta_small) * (1.0 - 1e-15)
-    err = 10 * U2 * poly_bound(sp, x) * sp.n / delta_small
+    err = 7 * U2 * poly_bound(sp, TM(c1, x.rem, delta_small))
     return TM(c1, (x.rem / gap + err) * SAFE, delta_small)
 
 
