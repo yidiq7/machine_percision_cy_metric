@@ -125,7 +125,11 @@ def check_boxes(rec, args):
         local = tc.local_on_gpu(Path(args.local) / f'center_{r}.npz')
         c = [cc.dd(mp.mpc(lo[0] + s / 2, lo[1] + s / 2)), cc.dd(mp.mpc(lo[2] + s / 2, lo[3] + s / 2))]
         fr = tc.make_frames([c], int(local['k0']))
-        f, (d, _, _), info, parts = tc.box_f(fr, local, [delta], args.order, args.order + 6)
+        # The order and gap fraction of the record (columns 14, 15), all k as models.
+        order = int(rec[j, 14]) if rec.shape[1] > 14 else args.order
+        a = float(rec[j, 15]) if rec.shape[1] > 15 else None
+        f, (d, _, _), info, parts = tc.box_f(fr, local, [delta], order, order + 6,
+                                             k_max=int(local['top']), a=a)
         sp4 = parts['sp4']
         coef = cp.asnumpy(f.c[:, :, 0])
         rem = float(f.rem[0])
