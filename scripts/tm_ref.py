@@ -79,6 +79,12 @@ def frame(p):
     return vecs, n, u, c1
 
 
+def tm_forms_conj_t(m):
+    """The conjugate transpose of an acb_mat."""
+    return acb_mat(m.ncols(), m.nrows(), [m[i, j].conjugate() for j in range(m.ncols())
+                                           for i in range(m.nrows())])
+
+
 def var2(sp2, i, deltas):
     c = np.array([acb(0)] * sp2.size, dtype=object)
     e = [0, 0]
@@ -158,6 +164,20 @@ def abs_np(m):
     return np.array([[tb.ub(m[i, j]) for j in range(m.ncols())] for i in range(m.nrows())])
 
 
+def shift_matrix(p2, c):
+    """T with sum over a of q_a t^a = sum over a' of (T q)_a' (t - c)^a', for t^a in p2."""
+    n = p2.size
+    vals = []
+    for ap in p2.mons:
+        for a in p2.mons:
+            if ap[0] <= a[0] and ap[1] <= a[1]:
+                vals.append(math.comb(a[0], ap[0]) * math.comb(a[1], ap[1])
+                            * c[0] ** (a[0] - ap[0]) * c[1] ** (a[1] - ap[1]))
+            else:
+                vals.append(acb(0))
+    return acb_mat(n, n, vals)
+
+
 def form_tm(sp4, sp2, ys, q, absq, deltas):
     """The model of sum over e of Y_e Q_e Y_e^H, with the parts that the remainders add.
 
@@ -170,7 +190,7 @@ def form_tm(sp4, sp2, ys, q, absq, deltas):
     n_p = q[0].nrows()
     for e in range(4):
         y_e, yh_e, b, r = ys[e]
-        part = y_e * acb_mat(q[e]) * yh_e
+        part = y_e * (q[e] if isinstance(q[e], acb_mat) else acb_mat(q[e])) * yh_e
         w = part if w is None else w + part
         b, r = b[:n_p], r[:n_p]
         rem += (2 * np.einsum('ad,ab,bd->d', r, absq[e], b)
@@ -271,6 +291,7 @@ def load(args):
     G['seconds_forms'] = time.perf_counter() - t0
     G['a'] = args.a
     G['extra_y'] = args.extra_y
+    G['shift'] = args.shift
 
 
 def run_box(job):
@@ -301,9 +322,14 @@ def run_box(job):
 
     t1 = time.perf_counter()
     p2 = tm_forms.Poly2(top)
+    # With --shift the forms move to the center c, and the monomials are those of t - c.
+    base_t = ys[:2]
+    if G['shift']:
+        base_t = [ys[i].add_const(-p[i]) for i in range(2)]
     mono = {(0, 0): tb.TM.const(sp2, 1, d_phi)}
     for e in p2.mons[1:]:
-        mono[e] = mono[(e[0] - 1, e[1])] * ys[0] if e[0] else mono[(0, e[1] - 1)] * ys[1]
+        mono[e] = (mono[(e[0] - 1, e[1])] * base_t[0] if e[0]
+                   else mono[(0, e[1] - 1)] * base_t[1])
     y2e = [tb.TM.const(sp2, 1, d_phi), ys[2]]
     y2e.append(ys[2] * ys[2])
     y2e.append(y2e[2] * ys[2])
@@ -320,7 +346,15 @@ def run_box(job):
 
     t1 = time.perf_counter()
     nb = G['base'][0].nrows()
-    p0 = form_tm(sp4, sp2, mats[nb], G['base'], G['abs_base'], d_phi)
+    base_q, base_abs = G['base'], G['abs_base']
+    if G['shift']:
+        tb_ = shift_matrix(tm_forms.Poly2(k0), p[:2])
+        tbh = tm_forms_conj_t(tb_)
+        base_q = [tb_ * acb_mat(m) * tbh for m in G['base']]
+        base_abs = [abs_np(m) for m in base_q]
+        tl_ = shift_matrix(p2, p[:2])
+        tlh = tm_forms_conj_t(tl_)
+    p0 = form_tm(sp4, sp2, mats[nb], base_q, base_abs, d_phi)
     r2 = tb.TM.const(sp4, 1, d_phi)
     for i in range(3):
         r2 = r2 + tb.tensor(sp4, sp2, ys[i], ysc[i], d_phi)
@@ -337,6 +371,9 @@ def run_box(job):
                 term = G[f'M{k1}'][e] * w
                 qe = term if qe is None else qe + term
                 ae = ae + tb.ub(w) * G['abs_M'][k1][e]
+            if G['shift']:
+                qe = tl_ * acb_mat(qe) * tlh
+                ae = abs_np(qe)
             q.append(qe)
             aq.append(ae * SLACK)
         fk.append(form_tm(sp4, sp2, mats[p2.size], q, aq, d_phi))
@@ -470,6 +507,8 @@ def main():
                     help='the radius steps 1 + a between box, f and Phi; 0 means 2 / order')
     ap.add_argument('--extra-y', type=int, default=10,
                     help='the order of the models in tau alone above the order of the box')
+    ap.add_argument('--shift', action='store_true',
+                    help='move the chart forms to the center in arb before the composition')
     ap.add_argument('--prec', type=int, default=192)
     ap.add_argument('--procs', type=int, default=6)
     ap.add_argument('--out', type=str, default='')
