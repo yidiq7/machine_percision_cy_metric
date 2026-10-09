@@ -281,12 +281,19 @@ def sub(sp, x, y):
     return TM(c, (x.rem + y.rem + err) * SAFE, x.delta)
 
 
+def scale_raw(c, k):
+    """c (4, S, B) times a complex dd number k (4, B) for each box; each entry rounds by
+    at most 16 u^2 of abs(c) abs(k)."""
+    _, s, b = c.shape
+    z = cp.empty_like(c)
+    _launch_elem(_kernels().get_function('c_scale'), s * b,
+                 (cp.ascontiguousarray(c), cp.ascontiguousarray(k), z, np.int32(s), np.int32(b)))
+    return z
+
+
 def scale(sp, x, k):
     """x times a complex dd number for each box, k of shape (4, B)."""
-    _, s, b = x.c.shape
-    z = cp.empty_like(x.c)
-    _launch_elem(_kernels().get_function('c_scale'), s * b,
-                 (cp.ascontiguousarray(x.c), cp.ascontiguousarray(k), z, np.int32(s), np.int32(b)))
+    z = scale_raw(x.c, k)
     kb = abs_ub(k[:, None, :])[0]
     return TM(z, (x.rem * kb + 20 * U2 * poly_bound(sp, x) * kb) * SAFE, x.delta)
 
