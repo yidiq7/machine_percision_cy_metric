@@ -27,8 +27,11 @@ import itertools
 import math
 
 import numpy as np
-import flint
-from flint import acb, arb, arb_mat
+try:
+    import flint
+    from flint import acb, arb, arb_mat
+except ImportError:            # The GPU side needs only the monomial order of Poly2.
+    flint = acb = arb = arb_mat = None
 
 from . import blocks
 
