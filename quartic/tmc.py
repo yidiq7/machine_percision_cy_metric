@@ -505,3 +505,21 @@ def _pairwise(x, y):
 def restrict(x, delta_small):
     """The same model on a smaller polydisc; its remainder stays valid there."""
     return TM(x.c, x.rem, delta_small)
+
+
+def embed(sp_big, x):
+    """A model of a smaller order as one of the order of sp_big: zero coefficients added."""
+    _, s, b = x.c.shape
+    c = cp.zeros((4, sp_big.size, b))
+    c[:, :s] = x.c
+    return TM(c, x.rem, x.delta)
+
+
+def truncate(sp_small, sp_big, x):
+    """A model of sp_big as one of the smaller order of sp_small; the dropped terms go
+    to the remainder with their bound. The monomials of each degree come in the same
+    order in every Space, so the smaller one is a prefix."""
+    cut = sp_small.size
+    g = graded(sp_big, x)
+    dropped = poly_bound_g(g[sp_small.n + 1:], x.delta) * (x.delta ** (sp_small.n + 1))
+    return TM(cp.ascontiguousarray(x.c[:, :cut]), (x.rem + dropped) * SAFE, x.delta)

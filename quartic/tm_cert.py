@@ -189,7 +189,22 @@ def monomial_mats(sp2, sp_low, ys, cr, top, n_list):
         b_high = (cp.sum(w * (1 - is_low)[:, :, None], axis=0)) * SAFE
         rem = cp.stack([t.rem for t in tms])                  # (n_top, B)
         y = cp.moveaxis(cs[:, :low], -1, 0)                   # (B, 4, low, n_top)
-        out.append((cp.ascontiguousarray(y), b_low, b_high, rem))
+        onehot = cp.asarray((sp2.deg[:, None] == np.arange(sp2.n + 1)[None, :])
+                            .astype(np.float64))              # (S2, ny + 1)
+        gdeg = cp.einsum('sab,sd->adb', w, onehot) * SAFE     # (n_top, ny + 1, B)
+        out.append((cp.ascontiguousarray(y), b_low, b_high, rem, gdeg))
+    return out
+
+
+def mats_at(mats, sp_k):
+    """The monomial matrices for the lower order sp_k.n: the rows of degree <= sp_k.n, and
+    the bounds split at that degree."""
+    out = []
+    for y, _, _, r, gdeg in mats:
+        cut = sp_k.n + 1
+        b_low = cp.sum(gdeg[:, :cut], axis=1) * SAFE
+        b_high = cp.sum(gdeg[:, cut:], axis=1) * SAFE
+        out.append((cp.ascontiguousarray(y[:, :, :sp_k.size]), b_low, b_high, r))
     return out
 
 
@@ -210,7 +225,7 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     g = ddgemm.gamma(n)
     quad = lambda u, m, v: cp.matmul(cp.matmul(u.T[:, None, :], m), v.T[:, :, None])[:, 0, 0]
     for e in range(4):
-        y, b_low, b_high, r = mats[e]
+        y, b_low, b_high, r = mats[e][:4]
         y = cp.ascontiguousarray(y[:, :, :, :n])
         b_low, b_high, r = b_low[:n], b_high[:n], r[:n]
         t = ddgemm.zgemm(y, q[e], mode=0)
@@ -334,7 +349,7 @@ def form_abs(mats, q_abs):
     """A bound of a form on the polydisc from abs(Q): the sum of full^T abs(Q) full over e."""
     out = None
     for e in range(4):
-        _, b_low, b_high, r = mats[e]
+        _, b_low, b_high, r = mats[e][:4]
         n = q_abs[e].shape[-1]
         full = (b_low + b_high + r)[:n]
         v = cp.einsum('ab,bac,cb->b', full, q_abs[e], full)
@@ -358,7 +373,7 @@ def reexpand_abs(local, zeta_host, k, top):
     return out
 
 
-def box_f(fr, local, delta_box, n, ny, k_max=20, a=None):
+def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3):
     """The model of f on a batch of boxes that share the reference center of `local`.
 
     Returns f (on delta_f), the radii (box, f, Phi) and the parts of the remainder.
@@ -424,19 +439,31 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None):
     # F_k for k <= k_max as models; the rest through a bound.
     fq = reexpand(local, zeta, k_max, top)
     clock('reexpand')
+    # F_k enters psi as xi^k F_k, and xi is of degree 1 up to a rounding, so F_k needs
+    # only the order n - (k - k_full) for k > k_full; the rest goes to its remainder.
+    orders = [n if k <= k_full else max(n - (k - k_full), 4) for k in range(k_max + 1)]
     fk = []
     for k in range(k_max + 1):
         q = [x[0] for x in fq[k]]
         rr = [x[1] for x in fq[k]]
         aa = [x[2] for x in fq[k]]
-        fk.append(compose(sp4, sp_low, mats, q, rr, aa, d_phi))
+        sp4k, splk = _space(4, orders[k]), _space(2, orders[k])
+        mk = mats if orders[k] == n else mats_at(mats, splk)
+        fk.append(compose(sp4k, splk, mk, q, rr, aa, d_phi))
     tail = cp.zeros(b)
     for k in range(k_max + 1, top + 1):
         tail += form_abs(mats, reexpand_abs(local, zeta, k, top)) * bxi ** k
     clock('forms')
+    xis = {n: xi}
+    for m in set(orders):
+        if m not in xis:
+            xis[m] = tmc.truncate(_space(4, m), sp4, xi)
     s = fk[k_max]
     for k in range(k_max - 1, -1, -1):
-        s = tmc.add(sp4, fk[k], tmc.mul(sp4, xi, s))
+        spk = _space(4, orders[k])
+        if orders[k + 1] < orders[k]:
+            s = tmc.embed(spk, s)
+        s = tmc.add(spk, fk[k], tmc.mul(spk, xis[orders[k]], s))
     psi = tmc.TM(s.c, (s.rem + tail * SAFE) * SAFE, s.delta)
     clock('level sum')
     phi = tmc.add(sp4, tmc.add(sp4, tmc.scale(sp4, log_r2, tmc.cconst(k0, b)), log_pt), psi)
