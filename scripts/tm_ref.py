@@ -178,15 +178,15 @@ def shift_matrix(p2, c):
     return acb_mat(n, n, vals)
 
 
-def form_tm(sp4, sp2, ys, q, absq, deltas):
-    """The model of sum over e of Y_e Q_e Y_e^H, with the parts that the remainders add.
+def compose(ys, q, absq, nd):
+    """W = sum over e of Y_e Q_e Y_e^H, the remainder from the models, and sum of b^T abs(Q) b.
 
     ys[e] = (Y, Yh, b, r): the coefficient matrix of the models y_2^e y^alpha, its conjugate
-    transpose, and their bounds and remainders (n_p, len(deltas)).
+    transpose, and their bounds and remainders (n_p, nd).
     """
     w = None
-    rem = np.zeros(len(deltas))
-    absb = np.zeros(len(deltas))
+    rem = np.zeros(nd)
+    absb = np.zeros(nd)
     n_p = q[0].nrows()
     for e in range(4):
         y_e, yh_e, b, r = ys[e]
@@ -196,6 +196,14 @@ def form_tm(sp4, sp2, ys, q, absq, deltas):
         rem += (2 * np.einsum('ad,ab,bd->d', r, absq[e], b)
                 + np.einsum('ad,ab,bd->d', r, absq[e], r))
         absb += np.einsum('ad,ab,bd->d', b, absq[e], b)
+    return w, rem * SLACK, absb
+
+
+def bidegree_tm(sp4, sp2, w, rem, deltas):
+    """The model in four variables of the coefficients w[alpha, beta] of s^alpha r^beta.
+
+    The terms of total degree above the order go to the remainder, with rem added.
+    """
     c = np.array([acb(0)] * sp4.size, dtype=object)
     for k, (a0, a1, b0, b1) in enumerate(sp4.mons):
         c[k] = w[sp2.index[(a0, a1)], sp2.index[(b0, b1)]]
@@ -206,11 +214,68 @@ def form_tm(sp4, sp2, ys, q, absq, deltas):
             if di + sp2.deg[j] > sp4.n:
                 big[di + sp2.deg[j]] += tb.ub(w[i, j])
     tail = np.array([float(np.sum(big * dl ** np.arange(big.size))) for dl in deltas])
-    out = tb.TM(sp4, c, (rem + tail) * SLACK, deltas)
+    return tb.TM(sp4, c, (rem + tail) * SLACK, deltas)
+
+
+def form_tm(sp4, sp2, ys, q, absq, deltas):
+    """The model of a form; it also keeps its bidegree coefficients w and their remainder."""
+    w, rem, absb = compose(ys, q, absq, len(deltas))
+    out = bidegree_tm(sp4, sp2, w, rem, deltas)
+    out.w, out.w_rem = w, rem
     # The dd rounding of the two matrix products on the GPU would add about this much.
-    out.round_dd = 3 * (n_p + 20) * 8 * 2.0 ** -106 * absb
-    out.abs_ratio = absb / tb.ub(c[0])
+    out.round_dd = 3 * (q[0].nrows() + 20) * 8 * 2.0 ** -106 * absb
+    out.abs_ratio = absb / tb.ub(out.c[0])
     return out
+
+
+def mult_matrix2(b):
+    """M with (M v)[k] = sum over i + j = k of b[i] v[j], for a model b in two variables."""
+    sp = b.sp
+    vals = []
+    for g in sp.mons:
+        for a in sp.mons:
+            d = (g[0] - a[0], g[1] - a[1])
+            vals.append(b.c[sp.index[d]] if d[0] >= 0 and d[1] >= 0 else acb(0))
+    return acb_mat(sp.size, sp.size, vals)
+
+
+def holomorphic_quotient(sp4, sp2, p0, k0, deltas):
+    """D = p0 / (A(tau) conj-A(sigma)) with A = p0(tau, sigma = 0) / sqrt(p0(c)), and A^(-1/k0).
+
+    log A is holomorphic, so d_tau d_sigma log p0 = d_tau d_sigma log D, and D - 1 has only
+    mixed terms. The product with 1/A on both sides goes on the bidegree coefficients, so
+    no bound of a product tail enters. Returns D, a = (A / A(0))^(-1/k0), p0(c), eta of A.
+    """
+    w, wrem = p0.w, p0.w_rem
+    pc = exact(w[0, 0])
+    ahat = tb.TM(sp2, np.array([w[i, 0] / pc for i in range(sp2.size)], dtype=object),
+                 wrem / tb.ub(pc), deltas)
+    ya = ahat.add_const(-1)
+    eta_a = ya.bound()
+    pwa = powers(ya, sp2.n)
+    binv = binomial(pwa, -1, eta_a)
+    aroot = binomial(pwa, Fraction(-1, k0), eta_a)
+    mb = mult_matrix2(tb.TM(sp2, binv.c, np.zeros(len(deltas)), deltas))
+    wd = mb * w * tm_forms_conj_t(mb)
+    wd = wd * (1 / pc)
+    # The parts of P_B(tau) W P_B(sigma) above degree n_y on one side are not in wd.
+    gb = binv.graded()
+    gw = np.zeros((sp2.n + 1, len(deltas)))
+    for i in range(sp2.size):
+        for j in range(sp2.size):
+            x = tb.ub(w[i, j])
+            if x:
+                gw[sp2.deg[i]] += x * deltas ** sp2.deg[j]
+    drop = np.zeros(len(deltas))
+    for da in range(sp2.n + 1):
+        for dc in range(sp2.n + 1):
+            if da + dc > sp2.n:
+                drop += gb[da] * gw[dc] * deltas ** (da + dc)
+    bb = binv.poly_bound()
+    bw = sum(gw[d] * deltas ** d for d in range(sp2.n + 1))
+    rem = (2 * bb * drop + bb ** 2 * wrem
+           + (2 * binv.rem * bb + binv.rem ** 2) * (bw + wrem)) / tb.ub(pc)
+    return bidegree_tm(sp4, sp2, wd, rem * SLACK, deltas), aroot, pc, eta_a
 
 
 def powers(y, k):
@@ -293,7 +358,8 @@ def load(args):
     G['a'] = args.a
     G['extra_y'] = args.extra_y
     G['shift'] = args.shift
-    G['affine'] = args.affine
+    G['affine'] = args.affine or args.diastasis
+    G['diastasis'] = args.diastasis
 
 
 def run_box(job):
@@ -357,13 +423,18 @@ def run_box(job):
         tl_ = shift_matrix(p2, p[:2])
         tlh = tm_forms_conj_t(tl_)
     p0 = form_tm(sp4, sp2, mats[nb], base_q, base_abs, d_phi)
-    r2 = tb.TM.const(sp4, 1, d_phi)
-    for i in range(3):
-        r2 = r2 + tb.tensor(sp4, sp2, ys[i], ysc[i], d_phi)
     # --affine: psi = sum of N_L x'^L with x' = p0^(-1/k0) in the chart, so no abs(y)^(+-2 top).
-    affine = G['affine']
+    # --diastasis: x' and log p0 come from D = p0 / (A conj-A); abs(y)^2 is not used.
+    affine, dia = G['affine'], G['diastasis']
+    if dia:
+        dq, aroot, pc, eta_a = holomorphic_quotient(sp4, sp2, p0, k0, d_phi)
+        xc = exact((pc.log() * (-arb(1) / k0)).exp())
+    else:
+        r2 = tb.TM.const(sp4, 1, d_phi)
+        for i in range(3):
+            r2 = r2 + tb.tensor(sp4, sp2, ys[i], ysc[i], d_phi)
+        xc = exact((p0.c[0].log() * (-arb(1) / k0)).exp() * (1 if affine else r2.c[0]))
     lev, labs = ('N', G['abs_N']) if affine else ('M', G['abs_M'])
-    xc = exact((p0.c[0].log() * (-arb(1) / k0)).exp() * (1 if affine else r2.c[0]))
     fk = []
     for kk in range(top + 1):
         q, aq = [], []
@@ -385,29 +456,42 @@ def run_box(job):
     times['forms'] = time.perf_counter() - t1
 
     t1 = time.perf_counter()
-    mr = exact(r2.c[0])
-    yr = r2.scale(1 / mr).add_const(-1)
-    eta_r = yr.bound()
-    pw = powers(yr, n)
-    ir2 = binomial(pw, -1, eta_r).scale(1 / mr)
-    log_r2 = log1p(pw, eta_r)
-    ipow = {1: ir2}
+    ipow = {}
+    if dia:
+        yd = dq.add_const(-1)
+        eta_p = yd.bound()
+        pwd = powers(yd, n // 2 + 1)
+        log_pt = log1p(pwd, eta_p)
+        # x / x_c = pc^(-1/k0) a conj-a D^(-1/k0) / x_c, with x_c the exact number of the F_k.
+        ratio = acb((pc.log() * (-arb(1) / k0)).exp() / xc)
+        xi = (tb.tensor(sp4, sp2, aroot, conj_tm(aroot), d_phi)
+              * binomial(pwd, Fraction(-1, k0), eta_p)).scale(ratio).add_const(-1)
+        log_r2, eta_r = tb.TM.const(sp4, 0, d_phi), eta_a
+    else:
+        mr = exact(r2.c[0])
+        yr = r2.scale(1 / mr).add_const(-1)
+        eta_r = yr.bound()
+        pw = powers(yr, n)
+        ir2 = binomial(pw, -1, eta_r).scale(1 / mr)
+        log_r2 = log1p(pw, eta_r)
+        ipow = {1: ir2}
 
-    def ipower(m):
-        if m not in ipow:
-            ipow[m] = ipower(m // 2) * ipower(m // 2) if m % 2 == 0 else ipower(m - 1) * ir2
-        return ipow[m]
-    ipower(k0)
-    if not G['affine']:
-        ipower(top)
-    pt = p0 * ipow[k0]
-    mp = exact(pt.c[0])
-    yp = pt.scale(1 / mp).add_const(-1)
-    eta_p = yp.bound()
-    pwp = powers(yp, n)
-    xm = binomial(pwp, Fraction(-1, k0), eta_p).scale((mp.log() * (-arb(1) / k0)).exp())
-    log_pt = log1p(pwp, eta_p)
-    xi = (ir2 * xm if affine else xm).scale(1 / xc).add_const(-1)
+        def ipower(m):
+            if m not in ipow:
+                ipow[m] = (ipower(m // 2) * ipower(m // 2) if m % 2 == 0
+                           else ipower(m - 1) * ir2)
+            return ipow[m]
+        ipower(k0)
+        if not affine:
+            ipower(top)
+        pt = p0 * ipow[k0]
+        mp = exact(pt.c[0])
+        yp = pt.scale(1 / mp).add_const(-1)
+        eta_p = yp.bound()
+        pwp = powers(yp, n)
+        xm = binomial(pwp, Fraction(-1, k0), eta_p).scale((mp.log() * (-arb(1) / k0)).exp())
+        log_pt = log1p(pwp, eta_p)
+        xi = (ir2 * xm if affine else xm).scale(1 / xc).add_const(-1)
     s = fk[top]
     for kk in range(top - 1, -1, -1):
         s = fk[kk] + xi * s
@@ -428,7 +512,7 @@ def run_box(job):
     f = (det * q4).scale(1 / (abs(u.det()) ** 2 * vbar)).add_const(-1)
     times['metric'] = time.perf_counter() - t1
     bxi = xi.bound()
-    bir = 1.0 if G['affine'] else ipow[top].bound()
+    bir = ipow[top].bound() if top in ipow and not G['affine'] else 1.0
     round_psi = sum(fk[kk].round_dd * bxi ** kk for kk in range(top + 1)) * bir
     round_phi = p0.round_dd / tb.ub(p0.c[0]) + round_psi
     round_g = round_phi / (d_phi - d_f) ** 2
@@ -443,7 +527,8 @@ def run_box(job):
     r2star = 1 + sum((abs(c) ** 2 for c in ystar), arb(0))
     f0_direct = acb(0)
     for lv in tb.D['levels']:
-        f0_direct += xc ** lv[0] * tb.direct_form(lv, zstar) * r2star ** (top - lv[0])
+        lift = 1 if G['affine'] else r2star ** (top - lv[0])
+        f0_direct += xc ** lv[0] * tb.direct_form(lv, zstar) * lift
     check_f0 = tb.ub(fk[0].at(point4) - f0_direct) / tb.ub(fk[0].c[0])
     f_star = point_f(zstar, k)
     gap_star = abs(float((f.at(point4)).real) - f_star)
@@ -517,6 +602,8 @@ def main():
                     help='move the chart forms to the center in arb before the composition')
     ap.add_argument('--affine', action='store_true',
                     help='expand sum of N_L x^L with x = p0^(-1/k0), with no factor abs(y)^(2 top)')
+    ap.add_argument('--diastasis', action='store_true',
+                    help='take log p0 and x from p0 / (A(tau) conj-A(sigma)); implies --affine')
     ap.add_argument('--prec', type=int, default=192)
     ap.add_argument('--procs', type=int, default=6)
     ap.add_argument('--out', type=str, default='')
