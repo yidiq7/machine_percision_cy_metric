@@ -116,7 +116,8 @@ def main():
             fc = tc.dd_mp(cp.asnumpy(f.c[:, 0, 0]))
             ref = f', tm_box {args.fref[ci]:+.10e}' if ci < len(args.fref) else ''
             print(f'center {ci}, order {n} (tau alone {n + args.ny_extra}): f(c) '
-                  f'{mp.nstr(fc.real, 11)}{ref}; {sec:.1f}s for {nb} boxes', flush=True)
+                  f'{mp.nstr(fc.real, 11)}{ref}; {sec:.1f}s for {nb} boxes ('
+                  + ', '.join(f'{k} {v:.2f}s' for k, v in info['times'].items()) + ')', flush=True)
             # The model of p0 at a point of the smallest box against mpmath.
             k = int(np.argmin(args.deltas))
             small = args.deltas[k]

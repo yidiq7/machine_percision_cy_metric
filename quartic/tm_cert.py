@@ -197,10 +197,10 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     """The model in four variables of sum over e of Y_e Q_e Y_e^H, with all remainders.
 
     q[e]: (nq, 4, n, n) with nq = 1 (shared) or B; q_rad[e], q_abs[e]: (nq, n, n) FP64.
-    Only the entries of total degree <= n are formed. The true form differs from that
-    polynomial by the entries of total degree above n (bounded by the graded bounds of
-    the columns of Y_e and abs(Q_e)), by the parts of degree above sp_low.n of the
-    monomial models, by their remainders, by the radii of Q, and by the rounding of
+    The true form differs from the polynomial of total degree <= n by the entries of W
+    of higher total degree (their exact sizes; a majorant from abs(Q) is far too large,
+    because those entries cancel strongly), by the parts of degree above sp_low.n of
+    the monomial models, by their remainders, by the radii of Q, and by the rounding of
     the two products (2.1 gamma abs(Y) abs(Q) abs(Y)^H) and of the sums over e.
     """
     n = q[0].shape[-1]
@@ -209,32 +209,23 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     rem = cp.zeros(b)
     g = ddgemm.gamma(n)
     quad = lambda u, m, v: cp.matmul(cp.matmul(u.T[:, None, :], m), v.T[:, :, None])[:, 0, 0]
-    deg = cp.asarray(sp_low.deg.astype(np.int32))
-    d = np.arange(sp_low.n + 1)
-    over = cp.asarray((d[:, None] + d[None, :] > sp4.n).astype(np.float64))
-    onehot = cp.asarray((sp_low.deg[:, None] == d[None, :]).astype(np.float64))     # (S, D+1)
-    pw = delta[None, :] ** cp.asarray(sp_low.deg)[:, None]                           # (S, B)
     for e in range(4):
         y, b_low, b_high, r = mats[e]
         y = cp.ascontiguousarray(y[:, :, :, :n])
         b_low, b_high, r = b_low[:n], b_high[:n], r[:n]
         t = ddgemm.zgemm(y, q[e], mode=0)
-        part = ddgemm.zgemm(t, y, mode=1, rdeg=deg, cdeg=deg, dmax=sp4.n)
+        part = ddgemm.zgemm(t, y, mode=1)
         if w is not None:
-            rem += 4 * U2 * (_bnorm_low(sp4, sp_low, w, delta) + _bnorm_low(sp4, sp_low, part, delta))
+            rem += 4 * U2 * (_bnorm(sp_low, w, delta) + _bnorm(sp_low, part, delta))
         w = part if w is None else _add_mats(w, part)
         qa = cp.broadcast_to(q_abs[e], (b, n, n))
         qr = cp.broadcast_to(q_rad[e], (b, n, n))
         full = b_low + b_high + r
-        # The entries of total degree above n: G[alpha, d, b] = sum of abs(Y) delta^d by degree.
-        ay = ddgemm.cabs(y) * pw.T[:, :, None]                                       # (B, S, n)
-        gcol = cp.matmul(ay.transpose(0, 2, 1), onehot) * SAFE                       # (B, n, D+1)
-        hq = cp.matmul(cp.matmul(gcol.transpose(0, 2, 1), qa), gcol) * SAFE          # (B, D+1, D+1)
-        tail = cp.sum(hq * over[None], axis=(1, 2))
-        rem += (tail + 2.1 * g * quad(b_low, qa, b_low) + 2 * quad(b_high, qa, b_low)
+        rem += (2.1 * g * quad(b_low, qa, b_low) + 2 * quad(b_high, qa, b_low)
                 + quad(b_high, qa, b_high) + 2 * quad(r, qa, b_low + b_high) + quad(r, qa, r)
                 + quad(full, qr, full)) * SAFE
-    return _from_bidegree(sp4, sp_low, w, rem * SAFE, delta, tail_done=True)
+    # The entries of total degree above n go to the remainder with their exact sizes.
+    return _from_bidegree(sp4, sp_low, w, rem * SAFE, delta)
 
 
 def _add_mats(x, y):
@@ -378,13 +369,16 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None):
     d = cp.asarray(np.asarray(delta_box, float))
     d_f = d * (1 + a)
     d_phi = d_f * (1 + a)
-    sp2, sp_low, sp4 = tmc.Space(2, ny), tmc.Space(2, n), tmc.Space(4, n)
+    sp2, sp_low, sp4 = _space(2, ny), _space(2, n), _space(4, n)
     info = {}
+    clock = _Clock()
     ys, rho, lam = implicit_h(sp2, fr, d_phi)
     info['rho_h'], info['lam_h'] = rho, lam
     yc = [conj_tm(y) for y in ys]
     cr = cp.asarray(local['c'])                                  # (2, 4)
+    clock('h')
     mats = monomial_mats(sp2, sp_low, ys, cr, top, None)
+    clock('monomials')
 
     # The base and abs(y)^2.
     qb = [local[f'base_e{e}'][None] for e in range(4)]
@@ -426,8 +420,10 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None):
     xi.rem = (xi.rem + kap_err * tmc.bound(sp4, xw)) * SAFE
     bxi = tmc.bound(sp4, xi)
 
+    clock('base')
     # F_k for k <= k_max as models; the rest through a bound.
     fq = reexpand(local, zeta, k_max, top)
+    clock('reexpand')
     fk = []
     for k in range(k_max + 1):
         q = [x[0] for x in fq[k]]
@@ -437,10 +433,12 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None):
     tail = cp.zeros(b)
     for k in range(k_max + 1, top + 1):
         tail += form_abs(mats, reexpand_abs(local, zeta, k, top)) * bxi ** k
+    clock('forms')
     s = fk[k_max]
     for k in range(k_max - 1, -1, -1):
         s = tmc.add(sp4, fk[k], tmc.mul(sp4, xi, s))
     psi = tmc.TM(s.c, (s.rem + tail * SAFE) * SAFE, s.delta)
+    clock('level sum')
     phi = tmc.add(sp4, tmc.add(sp4, tmc.scale(sp4, log_r2, tmc.cconst(k0, b)), log_pt), psi)
     info.update(rem_f0=fk[0].rem, rem_psi=psi.rem, rem_logpt=log_pt.rem, rem_logr2=log_r2.rem,
                 rem_phi=phi.rem, bxi=bxi, tail=tail, zeta=zeta)
@@ -459,8 +457,36 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None):
     v = tmc.scale(sp4, dq, fr.vol)
     v.rem = (v.rem + fr.vol_err * tmc.abs_ub(fr.vol[:, None, :])[0] * tmc.bound(sp4, dq)) * SAFE
     f = tmc.add_const(sp4, v, -one)
-    info.update(rem_g=g[0, 0].rem, rem_f=f.rem)
+    clock('metric')
+    info.update(rem_g=g[0, 0].rem, rem_f=f.rem, times=clock.times)
     return f, (d, d_f, d_phi), info, dict(p0=p0, f0=fk[0], ys=ys, sp4=sp4, sp2=sp2)
+
+
+_SPACES = {}
+
+
+def _space(nvars, n):
+    """One Space for each (nvars, n), so that its tables are built once."""
+    if (nvars, n) not in _SPACES:
+        _SPACES[nvars, n] = tmc.Space(nvars, n)
+    return _SPACES[nvars, n]
+
+
+class _Clock:
+    """Wall time of the stages, with a device synchronization at each mark."""
+
+    def __init__(self):
+        import time
+        self._time = time.perf_counter
+        cp.cuda.Device().synchronize()
+        self.t = self._time()
+        self.times = {}
+
+    def __call__(self, name):
+        cp.cuda.Device().synchronize()
+        now = self._time()
+        self.times[name] = now - self.t
+        self.t = now
 
 
 def sup_bound(sp4, f, d):
