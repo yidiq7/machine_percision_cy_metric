@@ -750,11 +750,13 @@ def delta_form_td(sp4, sp_low, mats, q, q_rad, q_abs, delta, dl, bdl):
     return s
 
 
-def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hmax=None):
+def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hmax=None,
+          grad=False):
     """The model of f on a batch of boxes that share the reference center of `local`.
 
     td: the compositions with the forms take the triple-double products of ddgemm.
     hmax: the bound of abs(h) over the cell of each box, for the check in implicit_h.
+    grad: also bound the gradient of f on the box (`gradient_bounds`), in info.
 
     Returns f (on delta_f), the radii (box, f, Phi) and the parts of the remainder.
     """
@@ -919,10 +921,46 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hma
     v = tmc.scale(sp4, dq, fr.vol)
     v.rem = (v.rem + fr.vol_err * tmc.abs_ub(fr.vol[:, None, :])[0] * tmc.bound(sp4, dq)) * SAFE
     f = tmc.add_const(sp4, v, -one)
+    if grad:
+        info.update(gradient_bounds(sp4, f, g, d, k0))
     clock('metric')
     info.update(rem_g=g[0, 0].rem, rem_f=f.rem, times=clock.times)
     return f, (d, d_f, d_phi), info, dict(p0=p0, f0=fk[0], ys=ys, sp4=sp4, sp2=sp2,
                                           delta=dls.get(n))
+
+
+def gradient_bounds(sp4, f, g, d, k0):
+    """Bounds of the gradient of f on the box of radius d, for f and g models on d_f > d.
+
+    In the tangent coordinates tau (variables 0, 1; sigma = conj(tau) are 2, 3), f is real
+    on the real points, so abs(d f)^2 = 4 sum_i abs(df/dtau_i)^2 in the real coordinates of
+    tau, and abs(df/dtau_i) <= B of the model of `tmc.deriv1` (Cauchy from d_f to d). In
+    the metric of volume 1, G = c Re(g) with c = 1 / (sqrt(2) pi k0), abs(grad f)^2 =
+    4 (df)^H g^-1 df / c <= 4 abs(df)^2 / (c lam_min), and lam_min >= det g / tr g with
+    det g >= Re det(center) - (its variation and remainder) on the box; g_00 > 0 there as
+    well makes g positive definite. A box without that proof gets an infinite bound.
+    """
+    dfs = [tmc.deriv1(sp4, f, i, d) for i in range(2)]
+    b = [tmc.bound(sp4, x) for x in dfs]
+    grad_tau = cp.sqrt(b[0] ** 2 + b[1] ** 2) * SAFE           # bound of abs(df/dtau)
+    det = tmc.sub(sp4, tmc.mul(sp4, g[0, 0], g[1, 1]), tmc.mul(sp4, g[0, 1], g[1, 0]))
+    var = det.c.copy()
+    var[:, 0, :] = 0
+    det_low = ((det.c[0, 0] + det.c[1, 0]) - cp.abs(det.c[2, 0] + det.c[3, 0])
+               - tmc.poly_bound(sp4, tmc.TM(var, det.rem, d), d) - det.rem) * (1 - 1e-12)
+    tr_up = (tmc.poly_bound(sp4, g[0, 0], d) + g[0, 0].rem
+             + tmc.poly_bound(sp4, g[1, 1], d) + g[1, 1].rem) * SAFE
+    # g is positive definite on the box when det g > 0 and g_00 > 0 there.
+    v00 = g[0, 0].c.copy()
+    v00[:, 0, :] = 0
+    g00_low = ((g[0, 0].c[0, 0] + g[0, 0].c[1, 0])
+               - tmc.poly_bound(sp4, tmc.TM(v00, g[0, 0].rem, d), d) - g[0, 0].rem)
+    ok = (det_low > 0) & (g00_low > 0)
+    lam_low = cp.where(ok, det_low / tr_up * (1 - 1e-12), 0.0)
+    c = 1.0 / (2 ** 0.5 * math.pi * k0) * (1 - 1e-12)
+    grad_g = cp.where(lam_low > 0, 2 * grad_tau / cp.sqrt(c * cp.where(lam_low > 0, lam_low, 1.0)),
+                      cp.inf) * SAFE
+    return dict(grad_tau=grad_tau, grad_g=grad_g, lam_low=lam_low)
 
 
 _SPACES = {}
