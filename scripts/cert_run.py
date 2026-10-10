@@ -81,9 +81,11 @@ def main():
     ap.add_argument('--depth', type=int, default=2)
     ap.add_argument('--batch', type=int, default=64)
     ap.add_argument('--td', action='store_true', help='td GEMMs for dd local forms')
-    ap.add_argument('--grad', type=float, default=0.0,
-                    help='> 0: a run for the gradient; a box whose bound of abs(grad f) in the '
-                         'metric of volume 1 exceeds this tries --order-high, then splits')
+    ap.add_argument('--grad', action='store_true',
+                    help='also bound abs(grad f) on each box (tm_cert.gradient_bounds)')
+    ap.add_argument('--grad-target', type=float, default=0.0,
+                    help='> 0: decide second tries and splits by the gradient bound and not '
+                         'by --target')
     ap.add_argument('--refs', type=int, nargs='*', default=None,
                     help='only these reference centers (default: every one with a file)')
     ap.add_argument('--verbose', action='store_true')
@@ -127,16 +129,16 @@ def main():
             a = settings[order]
             f, (d, _, _), info, parts = tc.box_f(fr, local, deltas, order, order + args.ny_extra,
                                                  k_max=kmax, a=a, td=args.td, hmax=hmaxs,
-                                                 grad=args.grad > 0)
+                                                 grad=args.grad)
             sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
             sup, c0, pb, rem, lam_big = (cp.asnumpy(x) for x in (sup, c0, pb, f.rem,
                                                                   info['lam_big']))
             nanb = np.full(len(batch), np.nan)
             gt, gg, ll = ((cp.asnumpy(info[k]) for k in ('grad_tau', 'grad_g', 'lam_low'))
-                          if args.grad > 0 else (nanb, nanb, nanb))
+                          if args.grad else (nanb, nanb, nanb))
             # The quantity that decides a second try or a split.
-            crit = gg if args.grad > 0 else sup
-            limit = args.grad if args.grad > 0 else args.target
+            crit = gg if args.grad_target > 0 else sup
+            limit = args.grad_target if args.grad_target > 0 else args.target
             n_boxes += len(batch)
             n_ref += len(batch)
             n_split, n_retry = 0, 0
@@ -172,7 +174,7 @@ def main():
     rec = np.array(records)
     grad_text = (f', largest gradient bound {np.nanmax(rec[:, 17]):.4e} (in tau '
                  f'{np.nanmax(rec[:, 16]):.4e}), smallest lam_low {np.nanmin(rec[:, 18]):.3e}'
-                 if args.grad > 0 else '')
+                 if args.grad else '')
     print(f'done: {len(rec)} boxes, {n_boxes} computed, largest bound {rec[:, 8].max():.4e}, '
           f'{np.sum(rec[:, 8] > args.target)} above the target, largest lam_big '
           f'{np.nanmax(rec[:, 13]):.3f}{grad_text}; {time.perf_counter() - t0:.0f}s', flush=True)
