@@ -165,7 +165,7 @@ def main():
                       f'{min(deltas):.4f} to {max(deltas):.4f}; queue {len(queue)}; '
                       f'{time.perf_counter() - t1:.1f}s', flush=True)
         done = [x for x in records if x[0] == r]
-        worst = max(x[8] for x in done) if done else float('nan')
+        worst = float(np.max([x[8] for x in done])) if done else float('nan')
         print(f'reference {r}: {len(idx)} cells, {n_ref} boxes computed, {len(done)} final '
               f'boxes, largest bound {worst:.3e}; {time.perf_counter() - t1:.1f}s; total '
               f'{n_boxes} boxes in {time.perf_counter() - t0:.0f}s', flush=True)
@@ -175,8 +175,9 @@ def main():
     grad_text = (f', largest gradient bound {np.nanmax(rec[:, 17]):.4e} (in tau '
                  f'{np.nanmax(rec[:, 16]):.4e}), smallest lam_low {np.nanmin(rec[:, 18]):.3e}'
                  if args.grad else '')
+    # A bound that is NaN fails both tests below: max gives NaN, and it counts as above.
     print(f'done: {len(rec)} boxes, {n_boxes} computed, largest bound {rec[:, 8].max():.4e}, '
-          f'{np.sum(rec[:, 8] > args.target)} above the target, largest lam_big '
+          f'{np.sum(~(rec[:, 8] <= args.target))} above the target, largest lam_big '
           f'{np.nanmax(rec[:, 13]):.3f}{grad_text}; {time.perf_counter() - t0:.0f}s', flush=True)
 
 

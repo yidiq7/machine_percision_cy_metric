@@ -83,15 +83,18 @@ def one(job):
     c = [from_dd(t[0]), from_dd(t[1])]
     y2 = center_point(c)
     p0 = chart_value(G['cf'], G['cf']['base'], G['cf']['k0'], c, y2)
-    # x0 is a dd number, so that the GPU holds exactly the x0 of the M~_m.
-    x0 = from_dd(dd_of(exact((p0.real.log() * (-arb(1) / G['cf']['k0'])).exp())))
+    # x0 is a dd number, so that the GPU holds exactly the x0 of the M~_m; the file keeps
+    # the same dd list that defines the ball of the forms.
+    x0_dd = dd_of(exact((p0.real.log() * (-arb(1) / G['cf']['k0'])).exp()))
+    x0 = from_dd(x0_dd)
     # s2 is a dd number near abs(y2)^2, taken as exact; the GPU forms Delta = abs(y2)^2 - s2.
-    s2 = from_dd(dd_of(exact(acb(abs(y2) ** 2)))).real if G['delta'] else None
+    s2_dd = dd_of(exact(acb(abs(y2) ** 2))) if G['delta'] else None
+    s2 = from_dd(s2_dd).real if s2_dd is not None else None
     out = tm_forms.local_forms(G['cf'], c, x0, s2, td=G['td'])
     out['c'] = np.array([t[0], t[1]])
-    out['x0'] = np.array(dd_of(x0))
+    out['x0'] = np.array(x0_dd)
     if s2 is not None:
-        out['s2'] = np.array(dd_of(acb(s2)))
+        out['s2'] = np.array(s2_dd)
     out['parts'] = 6 if G['td'] else 4
     out['k0'] = G['cf']['k0']
     out['top'] = G['cf']['top']

@@ -11,17 +11,29 @@ coefficients for B boxes. rem and delta are (B,).
 **Arithmetic.** Every dd operation is a CUDA device function with __dadd_rn,
 __dsub_rn, __dmul_rn and __fma_rn, compiled with --fmad=false, so no compiler can
 merge or reorder an error term. two_sum is exact; the product uses the exact FMA
-error of the high parts. The relative error of dd_mul is at most 6 u^2 and of
-dd_add at most 3.1 u^2 of the sum, u = 2^-53.
+error of the high parts. dd_mul rounds ah bl, al bl + (ah bl), al bh + t and e + t,
+each by u of a result below 3 u abs(a b), so its relative error is at most
+7 u^2 (1 + 3 u); dd_add (AccurateDWPlusDW of Joldes, Muller and Popescu) errs by at most
+3 u^2 + 13 u^3 < 3.1 u^2 of the sum, u = 2^-53. Both need normalized inputs, which
+every kernel here returns.
 
-**Rounding bounds.** A coefficient that is a sum of c complex products has an error
-of at most (6.2 c + 6) u^2 sum abs(a_i) abs(b_j), with abs = abs(re) + abs(im). So a
-product adds sum over d of G_d (gA * gB)[d] delta^d to the remainder, with
-G_d = (2 c_d + 20) 8 u^2, c_d the largest c of the outputs of degree d, and gA the
-sums of abs(a) by degree. A sum adds 4 u^2 (B(A) + B(B)), B(A) = sum abs(a) delta^deg.
+**Rounding bounds.** A part (re or im) of a coefficient that is a sum of c complex
+products sums 2c dd products, and the first sum is exact, so its error is at most
+(3.1 (2c - 1) + 7) u^2 = (6.2 c + 3.9) u^2 times the sum of abs of its terms; with
+abs = abs(re) + abs(im), the coefficient errs by at most (6.2 c + 3.9) u^2
+sum abs(a_i) abs(b_j). So a product adds sum over d of G_d (gA * gB)[d] delta^d to the
+remainder, with G_d = (2 c_d + 20) 8 u^2, c_d the largest c of the outputs of degree d,
+and gA the sums of abs(a) by degree. A sum adds 4 u^2 (B(A) + B(B)),
+B(A) = sum abs(a) delta^deg.
 
 **Bounds in FP64.** Every bound is a sum or a product of non-negative FP64 numbers,
 times SAFE = 1 + 1e-9 at each step, which is strict for fewer than 1e6 operations.
+
+**Underflow.** A product or an FMA with a result below 2^-1022 can err by up to 2^-1075
+more than the relative bounds allow, and a product of the FP64 bounds can lose as much.
+Each polynomial bound and each remainder adds TINY = 1e-290, which exceeds that: fewer
+than 1e9 such products enter one bound, with cofactors below 1e6. Overflow gives inf or
+NaN, and a box with a bound that is not finite fails.
 """
 from __future__ import annotations
 
@@ -33,6 +45,7 @@ import cupy as cp
 
 U2 = 2.0 ** -106
 SAFE = 1.0 + 1e-9
+TINY = 1e-290
 
 _SRC = r'''
 __device__ __forceinline__ void two_sum(double a, double b, double &s, double &e) {
@@ -224,7 +237,7 @@ def graded(sp, x):
 def poly_bound_g(g, delta):
     """sum over d of g[d] delta^d, rounded up; g (D + 1, B)."""
     powers = delta[None, :] ** cp.arange(g.shape[0])[:, None]
-    return cp.sum(g * powers, axis=0) * SAFE
+    return cp.sum(g * powers, axis=0) * SAFE + TINY
 
 
 def poly_bound(sp, x, delta=None):
@@ -243,7 +256,7 @@ def tail_g(ga, gb, delta, n):
     mask = cp.asarray((k > n).astype(np.float64))
     powers = delta[None, None, :] ** cp.asarray(k)[:, :, None]
     return cp.sum(ga[:, None, :] * gb[None, :, :] * mask[:, :, None] * powers,
-                  axis=(0, 1)) * SAFE
+                  axis=(0, 1)) * SAFE + TINY
 
 
 def const(sp, value, delta):
@@ -280,13 +293,13 @@ def _axpy(x, y, s):
 def add(sp, x, y):
     c = _axpy(x.c, y.c, 1.0)
     err = 4 * U2 * (poly_bound(sp, x) + poly_bound(sp, y))
-    return TM(c, (x.rem + y.rem + err) * SAFE, x.delta)
+    return TM(c, (x.rem + y.rem + err) * SAFE + TINY, x.delta)
 
 
 def sub(sp, x, y):
     c = _axpy(x.c, y.c, -1.0)
     err = 4 * U2 * (poly_bound(sp, x) + poly_bound(sp, y))
-    return TM(c, (x.rem + y.rem + err) * SAFE, x.delta)
+    return TM(c, (x.rem + y.rem + err) * SAFE + TINY, x.delta)
 
 
 def neg(x):
@@ -296,7 +309,8 @@ def neg(x):
 
 def scale_raw(c, k):
     """c (4, S, B) times a complex dd number k (4, B) for each box; each entry rounds by
-    at most 16 u^2 of abs(c) abs(k)."""
+    at most (2 x 7 + 3.1) u^2 = 17.1 u^2 of abs(c) abs(k): two products and one sum for
+    each part."""
     _, s, b = c.shape
     z = cp.empty_like(c)
     _launch_elem(_kernels().get_function('c_scale'), s * b,
@@ -308,7 +322,7 @@ def scale(sp, x, k):
     """x times a complex dd number for each box, k of shape (4, B)."""
     z = scale_raw(x.c, k)
     kb = abs_ub(k[:, None, :])[0]
-    return TM(z, (x.rem * kb + 20 * U2 * poly_bound(sp, x) * kb) * SAFE, x.delta)
+    return TM(z, (x.rem * kb + 20 * U2 * poly_bound(sp, x) * kb) * SAFE + TINY, x.delta)
 
 
 def add_const(sp, x, k):
@@ -319,7 +333,7 @@ def add_const(sp, x, k):
     fn = _kernels().get_function('c_add0')
     fn(((b + 255) // 256,), (256,), (c, cp.ascontiguousarray(k), np.int32(s), np.int32(b)))
     err = 4 * U2 * (c0 + abs_ub(k[:, None, :])[0])
-    return TM(c, (x.rem + err) * SAFE, x.delta)
+    return TM(c, (x.rem + err) * SAFE + TINY, x.delta)
 
 
 def mul(sp, x, y, threads=64):
@@ -338,7 +352,7 @@ def mul(sp, x, y, threads=64):
     gxy = cp.einsum('ijd,ib,jb->db', sp.conv, gx, gy) * SAFE
     rnd = poly_bound_g(sp.gamma_deg[:, None] * gxy, x.delta)
     rem = (tail_g(gx, gy, x.delta, sp.n) + bx * y.rem + x.rem * by + x.rem * y.rem
-           + rnd) * SAFE
+           + rnd) * SAFE + TINY
     return TM(z, rem, x.delta)
 
 
@@ -377,7 +391,7 @@ def series(sp, pw, coeffs, rest):
         term = scale(sp, pw[j], cconst((q, 0), b))
         extra = extra + 2 * U2 * abs(float(q)) * bound(sp, pw[j])
         total = term if total is None else add(sp, total, term)
-    return TM(total.c, (total.rem + rest + extra) * SAFE, total.delta)
+    return TM(total.c, (total.rem + rest + extra) * SAFE + TINY, total.delta)
 
 
 def binomial_coeffs(a, k):
@@ -459,14 +473,15 @@ def cauchy_mixed(sp, x, a, b, delta_small):
     x.rem / (x.delta - delta_small)^2 on delta_small. The two dd products by the exact
     integers alpha_a, alpha_b round by 6 u^2 each, relative to their results, so each
     computed coefficient is within 13 u^2 of its abs value; on delta_small that adds
-    13 u^2 times the bound of the computed derivative.
+    13 u^2 times the bound of the computed derivative. (The general bound of dd_mul is
+    7 u^2; with the low part of the integer zero, only al m and e + t round, by 3 u^2.)
     """
     if a == b:
         raise ValueError('cauchy_mixed takes two different variables')
     c2 = deriv_coeffs(sp, deriv_coeffs(sp, x.c, a), b)
     gap = (x.delta - delta_small) * (1.0 - 1e-15)
     err = 13 * U2 * poly_bound(sp, TM(c2, x.rem, delta_small))
-    return TM(c2, (x.rem / (gap * gap) + err) * SAFE, delta_small)
+    return TM(c2, (x.rem / (gap * gap) + err) * SAFE + TINY, delta_small)
 
 
 def deriv1(sp, x, a, delta_small):
@@ -478,7 +493,7 @@ def deriv1(sp, x, a, delta_small):
     c1 = deriv_coeffs(sp, x.c, a)
     gap = (x.delta - delta_small) * (1.0 - 1e-15)
     err = 7 * U2 * poly_bound(sp, TM(c1, x.rem, delta_small))
-    return TM(c1, (x.rem / gap + err) * SAFE, delta_small)
+    return TM(c1, (x.rem / gap + err) * SAFE + TINY, delta_small)
 
 
 def split_index(sp4, sp2):
@@ -501,7 +516,7 @@ def tensor(sp4, sp2, z, w):
     gz, gw = graded(sp2, z), graded(sp2, w)
     bz, bw = poly_bound_g(gz, z.delta), poly_bound_g(gw, z.delta)
     out.rem = (tail_g(gz, gw, z.delta, sp4.n) + bz * w.rem + z.rem * bw + z.rem * w.rem
-               + 16 * U2 * bz * bw) * SAFE
+               + 16 * U2 * bz * bw) * SAFE + TINY
     return out
 
 
@@ -544,4 +559,4 @@ def truncate(sp_small, sp_big, x):
     cut = sp_small.size
     g = graded(sp_big, x)
     dropped = poly_bound_g(g[sp_small.n + 1:], x.delta) * (x.delta ** (sp_small.n + 1))
-    return TM(cp.ascontiguousarray(x.c[:, :cut]), (x.rem + dropped) * SAFE, x.delta)
+    return TM(cp.ascontiguousarray(x.c[:, :cut]), (x.rem + dropped) * SAFE + TINY, x.delta)

@@ -108,6 +108,39 @@ def check_dropped(cov, count):
     return bad == 0
 
 
+def _span(v):
+    """The number of bits from the top bit of v[0] to the last bit of v[1] (dd parts)."""
+    import math
+    if v[1] == 0:
+        return 53
+    _, e0 = math.frexp(v[0])
+    _, e1 = math.frexp(v[1])
+    return e0 - e1 + 53
+
+
+def check_local(cov, local_dir, prec=256):
+    """Each reference center has a file with its exact center c, td forms (parts 6) in
+    Delta, and dd numbers x0 and s2 that are exact balls at the precision of the forms."""
+    refs = len(cov['ref_centers'])
+    bad = []
+    for i in range(refs):
+        path = Path(local_dir) / f'center_{i}.npz'
+        if not path.exists():
+            bad.append((i, 'no file'))
+            continue
+        z = np.load(path)
+        if not np.array_equal(np.asarray(z['c']), np.asarray(cov['ref_centers'][i])):
+            bad.append((i, 'c differs from the cover'))
+        if int(z['parts']) != 6 or 's2' not in z.files:
+            bad.append((i, 'not td forms in Delta'))
+        x0, s2 = np.asarray(z['x0']), np.asarray(z['s2'])
+        if max(_span(x0[:2]), _span(s2[:2])) > prec or x0[2] != 0 or s2[2] != 0:
+            bad.append((i, 'x0 or s2 is not an exact ball'))
+    print(f'local forms: {refs} reference centers, {len(bad)} with a defect {bad[:5]}',
+          flush=True)
+    return not bad
+
+
 def check_boxes(rec, args):
     import cupy as cp
     from quartic import tm_cert as tc
@@ -178,6 +211,8 @@ def main():
     cov = np.load(args.cover)
     ok = check_cover(rec, cov, args.points)
     ok = check_dropped(cov, args.dropped) and ok
+    if args.local:
+        ok = check_local(cov, args.local) and ok
     if args.boxes:
         ok = check_boxes(rec, args) and ok
     print('all checks pass' if ok else 'A CHECK FAILED', flush=True)

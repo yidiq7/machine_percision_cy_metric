@@ -48,9 +48,16 @@ def upper(x):
 
 
 def lower(x):
-    """A lower bound of abs(x) for an arb or acb ball, as a float (0 if it may vanish)."""
+    """A lower bound of abs(x) for an arb or acb ball, as a float (0 if it may vanish).
+
+    With mid > 2 rad the FP64 round-off of mid - rad is below 3 u of it, which the
+    factor 1 - 1e-12 covers; a wider ball gives 0.
+    """
     a = abs(x)
-    return max((float(a.mid()) - float(a.rad())) * (1 - 1e-12), 0.0)
+    m, r = float(a.mid()), float(a.rad())
+    if not m > 2 * r:
+        return 0.0
+    return (m - r) * (1 - 1e-12)
 
 
 def to_dd(x):

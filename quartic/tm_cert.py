@@ -34,9 +34,10 @@ from . import tmc, tmtd, ddgemm
 
 U2 = tmc.U2
 SAFE = tmc.SAFE
-# At 100 digits a sum or product of a few dd numbers is exact, so the host errors of
-# offset_models, delta_model and the weights of reexpand are exact or far below u^2.
-mp.mp.dps = 100
+TINY = tmc.TINY
+# Every host number that enters a bound comes from exact rationals (dd_frac, frac_dd) or
+# from ball arithmetic (quartic.tm_frame), so no bound depends on the precision of mpmath.
+# mpmath only picks free numbers (s_r, s_p, zeta); each is rounded to dd and then exact.
 
 
 def mp_dd(z):
@@ -48,6 +49,25 @@ def mp_dd(z):
 
 def dd_mp(v):
     return mp.mpc(mp.mpf(v[0]) + mp.mpf(v[1]), mp.mpf(v[2]) + mp.mpf(v[3]))
+
+
+def dd_frac(v):
+    """A dd list [re_hi, re_lo, im_hi, im_lo] as the exact rationals (re, im)."""
+    return Fraction(float(v[0])) + Fraction(float(v[1])), Fraction(float(v[2])) + Fraction(float(v[3]))
+
+
+def frac_dd(re, im, limbs=2):
+    """The exact complex rational re + i im rounded to dd (limbs 2) or td (limbs 3), as
+    [re limbs, im limbs], and an upper bound of the distance (abs re + abs im)."""
+    out, err = [], Fraction(0)
+    for x in (re, im):
+        rest = x
+        for _ in range(limbs):
+            v = float(rest)
+            out.append(v)
+            rest -= Fraction(v)
+        err += abs(rest)
+    return out, float(err) * (1 + 1e-12) + 1e-300
 
 
 @dataclass
@@ -91,7 +111,8 @@ def make_frames(centers, k0):
         herr.append(f['h_err'])
         herr_td.append(f['h_err_td'])
         host.append(dict(p=[dd_mp(v) for v in f['p']], e=[[dd_mp(v) for v in row] for row in f['e']],
-                         n=[dd_mp(v) for v in f['n']], c1inv=dd_mp(f['c1inv']), w=dd_mp(f['vol'])))
+                         n=[dd_mp(v) for v in f['n']], c1inv=dd_mp(f['c1inv']), w=dd_mp(f['vol']),
+                         p_dd=[list(v) for v in f['p']]))
     to = lambda key: cp.asarray(np.moveaxis(np.array(cols[key], dtype=np.float64), 0, -1))
     return Frames(p=to('p'), e=to('e'), n=to('n'), c1inv=to('c1inv'), vol=to('vol'),
                   vol_err=cp.asarray(np.array(errs)), host=host, ha=to('ha'), a6=to('a6'),
@@ -196,19 +217,28 @@ def implicit_h(sp, fr, delta, hmax=None):
     return ys, rho, lam, h, lam_big
 
 
+def offset_consts(fr, ref, limbs=2):
+    """p_i - ref_i (i = 0, 1) of each box from the exact rationals of the dd numbers, as
+    dd (limbs 2) or td (limbs 3) arrays (2 limbs, B), and a bound of each error."""
+    out = []
+    for i in range(2):
+        rq = dd_frac(ref[i])
+        vals = [frac_dd(*(a - c for a, c in zip(dd_frac(hb['p_dd'][i]), rq)), limbs=limbs)
+                for hb in fr.host]
+        out.append((cp.asarray(np.array([v for v, _ in vals]).T),
+                    cp.asarray(np.array([e for _, e in vals]))))
+    return out
+
+
 def offset_models(sp, fr, h, ref, delta):
     """The models of t_i - ref_i (i = 0, 1) and of y_2 - p_2, from h and the frames.
 
     The constant p_i - ref_i comes from the host, rounded to dd with its error, so no
-    difference of two near values rounds on the GPU.
+    difference of two near values rounds on the GPU. ref: the two dd lists of c_r.
     """
     b = delta.shape[0]
     out = []
-    for i in range(2):
-        vals = [hb['p'][i] - ref[i] for hb in fr.host]
-        dp = _to_dd(vals)
-        err = cp.asarray(np.array([float(abs(dd_mp(mp_dd(v)) - v)) * (1 + 1e-9) + 1e-60
-                                   for v in vals]))
+    for i, (dp, err) in enumerate(offset_consts(fr, ref)):
         x = tmc.add(sp, lin_tm(sp, dp, fr.e[0, i], fr.e[1, i], delta), tmc.scale(sp, h, fr.n[i]))
         out.append(tmc.TM(x.c, (x.rem + err) * SAFE, x.delta))
     v = tmc.add(sp, lin_tm(sp, cp.zeros((4, b)), fr.e[0, 2], fr.e[1, 2], delta),
@@ -306,13 +336,15 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta, td=False):
     the two products (2.1 gamma abs(Y) abs(Q) abs(Y)^H) and of the sums over e. With td,
     the products take the triple-double accumulators, and their rounding is
     2.01 (lin + cub) abs(Y) abs(Q) abs(Y)^H with (lin, cub) of `ddgemm.gamma_td`.
+    The GEMM bounds take abs(re) + abs(im) of Q, at most sqrt(2) times the modulus
+    bound q_abs, so that factor multiplies the term of the round-off.
     """
     n = q[0].shape[-1]
     b = delta.shape[0]
     w = None
     rem = cp.zeros(b)
     parts = {k: cp.zeros(b) for k in ('round', 'high', 'models', 'radius', 'sums', 'abs')}
-    g = 2.01 * sum(ddgemm.gamma_td(n)) if td else 2.1 * ddgemm.gamma(n)
+    g = (2.01 * sum(ddgemm.gamma_td(n)) if td else 2.1 * ddgemm.gamma(n)) * 2 ** 0.5 * SAFE
     quad = lambda u, m, v: cp.matmul(cp.matmul(u.T[:, None, :], m), v.T[:, :, None])[:, 0, 0]
     for e in range(len(q)):
         y, b_low, b_high, r = mats[e][:4]
@@ -329,14 +361,16 @@ def compose(sp4, sp_low, mats, q, q_rad, q_abs, delta, td=False):
         qr = cp.broadcast_to(q_rad[e], (b, n, n))
         full = b_low + b_high + r
         ab = quad(b_low, qa, b_low)
-        terms = {'round': g * ab, 'high': 2 * quad(b_high, qa, b_low) + quad(b_high, qa, b_high),
+        # The round-off acts on the stored Q, and abs(stored Q) <= q_abs + q_rad.
+        terms = {'round': g * quad(b_low, qa + qr, b_low),
+                 'high': 2 * quad(b_high, qa, b_low) + quad(b_high, qa, b_high),
                  'models': 2 * quad(r, qa, b_low + b_high) + quad(r, qa, r),
                  'radius': quad(full, qr, full), 'abs': ab}
         for k, v in terms.items():
             parts[k] += v
         rem += (terms['round'] + terms['high'] + terms['models'] + terms['radius']) * SAFE
     # The entries of total degree above n go to the remainder with their exact sizes.
-    out = _from_bidegree(sp4, sp_low, w, rem * SAFE, delta)
+    out = _from_bidegree(sp4, sp_low, w, rem * SAFE + TINY, delta)
     out.parts = parts
     return out
 
@@ -380,30 +414,50 @@ def _from_bidegree(sp4, sp_low, w, rem, delta, tail_done=False):
     return tmc.TM(cp.ascontiguousarray(c), (rem + tail) * SAFE, delta)
 
 
-def reexpand(local, zeta_host, k_max, top, tag='e', td=False):
+def reexpand_weights(zeta_dd, k_max, top, limbs=2):
+    """The weights (1 + zeta)^k C(m, k) zeta^(m - k) of `reexpand` in ball arithmetic, from
+    the exact dd zeta of each box: the weights rounded to dd (limbs 2) or td (limbs 3)
+    (B, 2 limbs, k_max + 1, top + 1), and bounds of their errors and of their moduli
+    (B, k_max + 1, top + 1)."""
+    from flint import acb
+    from .tm_frame import exact, precision, to_dd as ball_dd, to_td as ball_td, upper
+    b, nm = len(zeta_dd), top + 1
+    w = np.zeros((b, 2 * limbs, k_max + 1, nm))
+    werr = np.zeros((b, k_max + 1, nm))
+    wabs = np.zeros((b, k_max + 1, nm))
+    rnd = ball_dd if limbs == 2 else ball_td
+    with precision():
+        for i, zd in enumerate(zeta_dd):
+            z = exact(zd)
+            zp, op = [acb(1)], [acb(1)]
+            for _ in range(top):
+                zp.append(zp[-1] * z)
+            for _ in range(k_max):
+                op.append(op[-1] * (1 + z))
+            for k in range(k_max + 1):
+                for m in range(k, nm):
+                    v = op[k] * zp[m - k] * math.comb(m, k)
+                    w[i, :, k, m], werr[i, k, m] = rnd(v)
+                    wabs[i, k, m] = upper(v)
+    return w, werr, wabs
+
+
+def reexpand(local, zeta_dd, k_max, top, tag='e', td=False):
     """Per box: the matrices of F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m-k) M~_m.
 
-    For each e this is one product of the weights (B, k_max + 1, top + 1), formed in
-    mpmath and rounded to dd (2 u^2 each), with the stacked M~_m (top + 1, n^2) by
+    For each e this is one product of the weights (B, k_max + 1, top + 1) of
+    `reexpand_weights`, rounded to dd, with the stacked M~_m (top + 1, n^2) by
     `ddgemm.zgemm`. tag 'j' takes the R_j of tm_forms.delta_split in place of the Q_e;
     td takes the triple-double product, whose rounding is (lin + cub) abs(w) abs(M~).
-    Returns, for each k <= k_max, a list over e of (q (B, 4, n, n),
-    rad (B, n, n), abs (B, n, n)); rad holds the radii of the M~_m, the rounding of the
-    weights and that of the product.
+    The GEMM bounds take abs(re) + abs(im) of both factors, at most twice the product of
+    the moduli. Returns, for each k <= k_max, a list over e of (q (B, 4, n, n),
+    rad (B, n, n), abs (B, n, n)); rad holds the radii of the M~_m and the errors of the
+    weights and of the product.
     """
-    b = len(zeta_host)
+    b = len(zeta_dd)
     nm = top + 1
-    w = np.zeros((b, 4, k_max + 1, nm))
-    wabs = np.zeros((b, k_max + 1, nm))
-    for i, z in enumerate(zeta_host):
-        for k in range(k_max + 1):
-            for m in range(k, nm):
-                v = (1 + z) ** k * math.comb(m, k) * z ** (m - k)
-                w[i, :, k, m] = mp_dd(v)
-                wabs[i, k, m] = float(abs(v)) * (1 + 1e-12)
-    wd = cp.asarray(w)
-    wa = cp.asarray(wabs)
-    g = sum(ddgemm.gamma_td(nm)) if td else ddgemm.gamma(nm)
+    wd, we, wa = (cp.asarray(x) for x in reexpand_weights(zeta_dd, k_max, top, 2))
+    g = (sum(ddgemm.gamma_td(nm)) if td else ddgemm.gamma(nm)) * 2 * SAFE
     out = [[None] * 4 for _ in range(k_max + 1)]
     for e in range(4):
         n = local[f'mt0_{tag}{e}'].shape[-1]
@@ -412,7 +466,7 @@ def reexpand(local, zeta_host, k_max, top, tag='e', td=False):
         ma = cp.stack([local[f'mt{m}_{tag}{e}_abs'].reshape(n * n) for m in range(nm)])
         mr = cp.stack([local[f'mt{m}_{tag}{e}_rad'].reshape(n * n) for m in range(nm)])
         absq = cp.matmul(wa, ma) * SAFE                                  # (B, K+1, n*n)
-        rad = (cp.matmul(wa, mr) + (g + 2 * U2) * absq) * SAFE
+        rad = (cp.matmul(wa, mr) + (1 + g) * cp.matmul(we, ma) + g * absq) * SAFE + TINY
         for k in range(k_max + 1):
             out[k][e] = (cp.ascontiguousarray(q[:, :, k].reshape(b, 4, n, n)),
                          rad[:, k].reshape(b, n, n), absq[:, k].reshape(b, n, n))
@@ -491,18 +545,27 @@ def reexpand_abs(local, zeta_host, k, top, tag='e'):
     return out
 
 
+def delta_const(fr, s2_dd):
+    """abs(p_2)^2 - s2 of each box from the exact rationals of the dd numbers, as a dd
+    array (4, B), and a bound of each error (B,)."""
+    s2 = dd_frac(s2_dd)[0]
+    vals = []
+    for hb in fr.host:
+        re, im = dd_frac(hb['p_dd'][2])
+        vals.append(frac_dd(re * re + im * im - s2, Fraction(0)))
+    return (cp.asarray(np.array([v for v, _ in vals]).T),
+            cp.asarray(np.array([e for _, e in vals])))
+
+
 def delta_model(sp4, sp2, fr, v, local, delta):
     """Delta = abs(y_2)^2 - s2 = (abs(p_2)^2 - s2) + conj(p_2) v + p_2 conj(v) + v conj(v).
 
-    v = y_2 - p_2 has no constant from p_2, and abs(p_2)^2 - s2 comes from the host, so
-    Delta has no rounding of the size of abs(y_2)^2.
+    v = y_2 - p_2 has no constant from p_2, and abs(p_2)^2 - s2 comes from the host as an
+    exact rational, rounded to dd with its error, so Delta has no round-off of the size of
+    abs(y_2)^2.
     """
     b = delta.shape[0]
-    s2 = dd_mp(np.asarray(local['s2'])).real
-    vals = [abs(hb['p'][2]) ** 2 - s2 for hb in fr.host]
-    d0 = _to_dd(vals)
-    err = cp.asarray(np.array([float(abs(dd_mp(mp_dd(x)) - x)) * (1 + 1e-9) + 1e-60
-                               for x in vals]))
+    d0, err = delta_const(fr, np.asarray(local['s2']))
     one = tmc.const(sp2, tmc.cconst(1, b), delta)
     vc = conj_tm(v)
     p2c = fr.p[2].copy()
@@ -611,12 +674,8 @@ def offset_models_td(sp, fr, h_td, h_dd, ref, delta):
     """`offset_models` with td models of t_i - ref_i; v = y_2 - p_2 stays dd."""
     b = delta.shape[0]
     out = []
-    for i in range(2):
-        vals = [hb['p'][i] - ref[i] for hb in fr.host]
-        dp = _to_dd(vals)
-        err = cp.asarray(np.array([float(abs(dd_mp(mp_dd(v)) - v)) * (1 + 1e-9) + 1e-300
-                                   for v in vals]))
-        x = tmtd.add(sp, lin_tmt(sp, tmtd.tconst(dp, b), tmtd.tconst(fr.e[0, i], b),
+    for i, (dp6, err) in enumerate(offset_consts(fr, ref, limbs=3)):
+        x = tmtd.add(sp, lin_tmt(sp, dp6, tmtd.tconst(fr.e[0, i], b),
                                  tmtd.tconst(fr.e[1, i], b), delta),
                      tmtd.scale(sp, h_td, tmtd.tconst(fr.n[i], b)))
         out.append(tmtd.TMT(x.c, (x.rem + err) * SAFE, x.delta))
@@ -667,33 +726,13 @@ def monomial_mats_td(sp2, sp_low, base_t, top):
     return [(cp.ascontiguousarray(y), b_low, b_high, rem, gdeg)]
 
 
-def _td_parts(v):
-    """A complex mpmath number as td limbs (6,) and a bound of the distance to it."""
-    out, err = [], 0.0
-    for part in (v.real, v.imag):
-        h = float(part)
-        m = float(part - h)
-        lo = float(part - h - m)
-        out += [h, m, lo]
-        err += float(abs(part - h - m - lo))
-    return out, err * (1 + 1e-9) + 1e-300
-
-
-def reexpand_td(local, zeta_host, k_max, top, tag='j'):
-    """`reexpand` with td weights (from 100-digit mpmath, whose error is far below u^3) and
-    td local forms; returns td matrices (B, 6, n, n) of F_k with rad and abs."""
-    b = len(zeta_host)
+def reexpand_td(local, zeta_dd, k_max, top, tag='j'):
+    """`reexpand` with the td weights of `reexpand_weights` and td local forms; returns td
+    matrices (B, 6, n, n) of F_k with rad and abs. The error of the product has the bound
+    that the kernel of `ddgemm.zgemm_tt` sums as it runs."""
+    b = len(zeta_dd)
     nm = top + 1
-    w = np.zeros((b, 6, k_max + 1, nm))
-    werr = np.zeros((b, k_max + 1, nm))
-    wabs = np.zeros((b, k_max + 1, nm))
-    for i, z in enumerate(zeta_host):
-        for k in range(k_max + 1):
-            for m in range(k, nm):
-                v = (1 + z) ** k * math.comb(m, k) * z ** (m - k)
-                w[i, :, k, m], werr[i, k, m] = _td_parts(v)
-                wabs[i, k, m] = float(abs(v)) * (1 + 1e-12)
-    wd, wa, we = cp.asarray(w), cp.asarray(wabs), cp.asarray(werr)
+    wd, we, wa = (cp.asarray(x) for x in reexpand_weights(zeta_dd, k_max, top, 3))
     out = [[None] * 4 for _ in range(k_max + 1)]
     for e in range(4):
         n = local[f'mt0_{tag}{e}'].shape[-1]
@@ -702,7 +741,7 @@ def reexpand_td(local, zeta_host, k_max, top, tag='j'):
         ma = cp.stack([local[f'mt{m}_{tag}{e}_abs'].reshape(n * n) for m in range(nm)])
         mr = cp.stack([local[f'mt{m}_{tag}{e}_rad'].reshape(n * n) for m in range(nm)])
         absq = cp.matmul(wa, ma) * SAFE
-        rad = (cp.matmul(wa, mr) + cp.matmul(we, ma) + qerr) * SAFE
+        rad = (cp.matmul(wa, mr) + cp.matmul(we, ma) + qerr) * SAFE + TINY
         for k in range(k_max + 1):
             out[k][e] = (cp.ascontiguousarray(q[:, :, k].reshape(b, 6, n, n)),
                          rad[:, k].reshape(b, n, n), absq[:, k].reshape(b, n, n))
@@ -735,7 +774,7 @@ def compose_td(sp4, sp_low, mats, q, q_rad, q_abs, delta):
              'models': 2 * quad(r, qa, b_low + b_high) + quad(r, qa, r),
              'radius': quad(full, qr, full), 'sums': cp.zeros(b), 'abs': ab}
     rem = (parts['round'] + parts['high'] + parts['models'] + parts['radius']) * SAFE
-    out = _from_bidegree(sp4, sp_low, w, rem * SAFE, delta)
+    out = _from_bidegree(sp4, sp_low, w, rem * SAFE + TINY, delta)
     out.parts = parts
     return out
 
@@ -776,7 +815,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hma
     chain = int(local.get('parts', 4)) == 6
     if chain and not mode_j:
         raise ValueError('the td chain needs the forms in Delta (tm_local_forms.py --delta)')
-    cref = [dd_mp(cp.asnumpy(cp.asarray(local['c']))[i]) for i in range(2)]
+    cref = [list(cp.asnumpy(cp.asarray(local['c']))[i]) for i in range(2)]
     if chain:
         ys, rho, lam, h_td, hm, lam_big = implicit_h_td(sp2, fr, d_phi, hmax)
         base_t, v2 = offset_models_td(sp2, fr, h_td, hm, cref, d_phi)
@@ -839,11 +878,14 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hma
     sp_host = _host_dd(s_p)
     xc_raw = [v.real ** (mp.mpf(1) / k0) * w for v, w in
               zip(sp_host, _host_dd(tmc.mul(sp4, ir2, xh).c[:, 0, :]))]
-    zeta = [dd_mp(mp_dd(x / x0 - 1)) for x in xc_raw]
-    # kappa = s_p^(1/k0) / (x0 (1 + zeta)) in ball arithmetic; any dd zeta is exact.
+    # zeta is a free dd number near x_c / x0 - 1; from here on its dd value is exact, and
+    # kappa and the weights of the re-expansion both take that value in ball arithmetic.
+    zeta = [mp_dd(x / x0 - 1) for x in xc_raw]
+    # kappa = s_p^(1/k0) / (x0 (1 + zeta)) in ball arithmetic.
     from .tm_frame import kappa as _kappa
     x0_dd = list(np.asarray(local['x0']))
-    kap = [_kappa(mp_dd(v), k0, x0_dd, mp_dd(z)) for v, z in zip(sp_host, zeta)]
+    sp_dd = cp.asnumpy(s_p)
+    kap = [_kappa(list(sp_dd[:, i]), k0, x0_dd, z) for i, z in enumerate(zeta)]
     kappa_dd = cp.asarray(np.array([k[0] for k in kap]).T)
     kap_err = cp.asarray(np.array([k[1] for k in kap]) * (1 + 1e-9) + 1e-300)
     xw = tmc.mul(sp4, ir2, xh)
@@ -869,7 +911,8 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hma
         fk.append(form(sp4k, splk, mk, q, rr, aa))
     tail = cp.zeros(b)
     for k in range(k_max + 1, top + 1):
-        tail += form_abs(mats, reexpand_abs(local, zeta, k, top, tag), bdl) * bxi ** k
+        tail += form_abs(mats, reexpand_abs(local, [dd_mp(z) for z in zeta], k, top, tag),
+                         bdl) * bxi ** k
     clock('forms')
     xis = {n: xi}
     for m in set(orders):
@@ -944,23 +987,29 @@ def gradient_bounds(sp4, f, g, d, k0):
     b = [tmc.bound(sp4, x) for x in dfs]
     grad_tau = cp.sqrt(b[0] ** 2 + b[1] ** 2) * SAFE           # bound of abs(df/dtau)
     det = tmc.sub(sp4, tmc.mul(sp4, g[0, 0], g[1, 1]), tmc.mul(sp4, g[0, 1], g[1, 0]))
-    var = det.c.copy()
-    var[:, 0, :] = 0
-    det_low = ((det.c[0, 0] + det.c[1, 0]) - cp.abs(det.c[2, 0] + det.c[3, 0])
-               - tmc.poly_bound(sp4, tmc.TM(var, det.rem, d), d) - det.rem) * (1 - 1e-12)
+    det_low = _real_low(sp4, det, d)
     tr_up = (tmc.poly_bound(sp4, g[0, 0], d) + g[0, 0].rem
              + tmc.poly_bound(sp4, g[1, 1], d) + g[1, 1].rem) * SAFE
     # g is positive definite on the box when det g > 0 and g_00 > 0 there.
-    v00 = g[0, 0].c.copy()
-    v00[:, 0, :] = 0
-    g00_low = ((g[0, 0].c[0, 0] + g[0, 0].c[1, 0])
-               - tmc.poly_bound(sp4, tmc.TM(v00, g[0, 0].rem, d), d) - g[0, 0].rem)
+    g00_low = _real_low(sp4, g[0, 0], d)
     ok = (det_low > 0) & (g00_low > 0)
     lam_low = cp.where(ok, det_low / tr_up * (1 - 1e-12), 0.0)
     c = 1.0 / (2 ** 0.5 * math.pi * k0) * (1 - 1e-12)
     grad_g = cp.where(lam_low > 0, 2 * grad_tau / cp.sqrt(c * cp.where(lam_low > 0, lam_low, 1.0)),
                       cp.inf) * SAFE
     return dict(grad_tau=grad_tau, grad_g=grad_g, lam_low=lam_low)
+
+
+def _real_low(sp4, x, d):
+    """A lower bound of the real part of a model on the polydisc d: Re c0 - abs(Im c0) -
+    B(x - c0) - rem, less 1e-12 of the sum of the magnitudes, which exceeds the FP64
+    round-off of this sum."""
+    var = x.c.copy()
+    var[:, 0, :] = 0
+    pb = tmc.poly_bound(sp4, tmc.TM(var, x.rem, d), d)
+    a0, a1, b0, b1 = x.c[0, 0], x.c[1, 0], x.c[2, 0], x.c[3, 0]
+    mag = cp.abs(a0) + cp.abs(a1) + cp.abs(b0) + cp.abs(b1) + pb + x.rem
+    return (a0 + a1) - cp.abs(b0 + b1) - pb - x.rem - 1e-12 * mag
 
 
 _SPACES = {}
@@ -996,4 +1045,4 @@ def sup_bound(sp4, f, d):
     var = f.c.copy()
     var[:, 0, :] = 0
     pb = tmc.poly_bound(sp4, tmc.TM(var, f.rem, d), d)
-    return (c0 + pb + f.rem) * SAFE, c0, pb
+    return (c0 + pb + f.rem) * SAFE + TINY, c0, pb

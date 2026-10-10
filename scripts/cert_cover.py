@@ -37,7 +37,9 @@ from mpmath import iv
 os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-mp.mp.dps = 30
+# The corners and centers are short binary numbers, exact at 30 digits; a caller with a
+# higher precision keeps it.
+mp.mp.dps = max(mp.mp.dps, 30)
 iv.dps = 30
 
 
@@ -62,7 +64,7 @@ def may_meet_f(lo, s):
     w2 = (1 + p0 + p1) ** 2 + (q0 + q1) ** 2   # abs(z_2)^8
     if w2.a > 1:                           # abs(z_2) > 1
         return False
-    if r0.a ** 4 > w2.b:                   # abs(t_0)^8 > abs(z_2)^8
+    if (r0 ** 4).a > w2.b:                 # abs(t_0)^8 > abs(z_2)^8, in interval arithmetic
         return False
     return True
 

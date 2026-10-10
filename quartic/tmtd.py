@@ -12,8 +12,10 @@ a2 b2 err. The levels go back to three limbs by exact two_sums (`levels_td`).
 **Running error bounds.** Each kernel also returns, for each output, an FP64 bound of its
 error: u times the magnitude of every rounded result, plus the magnitude of every dropped
 term, summed as it runs and multiplied by ERR_SAFE at the end. This holds for limbs in any
-order, so no normalization of the inputs is assumed. (The rounding of the error sum itself
-is below a relative 1e-12 for fewer than 1e3 terms per output, which ERR_SAFE covers.)
+order, so no normalization of the inputs is assumed. The FP64 sum of N error terms rounds
+by at most N u of itself; ERR_SAFE = 1 + 1e-9 covers N up to 9e6, and the largest N here
+is about 2e4 (a GEMM of inner dimension 325, with 52 terms for each inner index).
+Underflow adds TINY through `tmc.poly_bound_g`, as in `quartic.tmc`.
 """
 from __future__ import annotations
 

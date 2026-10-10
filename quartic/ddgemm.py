@@ -7,9 +7,10 @@ shared memory, with the dd operations of `quartic.tmc` (__dadd_rn, __fma_rn,
 --fmad=false).
 
 **The bound.** An entry is a sum of K complex products, and each part (re or im) is a
-sum of 2K dd products. With 6 u^2 for each product and 3.1 u^2 of the partial sum for
-each sum, abs(error) <= (6.2 K + 6) u^2 (abs(A) abs(B))_ij, with abs = abs(re) +
-abs(im). `gamma(K)` returns that factor.
+sum of 2K dd products. With 7 u^2 for each product (`quartic.tmc`), 3.1 u^2 of the
+partial sum for each sum and an exact first sum, abs(error) <= (3.1 (2K - 1) + 7) u^2
+(abs(A) abs(B))_ij = (6.2 K + 3.9) u^2 (abs(A) abs(B))_ij, with abs = abs(re) + abs(im).
+`gamma(K)` returns (6.2 K + 6) u^2, which also holds the terms of order K^2 u^3.
 
 **The triple-double mode** (td=True) keeps each part in three levels A0 + A1 + A2. The
 products a0 b0, a0 b1, a1 b0 split exactly by FMA, and the sums into A0 and A1 are
