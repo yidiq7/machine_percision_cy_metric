@@ -17,8 +17,8 @@ share one reference center c_r and its local forms (scripts/tm_local_forms.py).
    local forms; F_k for k > K enter only through a bound.
 6. Phi = log p0 + psi, g = d_tau d_sigma Phi (Cauchy), det g, v, f = v / vbar - 1.
 
-Every rounding of the GPU goes into a remainder by the bounds of `quartic.tmc` and
-`quartic.ddgemm`.
+Every round-off of the GPU goes into a remainder by the bounds of `quartic.tmc`,
+`quartic.tmtd` and `quartic.ddgemm`.
 """
 from __future__ import annotations
 
@@ -219,7 +219,8 @@ def implicit_h(sp, fr, delta, hmax=None):
 
 def offset_consts(fr, ref, limbs=2):
     """p_i - ref_i (i = 0, 1) of each box from the exact rationals of the dd numbers, as
-    dd (limbs 2) or td (limbs 3) arrays (2 limbs, B), and a bound of each error."""
+    dd (limbs 2) or td (limbs 3) arrays of shape (2 limbs, B), that is (4, B) or (6, B),
+    and a bound of each error."""
     out = []
     for i in range(2):
         rq = dd_frac(ref[i])
@@ -730,7 +731,10 @@ def monomial_mats_td(sp2, sp_low, base_t, top):
 def reexpand_td(local, zeta_dd, k_max, top, tag='j'):
     """`reexpand` with the td weights of `reexpand_weights` and td local forms; returns td
     matrices (B, 6, n, n) of F_k with rad and abs. The error of the product has the bound
-    that the kernel of `ddgemm.zgemm_tt` sums as it runs."""
+    that the kernel of `ddgemm.zgemm_tt` sums as it runs. With w the weights and M the
+    stored forms, w M - w_true M_true = (w - w_true) M + w_true (M - M_true), and the
+    modulus bound of M_true also bounds the stored M (its td rounding of the midpoint),
+    so rad = wa mr + we ma + qerr needs no term we mr."""
     b = len(zeta_dd)
     nm = top + 1
     wd, we, wa = (cp.asarray(x) for x in reexpand_weights(zeta_dd, k_max, top, 3))
@@ -754,7 +758,10 @@ def compose_td(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     """`compose` for one block with td models and a td form: T = Y Q in td, W = T Y^H to dd.
 
     The rounding is the running bound of the two products: that of T enters W through
-    abs(Y), that of W directly, each weighted by delta^deg.
+    abs(Y), that of W directly, each weighted by delta^deg. The factor 2 of the cross
+    terms needs q_abs[b, a] >= abs(Q[a, b]) as well: each true form is Hermitian, or (F_k)
+    a combination of Hermitian M~_m, and q_abs is a sum of their modulus bounds, so it
+    bounds abs(Q[a, b]) and abs(Q[b, a]) both.
     """
     n = q.shape[-1]
     b = delta.shape[0]
@@ -963,6 +970,8 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, td=False, hma
     q4 = tmc.tensor(sp4, sp2, dp, conj_tm(dp))
     dq = tmc.mul(sp4, det, q4)
     v = tmc.scale(sp4, dq, fr.vol)
+    # vol_err is relative to the true vol; times abs(vol in dd) it misses vol_err^2, which
+    # SAFE covers.
     v.rem = (v.rem + fr.vol_err * tmc.abs_ub(fr.vol[:, None, :])[0] * tmc.bound(sp4, dq)) * SAFE
     f = tmc.add_const(sp4, v, -one)
     if grad:

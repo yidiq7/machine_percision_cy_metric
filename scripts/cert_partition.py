@@ -11,6 +11,14 @@ the cells:
    partition of each cell of the cover.
 3. Each record is one final box of that partition, and each record has a finite bound at
    or below the target and lam_big < 1.
+4. With --radii, `cert_cover.box_radius` with the present code gives, for the cell and the
+   center of each record, a radius and a bound of abs(h) at or below the delta and the
+   h_max that the record used (columns 7 and 12); a NaN fails. The center of a box is
+   the center of its cell: for the cells of the cover the cover file holds it, and the
+   script checks that file; cert_run forms the center of each smaller cell in the same
+   way.
+5. A run with --grad has a finite bound of abs(grad f) in G and in tau, and lam_low > 0,
+   in every record; a NaN fails.
 
 The corners of the records are multiples of s / 2^depth, so they are compared as
 integers. Usage, on CPU cores:
@@ -76,6 +84,39 @@ def _covered(corner, size, depth, recs, used, missing):
     return ok
 
 
+def radii_chunk(rows):
+    """For records j: delta and h_max of box_radius for the cell of the record and its
+    center, against the values of the record. Returns the largest ratios and the records
+    that fail; a NaN fails."""
+    unit = mp.mpf(G['side']) / 2 ** G['depth']
+    worst, bad = [0.0, 0.0], []
+    for j in rows:
+        corner, size = G['cells'][j]
+        lo = [mp.mpf(int(v)) * unit for v in corner]
+        h = mp.mpf(int(size)) * unit
+        cen = [cc.dd(mp.mpc(lo[0] + h / 2, lo[1] + h / 2)),
+               cc.dd(mp.mpc(lo[2] + h / 2, lo[3] + h / 2))]
+        delta, hmax = cc.box_radius(lo, h, cen)
+        d_rec, h_rec = float(G['rec'][j, 7]), float(G['rec'][j, 12])
+        if not (delta <= d_rec and hmax <= h_rec):
+            bad.append(int(j))
+            continue
+        worst[0] = max(worst[0], delta / d_rec)
+        worst[1] = max(worst[1], hmax / h_rec)
+    return worst, bad
+
+
+def centers_chunk(rows):
+    """The cover cells whose stored center is not the exact center of the cell."""
+    s = mp.mpf(G['side'])
+    bad = []
+    for i in rows:
+        _, c = cc.cell(tuple(int(v) for v in G['idx'][i]), s)
+        if not np.array_equal(np.array(c), np.asarray(G['centers'][i])):
+            bad.append(int(i))
+    return bad
+
+
 def cover_chunk(cells):
     """The partition of a list of cover cells (their grid indices)."""
     used, missing = set(), []
@@ -92,6 +133,8 @@ def main():
     ap.add_argument('--cover', type=str, required=True)
     ap.add_argument('--depth', type=int, default=2, help='the --depth of the run')
     ap.add_argument('--procs', type=int, default=16)
+    ap.add_argument('--radii', action='store_true',
+                    help='also compute delta and h_max of the cell of every record again')
     args = ap.parse_args()
     t0 = time.perf_counter()
     z = np.load(args.run)
@@ -110,12 +153,18 @@ def main():
         if (c, n) in recs:
             raise SystemExit(f'record {j} repeats the cell of record {recs[(c, n)]}')
         recs[(c, n)] = j
-    G.update(side=side, depth=depth, grid=_grid(side), recs=recs,
-             kept={tuple(int(v) for v in i) for i in cov['idx']})
+    G.update(side=side, depth=depth, grid=_grid(side), recs=recs, rec=rec,
+             cells=list(zip(map(tuple, ci.tolist()), si.tolist())),
+             kept={tuple(int(v) for v in i) for i in cov['idx']}, idx=cov['idx'],
+             centers=cov['centers'])
     with multiprocessing.get_context('fork').Pool(args.procs) as pool:
         bad = [x for part in pool.map(dropped_slab, range(G['grid'][0])) for x in part]
         chunks = np.array_split(cov['idx'], 4 * args.procs)
         res = pool.map(cover_chunk, chunks)
+        if args.radii:
+            radii = pool.map(radii_chunk, np.array_split(np.arange(len(rec)), 4 * args.procs))
+            bad_cen = [i for part in pool.map(centers_chunk, np.array_split(
+                np.arange(len(cov['idx'])), 4 * args.procs)) for i in part]
     used = set().union(*(u for u, _ in res))
     missing = [m for _, ms in res for m in ms]
     unused = sorted(set(range(len(rec))) - used)
@@ -129,7 +178,24 @@ def main():
           f'{bad_bound} not at or below it; largest lam_big {np.max(lam):.3f}, {bad_lam} not '
           f'below 1; {time.perf_counter() - t0:.0f}s', flush=True)
     ok = not bad and not missing and not unused and bad_bound == 0 and bad_lam == 0
+    if args.radii:
+        rd = max(r[0][0] for r in radii)
+        rh = max(r[0][1] for r in radii)
+        bad_rad = [j for r in radii for j in r[1]]
+        print(f'radii of the {len(rec)} records: delta from box_radius over the delta of the '
+              f'record at most {rd:.15f}, h_max over the h_max of the record at most {rh:.15f}; '
+              f'{len(bad_rad)} records above or NaN {bad_rad[:5]}; {len(bad_cen)} cover cells '
+              f'whose center is not the center of the cell', flush=True)
+        ok = ok and not bad_rad and not bad_cen
     print('the partition check passes' if ok else 'THE PARTITION CHECK FAILS', flush=True)
+    if rec.shape[1] > 18 and np.any(np.isfinite(rec[:, 17])):
+        gt, gg, ll = rec[:, 16], rec[:, 17], rec[:, 18]
+        bad_grad = int(np.sum(~np.isfinite(gg) | ~np.isfinite(gt) | ~(ll > 0)))
+        print(f'gradient: largest bound in G {np.max(gg):.4e}, in tau {np.max(gt):.4e}; '
+              f'smallest lam_low {np.min(ll):.4e}; {bad_grad} records without a finite bound',
+              flush=True)
+        print('the gradient bound holds on every record' if bad_grad == 0 and ok
+              else 'THE GRADIENT CHECK FAILS', flush=True)
     if not ok:
         print('first dropped cells:', bad[:5], 'first missing cells:', missing[:5],
               'first unused records:', unused[:5], flush=True)

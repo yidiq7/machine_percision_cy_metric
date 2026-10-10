@@ -172,13 +172,14 @@ def main():
         np.savez(args.out, records=np.array(records), target=args.target,
                  columns=np.array(columns))
     rec = np.array(records)
-    grad_text = (f', largest gradient bound {np.nanmax(rec[:, 17]):.4e} (in tau '
-                 f'{np.nanmax(rec[:, 16]):.4e}), smallest lam_low {np.nanmin(rec[:, 18]):.3e}'
+    # np.max and np.min give NaN if one record has NaN, so no NaN can hide here.
+    grad_text = (f', largest gradient bound {np.max(rec[:, 17]):.4e} (in tau '
+                 f'{np.max(rec[:, 16]):.4e}), smallest lam_low {np.min(rec[:, 18]):.3e}'
                  if args.grad else '')
     # A bound that is NaN fails both tests below: max gives NaN, and it counts as above.
     print(f'done: {len(rec)} boxes, {n_boxes} computed, largest bound {rec[:, 8].max():.4e}, '
           f'{np.sum(~(rec[:, 8] <= args.target))} above the target, largest lam_big '
-          f'{np.nanmax(rec[:, 13]):.3f}{grad_text}; {time.perf_counter() - t0:.0f}s', flush=True)
+          f'{np.max(rec[:, 13]):.3f}{grad_text}; {time.perf_counter() - t0:.0f}s', flush=True)
 
 
 if __name__ == '__main__':

@@ -487,8 +487,9 @@ def cauchy_mixed(sp, x, a, b, delta_small):
 def deriv1(sp, x, a, delta_small):
     """d/dx_a of x on delta_small, with Cauchy's estimate for the rest.
 
-    The dd product by the exact integer alpha_a rounds by 6 u^2 of its result, so the
-    rounding adds 7 u^2 times the bound of the computed derivative on delta_small.
+    The dd product by the exact integer alpha_a rounds by at most 3 u^2 of its result
+    (only al m and e + t round), so 7 u^2 times the bound of the computed derivative on
+    delta_small covers the round-off.
     """
     c1 = deriv_coeffs(sp, x.c, a)
     gap = (x.delta - delta_small) * (1.0 - 1e-15)
