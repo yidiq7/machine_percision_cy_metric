@@ -12,8 +12,8 @@ coefficients for B boxes. rem and delta are (B,).
 __dsub_rn, __dmul_rn and __fma_rn, compiled with --fmad=false, so no compiler can
 merge or reorder an error term. two_sum is exact; the product uses the exact FMA
 error of the high parts. dd_mul rounds ah bl, al bl + (ah bl), al bh + t and e + t,
-each by u of a result below 3 u abs(a b), so its relative error is at most
-7 u^2 (1 + 3 u); dd_add (AccurateDWPlusDW of Joldes, Muller and Popescu) errs by at most
+with sizes up to u, u, 2 u and 3 u times abs(a b), each by u of its size, so its relative
+error is at most 7 u^2 (1 + 3 u); dd_add (AccurateDWPlusDW of Joldes, Muller and Popescu) errs by at most
 3 u^2 + 13 u^3 < 3.1 u^2 of the sum, u = 2^-53. Both need normalized inputs, which
 every kernel here returns.
 
@@ -308,9 +308,9 @@ def neg(x):
 
 
 def scale_raw(c, k):
-    """c (4, S, B) times a complex dd number k (4, B) for each box; each entry rounds by
-    at most (2 x 7 + 3.1) u^2 = 17.1 u^2 of abs(c) abs(k): two products and one sum for
-    each part."""
+    """c (4, S, B) times a complex dd number k (4, B) for each box. Each part sums two dd
+    products (7 u^2 of each) in one dd_add (3.1 u^2 of the sum), so each entry errs by at
+    most 10.1 u^2 abs(c) abs(k)."""
     _, s, b = c.shape
     z = cp.empty_like(c)
     _launch_elem(_kernels().get_function('c_scale'), s * b,

@@ -482,11 +482,12 @@ def local_on_gpu(path):
     return out
 
 
-def _series_order(eta, n, eps=1e-30):
+def _series_order(eta, n, eps=1e-34):
     """The number of terms with eta^(k+1) below eps for the largest eta of the batch.
 
-    The series of r and p~ give x, and psi takes the error of x about 2e3 times, so eps
-    is 1e-30 and not the 1e-24 that the Cauchy estimate alone would allow.
+    The series of r and p~ give x, psi takes the error of x about 2e3 times, and the
+    Cauchy estimate of g about 1e5 times. With eps = 1e-30 the Lagrange rest of the box
+    with the largest eta added up to 1.6e-21 to its bound of f, so eps is 1e-34.
     """
     e = float(cp.max(eta))
     if not 0 < e < 0.5:
