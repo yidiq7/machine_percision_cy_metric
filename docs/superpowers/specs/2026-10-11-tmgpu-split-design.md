@@ -27,7 +27,7 @@ This work does three things:
   new code must give the same floats, bit for bit, as `main` at commit 8f0c1e8.
 * **Isolation.** The work runs in a git worktree on the branch `tm-library`, from
   `main` at 8f0c1e8. It merges into `main` only after the equivalence test passes.
-* **The cluster.** No `git pull` on the cluster while job 51893738 runs, because
+* **The cluster.** No `git pull` on the cluster while a certificate job runs, because
   `ddgemm` and `tm_cert` import modules inside functions.
 * **Conventions.** STE in all text. Explicit paths in `git add`. No `Co-Authored-By`
   trailer. Code comments of 1 or 2 lines, complete without other information. No
@@ -137,4 +137,4 @@ The tag `pre-tmgpu` on 8f0c1e8 keeps every removed path reachable.
    * `cert_partition.py` and `cert_local_values.py` on the 3 reference centers, with no
      change of their result.
 3. **After the merge:** the tag `pre-tmgpu`, a section of `CLAUDE.md` on the new layout,
-   and a pull on the cluster after job 51893738 ends.
+   and a pull on the cluster when no certificate job runs.
