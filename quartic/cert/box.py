@@ -73,8 +73,8 @@ class Frames:
 def make_frames(centers, k0):
     """The frames of boxes with centers t = (t_0, t_1), each given as two dd lists.
 
-    Every number and every error bound comes from `quartic.tm_frame.frame` in ball
-    arithmetic, so the boxes and the cover (scripts/cert_cover.py) use the same frame.
+    Every number and every error bound comes from `quartic.cert.frame.frame` in ball
+    arithmetic, so the boxes and the cover (quartic.cert.cover) use the same frame.
     """
     keys = ('p', 'e', 'n', 'c1inv', 'vol', 'ha_td', 'a6_td', 'a4_td', 'kappa_td')
     cols = {k: [] for k in keys}

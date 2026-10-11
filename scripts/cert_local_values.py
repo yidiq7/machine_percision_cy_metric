@@ -10,7 +10,7 @@ that define the certified potential, the base (--data) and the forms N_L (--form
      N_L(z) = sum over sigma in S_4 and orbits o of abs(w^r_o)^2 psi^T C_o conj(psi),
               w = z o sigma,  psi = F^T ((w^4)^E)_E.
    This path does not use the chart forms, the shift or the split in Delta of
-   quartic.tm_forms.
+   quartic.cert.forms.
 2. The stored forms give at t the value sum over j of Delta^j m^T R_j conj(m), with
    m = ((t - c)^alpha)_alpha and Delta = abs(z_2)^2 - s2, for the base (p0) and for each
    M~_m (sum over L of C(L, m) x0^L N_L), with the c, x0 and s2 of the file.

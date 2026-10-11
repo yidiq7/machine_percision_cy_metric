@@ -63,7 +63,7 @@ def _ball(lo, s):
 def box_radius(lo, s, c_dd):
     """(delta, hmax) for the cell [lo, lo + s]^4 (exact mpmath numbers) and the box at c_dd.
 
-    In the frame of `quartic.tm_frame.frame` a point of X over the cell is p + E tau + h n
+    In the frame of `quartic.cert.frame.frame` a point of X over the cell is p + E tau + h n
     with tau_i = (t_i - c_i) - h n_i and h = (z2(t) - p_2 - d . (t - c)) / den, d = E_2 and
     den = n_2 - d_0 n_0 - d_1 n_1. The numerator is at most half the bound of the second
     derivatives of z2 over the cell times r^2, plus abs(z2(c) - p_2) and

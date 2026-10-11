@@ -4,14 +4,14 @@ The strict bound of sup abs(f) over F needs every point of F in a final box. Thi
 proves it for the cells of the grid of scripts/cert_cover.py, with the exact corners of
 the cells:
 
-1. Every cell of the grid that is not in the cover fails `cert_cover.may_meet_f`.
+1. Every cell of the grid that is not in the cover fails `quartic.cert.cover.may_meet_f`.
 2. Every cell of the cover is a final box of the record, or each of its 16 cells of half
    the side is a final box, fails `may_meet_f`, or divides in the same way, down to the
    largest depth of the run. So the final boxes and the cells that miss F make a
    partition of each cell of the cover.
 3. Each record is one final box of that partition, and each record has a bound in
    (0, target] and 0 <= lam_big < 1.
-4. With --radii, `cert_cover.box_radius` with the present code gives, for the cell and the
+4. With --radii, `quartic.cert.cover.box_radius` with the present code gives, for the cell and the
    center of each record, a radius and a bound of abs(h) at or below the delta and the
    h_max that the record used (columns 7 and 12); a NaN fails. The center of a box is
    the center of its cell: for the cells of the cover the cover file holds it, and the

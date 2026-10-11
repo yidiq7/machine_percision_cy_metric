@@ -1,4 +1,4 @@
-"""The GPU Taylor models of f (quartic.tm_cert) on boxes at given centers, with checks.
+"""The GPU Taylor models of f (quartic.cert.box) on boxes at given centers, with checks.
 
 Each box has its center at a reference center of `scripts/tm_local_forms.py`, so the
 local forms are those of the box. For each order and radius the script prints the bound

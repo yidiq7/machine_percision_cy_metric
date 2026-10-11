@@ -8,7 +8,7 @@ For each reference center that has a file, its boxes run in batches of one order
 cell with rho >= --rho-high at --order-high (with --a-high), the others at --order
 (with --a). A box whose bound of abs(f) exceeds --target tries --order-high first, and
 then splits into the cells of half the side that may meet F, each with the radius and
-the bound of abs(h) of cert_cover.box_radius, at most --depth times; cell corners stay
+the bound of abs(h) of quartic.cert.cover.box_radius, at most --depth times; cell corners stay
 exact mpmath numbers. Each final box gives one record: the
 lower corner and side of its cell, its radius, the bound of abs(f), the parts of that
 bound, and lam_big, the contraction factor of implicit_h_td on the ball that holds every
@@ -78,7 +78,7 @@ def main():
     ap.add_argument('--depth', type=int, default=2)
     ap.add_argument('--batch', type=int, default=64)
     ap.add_argument('--grad', action='store_true',
-                    help='also bound abs(grad f) on each box (tm_cert.gradient_bounds)')
+                    help='also bound abs(grad f) on each box (quartic.cert.box.gradient_bounds)')
     ap.add_argument('--grad-target', type=float, default=0.0,
                     help='> 0: decide second tries and splits by the gradient bound and not '
                          'by --target')

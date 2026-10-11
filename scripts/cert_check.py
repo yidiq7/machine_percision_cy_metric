@@ -4,7 +4,7 @@
    the conditions of F in mpmath; each point must lie in a final box of the record:
    abs(tau_i) <= delta, with tau = U^-1 (y - p) from the frame of that box.
 2. The dropped cells. Random cells of the grid that the cover dropped must fail
-   cert_cover.may_meet_f again, and no random point of F may lie in one.
+   quartic.cert.cover.may_meet_f again, and no random point of F may lie in one.
 3. The boxes. For random final boxes of the record, the GPU model of f at random
    points of the box (on the real slice sigma = conj(tau)) must agree with f from
    tm_box.py in arb (the chart z_3 = 1, m = 2, at order 2) within the remainder, the

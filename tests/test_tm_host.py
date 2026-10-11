@@ -1,11 +1,11 @@
-"""Test of the host numbers of `quartic.tm_cert` that enter the strict bound.
+"""Test of the host numbers of `quartic.cert.box` that enter the strict bound.
 
 1. The offsets p_i - c_i and the constant abs(p_2)^2 - s2 of Delta do not depend on the
    precision of mpmath, and lie within their bounds of the exact values.
 2. The weights of the re-expansion in zeta (reexpand_weights), in dd and in td, lie within
    their bounds of the values in mpmath at 150 digits, and the moduli bound the values.
-3. A cell that cert_cover.may_meet_f drops holds no point of F.
-4. tm_cert._real_low is a lower bound of the real part of a model on its polydisc.
+3. A cell that quartic.cert.cover.may_meet_f drops holds no point of F.
+4. quartic.cert.box._real_low is a lower bound of the real part of a model on its polydisc.
 5. box_f stops on local forms that are not in Delta and td (_check_local).
 
 The tests of frac_dd and lower are in tmgpu/tests/test_host.py.

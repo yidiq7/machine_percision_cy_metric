@@ -3,16 +3,16 @@
 For each reference center c (the coordinates t = (z_0, z_1) of a point of X in the
 chart z_3 = 1), the script moves the chart polynomials of the base and of the levels
 to t = c, and combines the levels at x0 = p0(c)^(-1/k0) into M~_m (see
-`quartic.tm_forms.local_forms`). All of it is in arb. Each center gives one file
+`quartic.cert.forms.local_forms`). All of it is in arb. Each center gives one file
 with the dd parts, the radii and the absolute-value bounds of every matrix, and the
 exact dd numbers c, x0 and s2. Each form is the four R_j of
-`quartic.tm_forms.delta_split`, with each entry in td.
+`quartic.cert.forms.delta_split`, with each entry in td.
 
 The centers come from --points (the export points of the data, moved into F) or from
 a cover of scripts/cert_cover.py (--centers, its ref_centers).
 
 Usage, on CPU cores:
-    JAX_PLATFORMS=cpu uv run --extra gpu --with python-flint python -u \\
+    uv run --extra gpu --with python-flint python -u \\
         scripts/tm_local_forms.py --data runs_tm/r20i_data.npz \\
         --forms runs_tm/r20_forms.npz --points 0 1 2 --out runs_tm/local_r20i --procs 3
 """

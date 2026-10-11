@@ -6,12 +6,13 @@ Each frame number is the dd rounding of an arb ball, and from then on that dd nu
 the exact definition of the frame. The error of each rounding is bounded from the ball:
 
 * the tangent frame E (dy/dt at p, with E_2 = -p_i^3 / p_2^3) and the unit normal n;
-* c1inv = 1 / (grad P . n) and the td constants of `tm_cert.implicit_h_td` with their errors;
+* c1inv = 1 / (grad P . n) and the td constants of `quartic.cert.box.implicit_h_td` with their errors;
 * vol = 1 / (abs(det U)^2 vbar), U = [E, n], with vbar = 512 pi^4 k0^2 / Gamma(1/4)^8,
   and a bound of its relative error.
 
-Both `tm_cert.make_frames` (the boxes on the GPU) and `scripts/cert_cover.py` (the radius
-of each cell) take the frame from `frame`, so they work with the same numbers.
+Both `quartic.cert.box.make_frames` (the boxes on the GPU) and
+`quartic.cert.cover.box_radius` (the radius of each cell) take the frame from `frame`, so
+they work with the same numbers.
 """
 from __future__ import annotations
 
