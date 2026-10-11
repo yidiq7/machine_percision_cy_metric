@@ -42,6 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'scripts'))
 
+from tmgpu.tools import sup_bound                           # noqa: E402
 import cert_cover as cc                                     # noqa: E402
 
 mp.mp.dps = 40
@@ -192,7 +193,7 @@ def check_boxes(rec, args):
         f, (d, _, _), info, parts = tc.box_f(fr, local, [delta], order, order + args.ny_extra,
                                              k_max=int(local['top']), a=a,
                                              hmax=cp.asarray([float(rec[j, 12])]), grad=grad)
-        sup = float(tc.sup_bound(parts['sp4'], f, d)[0][0])
+        sup = float(sup_bound(parts['sp4'], f, d)[0][0])
         dev = abs(sup / rec[j, 8] - 1)
         if grad:
             dev = max(dev, abs(float(info['grad_g'][0]) / rec[j, 17] - 1))
@@ -257,7 +258,7 @@ def check_recompute(rec, args):
                 f, (d, _, _), info, parts = tc.box_f(
                     fr, local, [float(rec[j, 7]) for j in part], order, order + args.ny_extra,
                     k_max=top, a=a, hmax=cp.asarray(rec[part, 12]), grad=grad)
-                sup = cp.asnumpy(tc.sup_bound(parts['sp4'], f, d)[0])
+                sup = cp.asnumpy(sup_bound(parts['sp4'], f, d)[0])
                 dev_f.append(np.abs(sup / rec[part, 8] - 1))
                 if grad:
                     dev_g.append(np.abs(cp.asnumpy(info['grad_g']) / rec[part, 17] - 1))

@@ -17,73 +17,11 @@ from __future__ import annotations
 
 from flint import acb, acb_mat, arb, ctx
 
-# t^4 of a dd center needs 424 bits, so at 512 bits the center values are exact balls;
-# then a center with -(1 + t_0^4 + t_1^4) on the negative real axis keeps a narrow root.
-PREC = 512
+from tmgpu.host import PREC, exact, lower, precision, to_dd, to_td
 
+# t^4 of a dd center needs 424 bits, so at PREC = 512 bits the center values are exact
+# balls; a center with -(1 + t_0^4 + t_1^4) on the negative real axis keeps a narrow root.
 
-class precision:
-    """`with precision():` runs ball arithmetic at PREC bits and restores the old setting."""
-
-    def __init__(self, prec=PREC):
-        self.prec = prec
-
-    def __enter__(self):
-        self.old = ctx.prec
-        ctx.prec = self.prec
-
-    def __exit__(self, *exc):
-        ctx.prec = self.old
-
-
-def exact(v):
-    """A dd list [re_hi, re_lo, im_hi, im_lo] as an exact acb (inside `precision`)."""
-    return acb(arb(v[0]) + arb(v[1]), arb(v[2]) + arb(v[3]))
-
-
-def upper(x):
-    """An upper bound of abs(x) for an arb or acb ball, as a float."""
-    a = abs(x)
-    return (abs(float(a.mid())) + float(a.rad())) * (1 + 1e-12) + 1e-300
-
-
-def lower(x):
-    """A lower bound of abs(x) for an arb or acb ball, as a float (0 if it may vanish).
-
-    With mid > 2 rad the FP64 round-off of mid - rad is below 3 u of it, which the
-    factor 1 - 1e-12 covers; a wider ball gives 0.
-    """
-    a = abs(x)
-    m, r = float(a.mid()), float(a.rad())
-    if not m > 2 * r:
-        return 0.0
-    return (m - r) * (1 - 1e-12)
-
-
-def to_dd(x):
-    """The dd rounding of the midpoint of an acb ball, and a bound of its distance to x."""
-    out, err = [], 0.0
-    for part in (x.real, x.imag):
-        mid = part.mid()
-        h = float(mid)
-        lo = float(mid - arb(h))
-        out += [h, lo]
-        err += upper(part - arb(h) - arb(lo))
-    return out, err
-
-
-def to_td(x):
-    """The td rounding of the midpoint of an acb ball (6 floats), and a bound of its
-    distance to x."""
-    out, err = [], 0.0
-    for part in (x.real, x.imag):
-        mid = part.mid()
-        h = float(mid)
-        m = float(mid - arb(h))
-        lo = float(mid - arb(h) - arb(m))
-        out += [h, m, lo]
-        err += upper(part - arb(h) - arb(m) - arb(lo))
-    return out, err
 
 
 def frame(c_dd, k0, prec=PREC):

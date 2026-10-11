@@ -34,43 +34,19 @@ import cupy as cp
 import mpmath as mp
 
 from tmgpu import tm, tmtd, gemm
+from tmgpu.host import (dd_frac, dd_mp, exact, frac_dd, mp_dd, precision, to_dd as ball_dd,
+                        to_td as ball_td, upper)
+from tmgpu.tools import conj, gpu_dd, host_dd, power, series_order, space
 
 U2 = tm.U2
 SAFE = tm.SAFE
 TINY = tm.TINY
+# The series of r and p~ stop at eta^(k+1) < SERIES_EPS: psi takes the error of x about
+# 2e3 times, and the Cauchy estimate of g about 1e5 times.
+SERIES_EPS = 1e-34
 # Every host number that enters a bound comes from exact rationals (dd_frac, frac_dd) or
-# from ball arithmetic (quartic.tm_frame), so no bound depends on the precision of mpmath.
+# from ball arithmetic (tmgpu.host), so no bound depends on the precision of mpmath.
 # mpmath only picks free numbers (s_r, s_p, zeta); each is rounded to dd and then exact.
-
-
-def mp_dd(z):
-    """An mpmath complex as dd parts [re_hi, re_lo, im_hi, im_lo]."""
-    z = mp.mpc(z)
-    rh, ih = float(z.real), float(z.imag)
-    return [rh, float(z.real - rh), ih, float(z.imag - ih)]
-
-
-def dd_mp(v):
-    return mp.mpc(mp.mpf(v[0]) + mp.mpf(v[1]), mp.mpf(v[2]) + mp.mpf(v[3]))
-
-
-def dd_frac(v):
-    """A dd list [re_hi, re_lo, im_hi, im_lo] as the exact rationals (re, im)."""
-    return Fraction(float(v[0])) + Fraction(float(v[1])), Fraction(float(v[2])) + Fraction(float(v[3]))
-
-
-def frac_dd(re, im, limbs=2):
-    """The exact complex rational re + i im rounded to dd (limbs 2) or td (limbs 3), as
-    [re limbs, im limbs], and an upper bound of the distance (abs re + abs im)."""
-    out, err = [], Fraction(0)
-    for x in (re, im):
-        rest = x
-        for _ in range(limbs):
-            v = float(rest)
-            out.append(v)
-            rest -= Fraction(v)
-        err += abs(rest)
-    return out, float(err) * (1 + 1e-12) + 1e-300
 
 
 @dataclass
@@ -140,12 +116,6 @@ def offset_consts(fr, ref, limbs=2):
     return out
 
 
-def conj_tm(x):
-    c = x.c.copy()
-    c[2:] = -c[2:]
-    return tm.TM(c, x.rem.copy(), x.delta)
-
-
 def mats_at(mats, sp_k):
     """The monomial matrices for the lower order sp_k.n: the rows of degree <= sp_k.n, and
     the bounds split at that degree."""
@@ -178,7 +148,6 @@ def reexpand_weights(zeta_dd, k_max, top, limbs=2):
     (B, 2 limbs, k_max + 1, top + 1), and bounds of their errors and of their moduli
     (B, k_max + 1, top + 1)."""
     from flint import acb
-    from .tm_frame import exact, precision, to_dd as ball_dd, to_td as ball_td, upper
     b, nm = len(zeta_dd), top + 1
     w = np.zeros((b, 2 * limbs, k_max + 1, nm))
     werr = np.zeros((b, k_max + 1, nm))
@@ -207,37 +176,6 @@ def local_on_gpu(path):
     for key in z.files:
         out[key] = cp.asarray(z[key]) if z[key].ndim >= 2 else z[key]
     return out
-
-
-def _series_order(eta, n, eps=1e-34):
-    """The number of terms with eta^(k+1) below eps for the largest eta of the batch.
-
-    The series of r and p~ give x, psi takes the error of x about 2e3 times, and the
-    Cauchy estimate of g about 1e5 times. With eps = 1e-30 the Lagrange rest of the box
-    with the largest eta added up to 1.6e-21 to its bound of f, so eps is 1e-34.
-    """
-    e = float(cp.max(eta))
-    if not 0 < e < 0.5:
-        return n
-    return int(min(n, max(4, math.ceil(math.log(eps) / math.log(e)) - 1)))
-
-
-def _host_dd(x):
-    """A CuPy dd array (4, B) as a list of mpmath complex numbers."""
-    h = cp.asnumpy(x)
-    return [dd_mp(h[:, i]) for i in range(h.shape[1])]
-
-
-def _to_dd(vals):
-    return cp.asarray(np.array([mp_dd(v) for v in vals]).T)
-
-
-def _power(sp, x, m, cache):
-    if m not in cache:
-        half = _power(sp, x, m // 2, cache)
-        cache[m] = (tm.mul(sp, half, half) if m % 2 == 0
-                    else tm.mul(sp, _power(sp, x, m - 1, cache), x))
-    return cache[m]
 
 
 def form_abs(mats, q_abs, bdl=None):
@@ -294,7 +232,7 @@ def delta_model(sp4, sp2, fr, v, local, delta):
     b = delta.shape[0]
     d0, err = delta_const(fr, np.asarray(local['s2']))
     one = tm.const(sp2, tm.cconst(1, b), delta)
-    vc = conj_tm(v)
+    vc = conj(v)
     p2c = fr.p[2].copy()
     p2c[2:] = -p2c[2:]
     t1 = tm.tensor(sp4, sp2, tm.scale(sp2, v, p2c), one)
@@ -560,7 +498,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     d = cp.asarray(np.asarray(delta_box, float))
     d_f = d * (1 + a)
     d_phi = d_f * (1 + a)
-    sp2, sp_low, sp4 = _space(2, ny), _space(2, n), _space(4, n)
+    sp2, sp_low, sp4 = space(2, ny), space(2, n), space(4, n)
     info = {}
     clock = _Clock()
     # Each form is a sum over j of Delta^j R_j, with the R_j of the local forms in td.
@@ -569,7 +507,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     ys, rho, lam, h_td, hm, lam_big = implicit_h_td(sp2, fr, d_phi, hmax)
     base_t, v2 = offset_models_td(sp2, fr, h_td, hm, cref, d_phi)
     info['rho_h'], info['lam_h'], info['lam_big'] = rho, lam, lam_big
-    yc = [conj_tm(y) for y in ys]
+    yc = [conj(y) for y in ys]
     clock('h')
     mats = monomial_mats_td(sp2, sp_low, base_t, top)
     dls = {n: delta_model(sp4, sp2, fr, v2, local, d_phi)}
@@ -592,19 +530,19 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     for k in range(3):
         r2 = tm.add(sp4, r2, tm.tensor(sp4, sp2, ys[k], yc[k]))
     # With any exact s, 1/r2 = s (1 + yr)^-1 and log r2 = log(1 + yr) - log s, yr = s r2 - 1.
-    s_r = _to_dd([1 / v for v in _host_dd(r2.c[:, 0, :])])
+    s_r = gpu_dd([1 / v for v in host_dd(r2.c[:, 0, :])])
     yr = tm.add_const(sp4, tm.scale(sp4, r2, s_r), -one)
     eta_r = tm.bound(sp4, yr)
-    pw_r = tm.powers(sp4, yr, _series_order(eta_r, n))
+    pw_r = tm.powers(sp4, yr, series_order(eta_r, n, SERIES_EPS))
     ir2 = tm.scale(sp4, tm.power_series(sp4, pw_r, -1, eta_r), s_r)
     log_r2 = tm.log1p_series(sp4, pw_r, eta_r)
     cache = {1: ir2}
-    pt = tm.mul(sp4, p0, _power(sp4, ir2, k0, cache))
+    pt = tm.mul(sp4, p0, power(sp4, ir2, k0, cache))
     # A real s_p, so that p~^(-1/k0) = xh s_p^(1/k0) holds with the real root below.
-    s_p = _to_dd([mp.mpc(1 / v.real) for v in _host_dd(pt.c[:, 0, :])])
+    s_p = gpu_dd([mp.mpc(1 / v.real) for v in host_dd(pt.c[:, 0, :])])
     yp = tm.add_const(sp4, tm.scale(sp4, pt, s_p), -one)
     eta_p = tm.bound(sp4, yp)
-    pw_p = tm.powers(sp4, yp, _series_order(eta_p, n))
+    pw_p = tm.powers(sp4, yp, series_order(eta_p, n, SERIES_EPS))
     xh = tm.power_series(sp4, pw_p, Fraction(-1, k0), eta_p)
     log_pt = tm.log1p_series(sp4, pw_p, eta_p)
     info.update(eta_r=eta_r, eta_p=eta_p, rem_p0=p0.rem / tm.abs_ub(p0.c[:, :1, :])[0],
@@ -612,9 +550,9 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
 
     # x = r2^-1 p~^(-1/k0) = ir2 xh s_p^(1/k0); x_c = x0 (1 + zeta) with an exact dd zeta.
     x0 = dd_mp(np.asarray(local['x0']))
-    sp_host = _host_dd(s_p)
+    sp_host = host_dd(s_p)
     xc_raw = [v.real ** (mp.mpf(1) / k0) * w for v, w in
-              zip(sp_host, _host_dd(tm.mul(sp4, ir2, xh).c[:, 0, :]))]
+              zip(sp_host, host_dd(tm.mul(sp4, ir2, xh).c[:, 0, :]))]
     # zeta is a free dd number near x_c / x0 - 1; from here on its dd value is exact, and
     # kappa and the weights of the re-expansion both take that value in ball arithmetic.
     zeta = [mp_dd(x / x0 - 1) for x in xc_raw]
@@ -642,7 +580,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
         q = [x[0] for x in fq[k]]
         rr = [x[1] for x in fq[k]]
         aa = [x[2] for x in fq[k]]
-        sp4k, splk = _space(4, orders[k]), _space(2, orders[k])
+        sp4k, splk = space(4, orders[k]), space(2, orders[k])
         mk = mats if orders[k] == n else mats_at(mats, splk)
         fk.append(form(sp4k, splk, mk, q, rr, aa))
     tail = cp.zeros(b)
@@ -653,14 +591,14 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     xis = {n: xi}
     for m in set(orders):
         if m not in xis:
-            xis[m] = tm.truncate(_space(4, m), sp4, xi)
+            xis[m] = tm.truncate(space(4, m), sp4, xi)
     # The parts of the remainder of psi, carried through Horner's rule: the remainder of
     # s enters each later step times the bound of xi.
     split = {key: cp.zeros(b) for key in ('F_k', 'xi', 'xi cut', 'tails', 'rounding')}
     split['F_k'] += fk[k_max].rem
     s = fk[k_max]
     for k in range(k_max - 1, -1, -1):
-        spk = _space(4, orders[k])
+        spk = space(4, orders[k])
         if orders[k + 1] < orders[k]:
             s = tm.embed(spk, s)
         xk = xis[orders[k]]
@@ -695,7 +633,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
         term = tm.scale(sp2, cube, 4 * fr.n[k])
         dp = term if dp is None else tm.add(sp2, dp, term)
     dp = tm.restrict(dp, d_f)
-    q4 = tm.tensor(sp4, sp2, dp, conj_tm(dp))
+    q4 = tm.tensor(sp4, sp2, dp, conj(dp))
     dq = tm.mul(sp4, det, q4)
     v = tm.scale(sp4, dq, fr.vol)
     # vol_err is relative to the true vol; times abs(vol in dd) it misses vol_err^2, which
@@ -750,16 +688,6 @@ def _real_low(sp4, x, d):
     return (a0 + a1) - cp.abs(b0 + b1) - pb - x.rem - 1e-12 * mag
 
 
-_SPACES = {}
-
-
-def _space(nvars, n):
-    """One Space for each (nvars, n), so that its tables are built once."""
-    if (nvars, n) not in _SPACES:
-        _SPACES[nvars, n] = tm.Space(nvars, n)
-    return _SPACES[nvars, n]
-
-
 class _Clock:
     """Wall time of the stages, with a device synchronization at each mark."""
 
@@ -777,10 +705,3 @@ class _Clock:
         self.t = now
 
 
-def sup_bound(sp4, f, d):
-    """abs(f) <= abs(f(c)) + B(f - f(c)) on the box delta d + the remainder of f."""
-    c0 = tm.abs_ub(f.c[:, :1, :])[0]
-    var = f.c.copy()
-    var[:, 0, :] = 0
-    pb = tm.poly_bound(sp4, tm.TM(var, f.rem, d), d)
-    return (c0 + pb + f.rem) * SAFE + TINY, c0, pb

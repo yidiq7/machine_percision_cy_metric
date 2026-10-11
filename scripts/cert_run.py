@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'scripts'))
 
+from tmgpu.tools import sup_bound                           # noqa: E402
 from quartic import tm_cert as tc                           # noqa: E402
 import cert_cover as cc                                     # noqa: E402
 
@@ -129,7 +130,7 @@ def main():
             f, (d, _, _), info, parts = tc.box_f(fr, local, deltas, order, order + args.ny_extra,
                                                  k_max=kmax, a=a, hmax=hmaxs,
                                                  grad=args.grad)
-            sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
+            sup, c0, pb = sup_bound(parts['sp4'], f, d)
             sup, c0, pb, rem, lam_big = (cp.asnumpy(x) for x in (sup, c0, pb, f.rem,
                                                                   info['lam_big']))
             nanb = np.full(len(batch), np.nan)

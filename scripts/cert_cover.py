@@ -93,7 +93,8 @@ def box_radius(lo, s, c_dd):
     abs(d(c) - d_i) r, with d(c) the exact derivative. All bounds come from arb balls.
     """
     from flint import acb, arb
-    from quartic.tm_frame import frame, lower, precision, upper
+    from quartic.tm_frame import frame
+    from tmgpu.host import lower, precision, upper
     f = frame(c_dd, None)
     A = f['acb']
     with precision():

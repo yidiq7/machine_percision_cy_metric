@@ -27,6 +27,8 @@ os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tmgpu.host import dd_mp                                # noqa: E402
+from tmgpu.tools import sup_bound                           # noqa: E402
 from quartic import tm_cert as tc                      # noqa: E402
 from quartic.tm_forms import Poly2                          # noqa: E402
 
@@ -62,14 +64,14 @@ def point_on_x(host, tau):
 
 def local_p0(local, y, k0):
     """p0 at a point y of X from the local base forms, in mpmath."""
-    c = [tc.dd_mp(local['c'][i]) for i in range(2)]
+    c = [dd_mp(local['c'][i]) for i in range(2)]
     s = [y[0] - c[0], y[1] - c[1]]
     p2 = Poly2(k0)
     mono = [s[0] ** a * s[1] ** b for a, b in p2.mons]
     monoc = [mp.conj(m) for m in mono]
     total = mp.mpc(0)
     # Block j has the factor Delta^j, with Delta = abs(y_2)^2 - s2.
-    factor = abs(y[2]) ** 2 - tc.dd_mp(local['s2']).real
+    factor = abs(y[2]) ** 2 - dd_mp(local['s2']).real
     for e in range(4):
         q = local[f'base_j{e}']
         part = mp.mpc(0)
@@ -121,7 +123,7 @@ def main():
             args.deltas = [float(cov['deltas'][i]) for i in pick]
             hmax = (cp.asarray(np.array([float(cov['hmaxs'][i]) for i in pick] * args.repeat))
                     if 'hmaxs' in cov.files else None)
-            off = [max(abs(tc.dd_mp(c[k]) - tc.dd_mp(cdd[k])) for k in range(2)) for c in centers]
+            off = [max(abs(dd_mp(c[k]) - dd_mp(cdd[k])) for k in range(2)) for c in centers]
             print(f'reference {ci}: cells {list(pick)}, offsets {[f"{float(o):.3f}" for o in off]}',
                   flush=True)
         if not args.cover:
@@ -138,10 +140,10 @@ def main():
             f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, deltas, n,
                                                       n + args.ny_extra, args.kmax, a,
                                                       hmax=hmax)
-            sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
+            sup, c0, pb = sup_bound(parts['sp4'], f, d)
             cp.cuda.Device().synchronize()
             sec = time.perf_counter() - t0
-            fc = tc.dd_mp(cp.asnumpy(f.c[:, 0, 0]))
+            fc = dd_mp(cp.asnumpy(f.c[:, 0, 0]))
             ref = f', tm_box {args.fref[ci]:+.10e}' if ci < len(args.fref) else ''
             extra = (f', bound of Delta {float(cp.max(info["bound_delta"])):.2e}'
                      if 'bound_delta' in info else '')

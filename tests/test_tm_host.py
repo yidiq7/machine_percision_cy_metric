@@ -1,13 +1,14 @@
 """Test of the host numbers of `quartic.tm_cert` that enter the strict bound.
 
-1. Exact rationals rounded to dd and td (frac_dd) lie within their bounds.
-2. The offsets p_i - c_i and the constant abs(p_2)^2 - s2 of Delta do not depend on the
+1. The offsets p_i - c_i and the constant abs(p_2)^2 - s2 of Delta do not depend on the
    precision of mpmath, and lie within their bounds of the exact values.
-3. The weights of the re-expansion in zeta (reexpand_weights), in dd and in td, lie within
+2. The weights of the re-expansion in zeta (reexpand_weights), in dd and in td, lie within
    their bounds of the values in mpmath at 150 digits, and the moduli bound the values.
-4. tm_frame.lower gives a lower bound, and 0 for a wide ball.
-5. A cell that cert_cover.may_meet_f drops holds no point of F.
-6. tm_cert._real_low is a lower bound of the real part of a model on its polydisc.
+3. A cell that cert_cover.may_meet_f drops holds no point of F.
+4. tm_cert._real_low is a lower bound of the real part of a model on its polydisc.
+5. box_f stops on local forms that are not in Delta and td (_check_local).
+
+The tests of frac_dd and lower are in tmgpu/tests/test_host.py.
 
 Run on a GPU node: uv run --extra gpu --with cupy-cuda12x --with python-flint \\
     python -m tests.test_tm_host
@@ -27,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'scripts'))
 
 from quartic import tm_cert as tc, tm_frame                # noqa: E402
-from tmgpu import tm                                       # noqa: E402
+from tmgpu import host, tm                                       # noqa: E402
 import cert_cover as cc                                         # noqa: E402
 
 RNG = np.random.default_rng(20261010)
@@ -40,20 +41,6 @@ def random_dd(scale=1.0):
         h = float(RNG.normal() * scale)
         out += [h, float(h * 2.0 ** -53 * RNG.uniform(-1, 1))]
     return out
-
-
-def check_frac_dd():
-    worst = [0.0, 0.0]
-    for _ in range(2000):
-        re = Fraction(float(RNG.normal())) + Fraction(float(RNG.normal())) * Fraction(1, 2 ** 70)
-        im = Fraction(float(RNG.normal())) * Fraction(1, 3)
-        for k, limbs in enumerate((2, 3)):
-            v, err = tc.frac_dd(re, im, limbs)
-            gap = abs(re - sum(Fraction(x) for x in v[:limbs])) + abs(im - sum(Fraction(x) for x in v[limbs:]))
-            assert gap <= Fraction(err), (limbs, float(gap), err)
-            worst[k] = max(worst[k], float(gap) / err)
-    print(f'  frac_dd: largest error over its bound {worst[0]:.2f} (dd), {worst[1]:.2f} (td)',
-          flush=True)
 
 
 class _Frames:
@@ -76,18 +63,18 @@ def check_offsets_and_delta():
             assert all(bool(cp.all(u == v)) for u, v in zip(x, y)), 'depends on mpmath precision'
     (off2, off3, (d0, derr)) = outs[1]
     for i in range(2):
-        rq = tc.dd_frac(ref[i])
+        rq = host.dd_frac(ref[i])
         for limbs, (vals, errs) in ((2, off2[i]), (3, off3[i])):
             vals, errs = cp.asnumpy(vals), cp.asnumpy(errs)
             for bi, box in enumerate(boxes):
-                re, im = (a - c for a, c in zip(tc.dd_frac(box[i]), rq))
+                re, im = (a - c for a, c in zip(host.dd_frac(box[i]), rq))
                 got = vals[:, bi]
                 gap = abs(re - sum(Fraction(x) for x in got[:limbs])) + abs(im - sum(Fraction(x) for x in got[limbs:]))
                 assert gap <= Fraction(errs[bi]), ('offset', i, limbs, float(gap), errs[bi])
     d0, derr = cp.asnumpy(d0), cp.asnumpy(derr)
-    s2q = tc.dd_frac(s2)[0]
+    s2q = host.dd_frac(s2)[0]
     for bi, box in enumerate(boxes):
-        re, im = tc.dd_frac(box[2])
+        re, im = host.dd_frac(box[2])
         exact = re * re + im * im - s2q
         gap = abs(exact - Fraction(d0[0, bi]) - Fraction(d0[1, bi])) + abs(Fraction(d0[2, bi]))
         assert gap <= Fraction(derr[bi]), ('delta', float(gap), derr[bi])
@@ -104,7 +91,7 @@ def check_weights():
         w, werr, wabs = tc.reexpand_weights(zeta, k_max, top, limbs)
         worst, worst_rel = 0.0, 0.0
         for i, zd in enumerate(zeta):
-            z = tc.dd_mp(zd)
+            z = host.dd_mp(zd)
             for k in range(k_max + 1):
                 for m in range(k, top + 1):
                     v = (1 + z) ** k * mp.binomial(m, k) * z ** (m - k)
@@ -119,17 +106,6 @@ def check_weights():
         print(f'  weights ({"dd" if limbs == 2 else "td"}): largest error over its bound '
               f'{worst:.2f}; largest bound over abs(weight) {worst_rel:.1e}', flush=True)
         assert worst_rel < (1e-30 if limbs == 2 else 1e-46)
-
-
-def check_lower():
-    from flint import arb
-    with tm_frame.precision():
-        assert tm_frame.lower(arb(1, 0.6)) == 0.0
-        assert tm_frame.lower(arb(-1, 0.6)) == 0.0
-        x = arb(3, 1e-20)
-        assert 0 < tm_frame.lower(x) <= 3 - 1e-20
-        assert tm_frame.upper(x) >= 3 + 1e-20
-    print('  tm_frame.lower: 0 for a wide ball, a lower bound for a narrow one', flush=True)
 
 
 def in_f(t0, t1):
@@ -195,10 +171,8 @@ def check_old_local_forms():
 
 
 def main():
-    check_frac_dd()
     check_offsets_and_delta()
     check_weights()
-    check_lower()
     check_dropped_cells()
     check_real_low()
     check_old_local_forms()
