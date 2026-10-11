@@ -38,6 +38,9 @@ from tmgpu.host import (dd_frac, dd_mp, exact, frac_dd, mp_dd, precision, to_dd 
                         to_td as ball_td, upper)
 from tmgpu.tools import conj, gpu_dd, host_dd, power, series_order, space
 
+from .forms import Poly2
+from .frame import frame, kappa
+
 U2 = tm.U2
 SAFE = tm.SAFE
 TINY = tm.TINY
@@ -73,7 +76,6 @@ def make_frames(centers, k0):
     Every number and every error bound comes from `quartic.tm_frame.frame` in ball
     arithmetic, so the boxes and the cover (scripts/cert_cover.py) use the same frame.
     """
-    from .tm_frame import frame
     keys = ('p', 'e', 'n', 'c1inv', 'vol', 'ha_td', 'a6_td', 'a4_td', 'kappa_td')
     cols = {k: [] for k in keys}
     errs, host, herr_td = [], [], []
@@ -367,7 +369,6 @@ def monomial_mats_td(sp2, sp_low, base_t, top):
     in tau; (n_top, B) bounds of that part, of the rest of the polynomial and of the
     remainder; gdeg, the bound of each degree.
     """
-    from .tm_forms import Poly2
     p2 = Poly2(top)
     b = base_t[0].delta.shape[0]
     one = cp.zeros((6, b))
@@ -557,10 +558,9 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     # kappa and the weights of the re-expansion both take that value in ball arithmetic.
     zeta = [mp_dd(x / x0 - 1) for x in xc_raw]
     # kappa = s_p^(1/k0) / (x0 (1 + zeta)) in ball arithmetic.
-    from .tm_frame import kappa as _kappa
     x0_dd = list(np.asarray(local['x0']))
     sp_dd = cp.asnumpy(s_p)
-    kap = [_kappa(list(sp_dd[:, i]), k0, x0_dd, z) for i, z in enumerate(zeta)]
+    kap = [kappa(list(sp_dd[:, i]), k0, x0_dd, z) for i, z in enumerate(zeta)]
     kappa_dd = cp.asarray(np.array([k[0] for k in kap]).T)
     kap_err = cp.asarray(np.array([k[1] for k in kap]) * (1 + 1e-9) + 1e-300)
     xw = tm.mul(sp4, ir2, xh)

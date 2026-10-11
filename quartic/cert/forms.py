@@ -33,7 +33,7 @@ try:
 except ImportError:            # The GPU side needs only the monomial order of Poly2.
     flint = acb = arb = arb_mat = None
 
-from . import blocks
+from .. import blocks
 
 S4 = list(itertools.permutations(range(4)))
 J, M, FREE = 3, 2, (0, 1)

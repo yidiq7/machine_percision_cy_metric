@@ -21,7 +21,6 @@ Usage, on one GPU node:
         --local /n/netscratch/.../tm_local_f6t_td --target 5e-20 --out runs_tm/run_f6t.npz
 """
 import argparse
-import os
 import sys
 import time
 from pathlib import Path
@@ -30,15 +29,12 @@ import numpy as np
 import cupy as cp
 import mpmath as mp
 
-# The quartic package imports JAX, which would take most of the GPU memory from CuPy.
-os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / 'scripts'))
 
 from tmgpu.tools import sup_bound                           # noqa: E402
-from quartic import tm_cert as tc                           # noqa: E402
-import cert_cover as cc                                     # noqa: E402
+from quartic.cert import box as tc                           # noqa: E402
+from quartic.cert import cover as cc                                     # noqa: E402
 
 
 def split(lo, s):

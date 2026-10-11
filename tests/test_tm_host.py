@@ -13,7 +13,6 @@ The tests of frac_dd and lower are in tmgpu/tests/test_host.py.
 Run on a GPU node: uv run --extra gpu --with cupy-cuda12x --with python-flint \\
     python -m tests.test_tm_host
 """
-import os
 import sys
 from fractions import Fraction
 from pathlib import Path
@@ -22,14 +21,12 @@ import mpmath as mp
 import numpy as np
 import cupy as cp
 
-os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / 'scripts'))
 
-from quartic import tm_cert as tc, tm_frame                # noqa: E402
+from quartic.cert import box as tc                # noqa: E402
 from tmgpu import host, tm                                       # noqa: E402
-import cert_cover as cc                                         # noqa: E402
+from quartic.cert import cover as cc                                         # noqa: E402
 
 RNG = np.random.default_rng(20261010)
 

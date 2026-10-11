@@ -29,7 +29,7 @@ from flint import acb, arb
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from quartic import tm_forms                                # noqa: E402
+from quartic.cert import forms as tm_forms                                # noqa: E402
 
 G = {}
 

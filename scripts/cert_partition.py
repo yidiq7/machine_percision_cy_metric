@@ -29,7 +29,6 @@ integers. Usage, on CPU cores:
 import argparse
 import itertools
 import multiprocessing
-import os
 import sys
 import time
 from pathlib import Path
@@ -37,10 +36,9 @@ from pathlib import Path
 import numpy as np
 import mpmath as mp
 
-os.environ.setdefault('JAX_PLATFORMS', 'cpu')
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import cert_cover as cc                                     # noqa: E402
+from quartic.cert import cover as cc                                     # noqa: E402
 
 G = {}
 

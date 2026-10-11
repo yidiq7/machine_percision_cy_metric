@@ -13,7 +13,6 @@ Usage, on one GPU node:
         --orders 28 --kmax 24 --deltas 0.01 0.02
 """
 import argparse
-import os
 import sys
 import time
 from pathlib import Path
@@ -22,15 +21,13 @@ import numpy as np
 import cupy as cp
 import mpmath as mp
 
-# The quartic package imports JAX, which would take most of the GPU memory from CuPy.
-os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from tmgpu.host import dd_mp                                # noqa: E402
 from tmgpu.tools import sup_bound                           # noqa: E402
-from quartic import tm_cert as tc                      # noqa: E402
-from quartic.tm_forms import Poly2                          # noqa: E402
+from quartic.cert import box as tc                      # noqa: E402
+from quartic.cert.forms import Poly2                          # noqa: E402
 
 mp.mp.dps = 50
 

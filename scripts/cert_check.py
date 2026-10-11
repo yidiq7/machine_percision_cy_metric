@@ -28,7 +28,6 @@ Usage, on one GPU node:
 """
 import argparse
 import hashlib
-import os
 import sys
 import time
 from pathlib import Path
@@ -36,14 +35,12 @@ from pathlib import Path
 import numpy as np
 import mpmath as mp
 
-# The quartic package imports JAX, which would take most of the GPU memory from CuPy.
-os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'scripts'))
 
 from tmgpu.tools import sup_bound                           # noqa: E402
-import cert_cover as cc                                     # noqa: E402
+from quartic.cert import cover as cc                                     # noqa: E402
 
 mp.mp.dps = 40
 RNG = np.random.default_rng(20261009)
@@ -73,7 +70,7 @@ def exact_cell(row, side):
 
 def tau_of(t, center):
     """The tangent coordinates of the point over t in the box at the center (dd lists)."""
-    from quartic import tm_cert as tc
+    from quartic.cert import box as tc
     fr = tc.make_frames([center], 14)
     h = fr.host[0]
     p, e, n = h['p'], h['e'], h['n']
@@ -170,7 +167,7 @@ def check_local(cov, local_dir, prec=256):
 
 def check_boxes(rec, args):
     import cupy as cp
-    from quartic import tm_cert as tc
+    from quartic.cert import box as tc
     sys.argv = ['tm_box']
     import tm_box as tb
 
@@ -236,7 +233,7 @@ def check_recompute(rec, args):
     """All final boxes of --recompute random reference centers again, in new batches of one
     order and gap fraction, with the delta and h_max of their records."""
     import cupy as cp
-    from quartic import tm_cert as tc
+    from quartic.cert import box as tc
     side = float(np.load(args.cover)['side'])
     grad = rec.shape[1] > 18 and bool(np.all(np.isfinite(rec[:, 17])))
     refs = np.unique(rec[:, 0].astype(int))
