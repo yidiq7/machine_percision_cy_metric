@@ -167,12 +167,38 @@ def check_old_local_forms():
     print('  _check_local: local forms that are not in Delta and td fail', flush=True)
 
 
+def check_form_abs():
+    rng = np.random.default_rng(5)
+    n, b = 5, 3
+    b_low, b_high, r = (cp.asarray(rng.uniform(0, 1, (n + 2, b))) for _ in range(3))
+    mats = [(None, b_low, b_high, r, None)]
+    q_abs = [cp.asarray(rng.uniform(0, 1, (b, n, n))) for _ in range(4)]
+    bdl = cp.asarray(rng.uniform(0, 0.1, b))
+    try:
+        tc.form_abs(mats, q_abs)
+    except TypeError:
+        pass
+    except Exception as err:
+        raise AssertionError(f'form_abs with no bound of Delta gave {type(err).__name__}, '
+                             'not TypeError')
+    else:
+        raise AssertionError('form_abs ran with no bound of Delta')
+    full = cp.asnumpy((b_low + b_high + r)[:n])
+    want = sum(np.einsum('ab,bac,cb->b', full, cp.asnumpy(q_abs[j]), full) * cp.asnumpy(bdl) ** j
+               for j in range(4)) * tc.SAFE
+    got = cp.asnumpy(tc.form_abs(mats, q_abs, bdl))
+    assert np.allclose(got, want, rtol=1e-14, atol=0), (got, want)
+    print('  form_abs: needs the bound of Delta; sum over j of bdl^j full^T abs(R_j) full',
+          flush=True)
+
+
 def main():
     check_offsets_and_delta()
     check_weights()
     check_dropped_cells()
     check_real_low()
     check_old_local_forms()
+    check_form_abs()
     print('all host tests pass', flush=True)
 
 

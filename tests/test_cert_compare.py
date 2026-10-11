@@ -35,6 +35,11 @@ def test_nan_against_number_differs():
     assert not rows[1][3]
 
 
+def test_signed_zero_differs():
+    rows = _rows([[0, 0.0]], [[0, -0.0]])
+    assert not rows[1][3]
+
+
 def test_different_length_fails():
     try:
         _rows([[0, 1e-20]], [[0, 1e-20], [1, 2e-20]])
@@ -45,7 +50,7 @@ def test_different_length_fails():
 
 if __name__ == '__main__':
     for fn in (test_equal_with_nan, test_one_ulp_differs, test_nan_against_number_differs,
-               test_different_length_fails):
+               test_signed_zero_differs, test_different_length_fails):
         fn()
         print(fn.__name__, 'passes', flush=True)
     print('all cert_compare tests pass')
