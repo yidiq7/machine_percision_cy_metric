@@ -40,7 +40,7 @@ J, M, FREE = 3, 2, (0, 1)
 
 
 def monomials2(d):
-    """The monomials (a, b) of t_0^a t_1^b of degree <= d, in the order of tm_gpu.Space(2, d)."""
+    """The monomials (a, b) of t_0^a t_1^b of degree <= d, in the order of tmgpu.tm.Space(2, d)."""
     return [(a, s - a) for s in range(d + 1) for a in range(s, -1, -1)]
 
 
@@ -194,25 +194,6 @@ def times_radius(p2, q, cur):
     return out
 
 
-def to_dd(q):
-    """An arb_mat as (hi, lo, rad): the dd midpoint and an upper bound of the distance to it."""
-    n, m = q.nrows(), q.ncols()
-    hi = np.zeros((n, m))
-    lo = np.zeros((n, m))
-    rad = np.zeros((n, m))
-    for i in range(n):
-        for j in range(m):
-            x = q[i, j]
-            mid = x.mid()
-            h = float(mid)
-            l_ = float(mid - arb(h))
-            rest = abs(mid - arb(h) - arb(l_))
-            rad[i, j] = (float(x.rad()) + float(rest.mid()) + float(rest.rad())) * (1 + 1e-12) \
-                + 1e-300
-            hi[i, j], lo[i, j] = h, l_
-    return hi, lo, rad
-
-
 def chart_forms_arb(data, forms, prec=256):
     """Q_e of the base (degree k0), of each N_L and of each M_L (degree top), as arb_mat."""
     flint.ctx.prec = prec
@@ -227,55 +208,6 @@ def chart_forms_arb(data, forms, prec=256):
         for cur in range(k1, top):
             q = times_radius(p2, q, cur)
         out[f'M{k1}'] = q
-    return out
-
-
-def chart_forms(data, forms, prec=256):
-    """The same forms as dd + radius."""
-    out = chart_forms_arb(data, forms, prec)
-    for key in ['base'] + [f'{x}{k1}' for k1 in out['levels'] for x in 'NM']:
-        out[key] = [to_dd(x) for x in out[key]]
-    return out
-
-
-def combine_levels(cf, x0):
-    """M~_m = sum over L of C(L, m) x0^L M_L for m = 0..top, x0 an exact arb number."""
-    out = []
-    for m in range(cf['top'] + 1):
-        q = []
-        for e in range(4):
-            acc = None
-            for k1 in cf['levels']:
-                if m > k1:
-                    continue
-                term = cf[f'M{k1}'][e] * (arb(math.comb(k1, m)) * x0 ** k1)
-                acc = term if acc is None else acc + term
-            q.append(acc)
-        out.append(q)
-    return out
-
-
-def abs_bounds(q):
-    """Upper bounds of abs of the entries of an arb_mat, as a NumPy array."""
-    out = np.zeros((q.nrows(), q.ncols()))
-    for i in range(q.nrows()):
-        for j in range(q.ncols()):
-            a = abs(q[i, j])
-            out[i, j] = (float(a.mid()) + float(a.rad())) * (1 + 1e-12)
-    return out
-
-
-def save_gpu(path, data, forms, x0, prec=256):
-    """The base and the M~_m at x0 as dd + radius + abs bounds, for the GPU."""
-    cf = chart_forms_arb(data, forms, prec)
-    mt = combine_levels(cf, arb(x0))
-    out = {'k0': cf['k0'], 'top': cf['top'], 'levels': np.array(cf['levels']), 'x0': x0}
-    for name, qs in [('base', cf['base'])] + [(f'mt{m}', q) for m, q in enumerate(mt)]:
-        for e, q in enumerate(qs):
-            hi, lo, rad = to_dd(q)
-            out[f'{name}_e{e}_hi'], out[f'{name}_e{e}_lo'], out[f'{name}_e{e}_rad'] = hi, lo, rad
-            out[f'{name}_e{e}_abs'] = abs_bounds(q)
-    np.savez(path, **out)
     return out
 
 
@@ -300,29 +232,6 @@ def conj_transpose(m):
     from flint import acb_mat
     return acb_mat(m.ncols(), m.nrows(), [m[i, j].conjugate() for j in range(m.ncols())
                                            for i in range(m.nrows())])
-
-
-def to_dd_complex(q):
-    """An acb_mat as (4, n, m) dd parts, an upper bound of the distance to it, and abs bounds."""
-    n, m = q.nrows(), q.ncols()
-    parts = np.zeros((4, n, m))
-    rad = np.zeros((n, m))
-    absb = np.zeros((n, m))
-    for i in range(n):
-        for j in range(m):
-            x = q[i, j]
-            err = 0.0
-            for k, part in enumerate((x.real, x.imag)):
-                mid = part.mid()
-                h = float(mid)
-                l_ = float(mid - arb(h))
-                rest = abs(mid - arb(h) - arb(l_))
-                parts[2 * k, i, j], parts[2 * k + 1, i, j] = h, l_
-                err += float(part.rad()) + float(rest.mid()) + float(rest.rad())
-            rad[i, j] = err * (1 + 1e-12) + 1e-300
-            a = abs(x)
-            absb[i, j] = (float(a.mid()) + float(a.rad())) * (1 + 1e-12)
-    return parts, rad, absb
 
 
 def to_td_complex(q):
@@ -366,15 +275,15 @@ def delta_split(qs, s2):
     return out
 
 
-def local_forms(cf, c, x0, s2=None, td=False):
-    """The base and the M~_m at x0, moved to t = c in arb, as dd parts, radii, abs bounds.
+def local_forms(cf, c, x0, s2):
+    """The base and the M~_m at x0, moved to t = c in arb, as td parts, radii, abs bounds.
 
     M~_m = sum over L of C(L, m) x0^L N_L, with N_L the chart polynomials of the levels.
     A box with x_c = x0 (1 + zeta) takes
     F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m - k) M~_m, and these terms do
     not cancel, so the cancellation of the levels happens here in arb only.
-    With an exact real s2, each form is written as R_j of `delta_split` (keys
-    `<name>_j<j>`) and not as Q_e (keys `<name>_e<e>`). td stores three limbs (6 parts).
+    With the exact real s2, each form is written as the R_j of `delta_split` (keys
+    `<name>_j<j>`), each entry in three limbs (6 parts).
     """
     from flint import acb_mat
     out = {}
@@ -395,13 +304,11 @@ def local_forms(cf, c, x0, s2=None, td=False):
                 acc = term if acc is None else acc + term
             qs.append(acc)
         named.append((f'mt{m}', qs))
-    tag = 'e' if s2 is None else 'j'
     for name, qs in named:
-        if s2 is not None:
-            qs = delta_split(qs, acb(s2))
+        qs = delta_split(qs, acb(s2))
         for e, q in enumerate(qs):
-            parts, rad, absb = (to_td_complex if td else to_dd_complex)(q)
-            out[f'{name}_{tag}{e}'] = parts
-            out[f'{name}_{tag}{e}_rad'] = rad
-            out[f'{name}_{tag}{e}_abs'] = absb
+            parts, rad, absb = to_td_complex(q)
+            out[f'{name}_j{e}'] = parts
+            out[f'{name}_j{e}_rad'] = rad
+            out[f'{name}_j{e}_abs'] = absb
     return out

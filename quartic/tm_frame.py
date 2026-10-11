@@ -6,7 +6,7 @@ Each frame number is the dd rounding of an arb ball, and from then on that dd nu
 the exact definition of the frame. The error of each rounding is bounded from the ball:
 
 * the tangent frame E (dy/dt at p, with E_2 = -p_i^3 / p_2^3) and the unit normal n;
-* c1inv = 1 / (grad P . n) and the constants of `tm_cert.implicit_h` with their errors;
+* c1inv = 1 / (grad P . n) and the td constants of `tm_cert.implicit_h_td` with their errors;
 * vol = 1 / (abs(det U)^2 vbar), U = [E, n], with vbar = 512 pi^4 k0^2 / Gamma(1/4)^8,
   and a bound of its relative error.
 
@@ -91,9 +91,10 @@ def frame(c_dd, k0, prec=PREC):
 
     k0 = None skips vol (the cover needs only the geometry).
 
-    Returns a dict of dd lists (p, e, n, c1inv, vol, ha, a6, a4), the exact acb values
-    of the frame (key 'acb'), the relative error bound vol_err of vol, and h_err =
-    [errors of the three ha, abs(1 - c1inv c1), largest error of a6, of a4].
+    Returns a dict of dd lists (p, e, n, c1inv, vol); the td constants of the map for h
+    (ha_td, a6_td, a4_td, kappa_td) with h_err_td = [errors of the three ha_td, of kappa_td,
+    largest error of a6_td, of a4_td]; the exact acb values of the frame (key 'acb'); and
+    the relative error bound vol_err of vol.
     """
     old = ctx.prec
     ctx.prec = prec
@@ -126,12 +127,7 @@ def frame(c_dd, k0, prec=PREC):
         ha = [c1inv * (sum(c ** 4 for c in p) + 1),
               c1inv * sum(g * x for g, x in zip(grad, e[0])),
               c1inv * sum(g * x for g, x in zip(grad, e[1]))]
-        ha_dd = [to_dd(v) for v in ha]
-        a6 = [to_dd(6 * c ** 2) for c in p]
-        a4 = [to_dd(4 * c) for c in p]
-        h_err = [x[1] for x in ha_dd] + [upper(1 - c1inv * c1), max(x[1] for x in a6),
-                                         max(x[1] for x in a4)]
-        # The same constants in td, and kappa = 1 - c1inv c1, for the td solve of h.
+        # The constants of the td solve of h, with kappa = 1 - c1inv c1.
         ha_td = [to_td(v) for v in ha]
         a6_td = [to_td(6 * c ** 2) for c in p]
         a4_td = [to_td(4 * c) for c in p]
@@ -139,9 +135,7 @@ def frame(c_dd, k0, prec=PREC):
         h_err_td = [x[1] for x in ha_td] + [kap_td[1], max(x[1] for x in a6_td),
                                             max(x[1] for x in a4_td)]
         return dict(p=[list(c_dd[0]), list(c_dd[1]), p2_dd], e=e_dd, n=n_dd, c1inv=c1inv_dd,
-                    vol=vol_dd, vol_err=vol_err, ha=[x[0] for x in ha_dd],
-                    a6=[x[0] for x in a6], a4=[x[0] for x in a4], h_err=h_err,
-                    ha_td=[x[0] for x in ha_td], a6_td=[x[0] for x in a6_td],
+                    vol=vol_dd, vol_err=vol_err, ha_td=[x[0] for x in ha_td], a6_td=[x[0] for x in a6_td],
                     a4_td=[x[0] for x in a4_td], kappa_td=kap_td[0], h_err_td=h_err_td,
                     acb=dict(p=p, e=e, n=n, c1inv=c1inv, y2=y2))
     finally:

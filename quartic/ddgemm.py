@@ -271,20 +271,6 @@ def zgemm_tt(a, b, mode=0, out_td=True):
     return c, err * ERR_SAFE
 
 
-def td_of_dd(x):
-    """A complex dd array (..., 4, r, c) as td (..., 6, r, c): exact, a zero third limb."""
-    shape = x.shape[:-3] + (6,) + x.shape[-2:]
-    out = cp.zeros(shape)
-    out[..., 0, :, :], out[..., 1, :, :] = x[..., 0, :, :], x[..., 1, :, :]
-    out[..., 3, :, :], out[..., 4, :, :] = x[..., 2, :, :], x[..., 3, :, :]
-    return out
-
-
-def tcabs(x):
-    """An upper bound of abs(re) + abs(im) of each entry of a td array (..., 6, r, c)."""
-    return cp.sum(cp.abs(x), axis=-3) * (1.0 + 1e-15)
-
-
 def _kernel(td=False):
     global _MOD
     if _MOD is None:

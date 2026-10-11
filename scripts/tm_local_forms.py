@@ -5,8 +5,8 @@ chart z_3 = 1), the script moves the chart polynomials of the base and of the le
 to t = c, and combines the levels at x0 = p0(c)^(-1/k0) into M~_m (see
 `quartic.tm_forms.local_forms`). All of it is in arb. Each center gives one file
 with the dd parts, the radii and the absolute-value bounds of every matrix, and the
-exact dd numbers c and x0. With --delta, each form is the four R_j of
-`quartic.tm_forms.delta_split`, and the file also holds the exact dd number s2.
+exact dd numbers c, x0 and s2. Each form is the four R_j of
+`quartic.tm_forms.delta_split`, with each entry in td.
 
 The centers come from --points (the export points of the data, moved into F) or from
 a cover of scripts/cert_cover.py (--centers, its ref_centers).
@@ -88,14 +88,13 @@ def one(job):
     x0_dd = dd_of(exact((p0.real.log() * (-arb(1) / G['cf']['k0'])).exp()))
     x0 = from_dd(x0_dd)
     # s2 is a dd number near abs(y2)^2, taken as exact; the GPU forms Delta = abs(y2)^2 - s2.
-    s2_dd = dd_of(exact(acb(abs(y2) ** 2))) if G['delta'] else None
-    s2 = from_dd(s2_dd).real if s2_dd is not None else None
-    out = tm_forms.local_forms(G['cf'], c, x0, s2, td=G['td'])
+    s2_dd = dd_of(exact(acb(abs(y2) ** 2)))
+    s2 = from_dd(s2_dd).real
+    out = tm_forms.local_forms(G['cf'], c, x0, s2)
     out['c'] = np.array([t[0], t[1]])
     out['x0'] = np.array(x0_dd)
-    if s2 is not None:
-        out['s2'] = np.array(s2_dd)
-    out['parts'] = 6 if G['td'] else 4
+    out['s2'] = np.array(s2_dd)
+    out['parts'] = 6
     out['k0'] = G['cf']['k0']
     out['top'] = G['cf']['top']
     np.savez(Path(G['out']) / f'center_{i}.npz', **out)
@@ -118,13 +117,10 @@ def main():
     ap.add_argument('--out', type=str, required=True)
     ap.add_argument('--prec', type=int, default=256)
     ap.add_argument('--procs', type=int, default=4)
-    ap.add_argument('--delta', action='store_true',
-                    help='write each form as R_j in Delta = abs(y2)^2 - s2 (tm_forms.delta_split)')
-    ap.add_argument('--td', action='store_true', help='store three limbs (td) of each entry')
     ap.add_argument('--only', type=int, nargs='*', default=None,
                     help='only these indices of the centers; the files keep the indices')
     args = ap.parse_args()
-    G['prec'], G['out'], G['delta'], G['td'] = args.prec, args.out, args.delta, args.td
+    G['prec'], G['out'] = args.prec, args.out
     Path(args.out).mkdir(parents=True, exist_ok=True)
     flint.ctx.prec = args.prec
     data, forms = np.load(args.data), np.load(args.forms)

@@ -11,11 +11,11 @@ then splits into the cells of half the side that may meet F, each with the radiu
 the bound of abs(h) of cert_cover.box_radius, at most --depth times; cell corners stay
 exact mpmath numbers. Each final box gives one record: the
 lower corner and side of its cell, its radius, the bound of abs(f), the parts of that
-bound, and lam_big, the contraction factor of implicit_h on the ball that holds every
+bound, and lam_big, the contraction factor of implicit_h_td on the ball that holds every
 point of X over the cell. A box that still misses the target at the last depth stays in
 the record with its bound, which then enters the maximum.
 
-Usage, on one GPU node (local forms in Delta and td, tm_local_forms.py --delta --td):
+Usage, on one GPU node:
     uv run --extra gpu --with cupy-cuda12x --with python-flint python -u \\
         scripts/cert_run.py --cover runs_tm/cover_s0.03_c6_v2.npz \\
         --local /n/netscratch/.../tm_local_f6t_td --target 5e-20 --out runs_tm/run_f6t.npz
@@ -80,7 +80,6 @@ def main():
                     help='a box whose bound of abs(f) exceeds this tries --order-high, then splits')
     ap.add_argument('--depth', type=int, default=2)
     ap.add_argument('--batch', type=int, default=64)
-    ap.add_argument('--td', action='store_true', help='td GEMMs for dd local forms')
     ap.add_argument('--grad', action='store_true',
                     help='also bound abs(grad f) on each box (tm_cert.gradient_bounds)')
     ap.add_argument('--grad-target', type=float, default=0.0,
@@ -128,7 +127,7 @@ def main():
             hmaxs = cp.asarray(np.array([b[4] for b in batch]))
             a = settings[order]
             f, (d, _, _), info, parts = tc.box_f(fr, local, deltas, order, order + args.ny_extra,
-                                                 k_max=kmax, a=a, td=args.td, hmax=hmaxs,
+                                                 k_max=kmax, a=a, hmax=hmaxs,
                                                  grad=args.grad)
             sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
             sup, c0, pb, rem, lam_big = (cp.asnumpy(x) for x in (sup, c0, pb, f.rem,

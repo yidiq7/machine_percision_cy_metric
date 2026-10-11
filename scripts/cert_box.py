@@ -2,15 +2,15 @@
 
 Each box has its center at a reference center of `scripts/tm_local_forms.py`, so the
 local forms are those of the box. For each order and radius the script prints the bound
-of abs(f) on the box and the parts of the remainder, as `scripts/tm_ref.py` does.
+of abs(f) on the box and the parts of the remainder.
 
 The checks: the model of p0 at a point of the box against p0 in mpmath from the same
-local forms; and f(c) against --fref (values from tm_box.py or tm_ref.py).
+local forms; and f(c) against --fref (values from tm_box.py).
 
 Usage, on one GPU node:
     uv run --extra gpu --with cupy-cuda12x python -u scripts/cert_box.py \\
-        --local runs_tm/local_r20i --centers 0 1 2 --orders 16 20 24 --ny-extra 6 \\
-        --deltas 0.005 0.01 0.02 0.03 --fref=-3.03e-19,-1.33e-18,-2.23e-19
+        --local /n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td --centers 0 \\
+        --orders 28 --kmax 24 --deltas 0.01 0.02
 """
 import argparse
 import os
@@ -68,19 +68,16 @@ def local_p0(local, y, k0):
     mono = [s[0] ** a * s[1] ** b for a, b in p2.mons]
     monoc = [mp.conj(m) for m in mono]
     total = mp.mpc(0)
-    # Each block e has the factor abs(y_2)^(2e), or Delta^j with Delta = abs(y_2)^2 - s2.
-    if 's2' in local.files:
-        tag, factor = 'j', abs(y[2]) ** 2 - tc.dd_mp(local['s2']).real
-    else:
-        tag, factor = 'e', abs(y[2]) ** 2
+    # Block j has the factor Delta^j, with Delta = abs(y_2)^2 - s2.
+    factor = abs(y[2]) ** 2 - tc.dd_mp(local['s2']).real
     for e in range(4):
-        q = local[f'base_{tag}{e}']
+        q = local[f'base_j{e}']
         part = mp.mpc(0)
         for i in range(p2.size):
             row = mp.mpc(0)
             for j in range(p2.size):
-                v = mp.mpc(mp.mpf(q[0, i, j]) + mp.mpf(q[1, i, j]),
-                           mp.mpf(q[2, i, j]) + mp.mpf(q[3, i, j]))
+                v = mp.mpc(mp.mpf(q[0, i, j]) + mp.mpf(q[1, i, j]) + mp.mpf(q[2, i, j]),
+                           mp.mpf(q[3, i, j]) + mp.mpf(q[4, i, j]) + mp.mpf(q[5, i, j]))
                 row += v * monoc[j]
             part += mono[i] * row
         total += part * factor ** e
@@ -99,8 +96,6 @@ def main():
     ap.add_argument('--repeat', type=int, default=1, help='copies of each box, for the timing')
     ap.add_argument('--a', type=float, nargs='+', default=[0.0],
                     help='the gap fractions of the Cauchy estimate (0: 2 / order)')
-    ap.add_argument('--td', type=int, nargs='+', default=[0],
-                    help='1: the triple-double products for the compositions')
     ap.add_argument('--deltas', type=float, nargs='+', default=[0.005, 0.01, 0.02, 0.03])
     ap.add_argument('--cover', type=str, default='',
                     help='take the boxes from the cells of a cover (with --ref and --ncell)')
@@ -134,14 +129,14 @@ def main():
         deltas = list(args.deltas) * args.repeat
         nb = len(deltas)
         fr = tc.make_frames(centers * args.repeat if args.cover else [cdd] * nb, k0)
-        for n, a, td in [(n, a, td) for n in args.orders for a in args.a for td in args.td]:
-            a, td = a or None, bool(td)
+        for n, a in [(n, a) for n in args.orders for a in args.a]:
+            a = a or None
             if args.repeat > 1:
-                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax, a, td=td, hmax=hmax)
+                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax, a, hmax=hmax)
             cp.cuda.Device().synchronize()
             t0 = time.perf_counter()
             f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, deltas, n,
-                                                      n + args.ny_extra, args.kmax, a, td=td,
+                                                      n + args.ny_extra, args.kmax, a,
                                                       hmax=hmax)
             sup, c0, pb = tc.sup_bound(parts['sp4'], f, d)
             cp.cuda.Device().synchronize()
@@ -151,7 +146,7 @@ def main():
             extra = (f', bound of Delta {float(cp.max(info["bound_delta"])):.2e}'
                      if 'bound_delta' in info else '')
             print(f'center {ci}, order {n} (tau alone {n + args.ny_extra}), a '
-                  f'{a or 2 / n:.3f}, td {td}{extra}: f(c) '
+                  f'{a or 2 / n:.3f}{extra}: f(c) '
                   f'{mp.nstr(fc.real, 11)}{ref}; {sec:.1f}s for {nb} boxes ('
                   + ', '.join(f'{k} {v:.2f}s' for k, v in info['times'].items()) + ')', flush=True)
             # The model of p0 at a point of the smallest box against mpmath.
