@@ -44,16 +44,17 @@ tmgpu/                      the core; imports only numpy, cupy, mpmath, flint an
   tmtd.py                   Taylor models in complex td            <- quartic/tmtd.py
   gemm.py                   batched dd and td matrix products with bounds
                                                                    <- quartic/ddgemm.py
-  host.py                   Arb balls to dd or td with an error bound; exact rationals
-                            and mpmath numbers to and from dd or td
+  host.py                   (CPU only) Arb balls to dd or td with an error bound; exact
+                            rationals and mpmath numbers to and from dd or td
                                                                    <- tm_frame.py, tm_cert.py
-  box.py                    sup_bound, the cache of Space objects, series_order, the
-                            cached power, conj                     <- quartic/tm_cert.py
+  tools.py                  space, sup_bound, series_order, power, conj, and CuPy dd
+                            arrays to and from mpmath (host_dd, gpu_dd) <- tm_cert.py
   tests/
     test_tm.py              <- tests/test_tmc.py
     test_tmtd.py            <- tests/test_tmtd.py
     test_gemm.py            <- tests/test_ddgemm.py
     test_boundary.py        new: tmgpu imports only the modules in the list above
+    test_host.py            new: check_frac_dd and check_lower of tests/test_tm_host.py
 quartic/cert/               the quartic certificate; imports tmgpu
   __init__.py
   frame.py                  the frame of a box and kappa           <- quartic/tm_frame.py
@@ -75,8 +76,8 @@ tests/test_tm_host.py       stays; it tests the quartic host numbers, with new i
 | `quartic/tmtd.py` | `tmgpu/tmtd.py` | all; it takes the dd primitives from `tmgpu.cuda` |
 | `quartic/ddgemm.py` | `tmgpu/gemm.py` | all, except the two unused functions below |
 | `precision`, `exact`, `upper`, `lower`, `to_dd`, `to_td` of `quartic/tm_frame.py` | `tmgpu/host.py` | general ball helpers |
-| `mp_dd`, `dd_mp`, `dd_frac`, `frac_dd`, `_host_dd`, `_to_dd` of `quartic/tm_cert.py` | `tmgpu/host.py` | general conversions |
-| `sup_bound`, `_space`, `_series_order`, `_power`, `conj_tm` of `quartic/tm_cert.py` | `tmgpu/box.py` | general; `series_order` takes `eps` as an argument, and the quartic box passes 1e-34 |
+| `mp_dd`, `dd_mp`, `dd_frac`, `frac_dd` of `quartic/tm_cert.py` | `tmgpu/host.py` | general conversions |
+| `sup_bound`, `_space`, `_series_order`, `_power`, `conj_tm`, `_host_dd`, `_to_dd` of `quartic/tm_cert.py` | `tmgpu/tools.py` | general; `series_order` takes `eps` as an argument, and the quartic box passes 1e-34; `_host_dd` and `_to_dd` become `host_dd` and `gpu_dd` |
 | `frame`, `kappa` of `quartic/tm_frame.py` | `quartic/cert/frame.py` | quartic |
 | `quartic/tm_forms.py` | `quartic/cert/forms.py` | quartic, except the unused functions below |
 | `quartic/tm_cert.py` (the rest) | `quartic/cert/box.py` | quartic, except the removed paths below |
@@ -90,7 +91,8 @@ The plan fixes the exact list of helpers by a check of the call graph.
 |---|---|
 | `ddgemm.td_of_dd`, `ddgemm.tcabs`, `tm_forms.chart_forms`, `tm_forms.save_gpu`, `tm_cert.tm_const`, `tm_cert._bnorm_low` | no code uses them |
 | `quartic/tm_gpu.py`, `scripts/bench_tm_gpu.py`, `tests/test_tm_gpu.py` | the XLA prototype; only its own test and benchmark use it |
-| the dd chain of the box: `implicit_h`, `offset_models`, `monomial_mats`, `compose`, `reexpand`, `delta_form`, `lin_tm`, `p_value`, `_batched_mul`, and each helper that only they use | quartic only; the run uses the td chain |
+| the dd chain of the box: `implicit_h`, `offset_models`, `monomial_mats`, `compose`, `reexpand`, `delta_form`, `_batched_mul`, and each helper that only they use | quartic only; the run uses the td chain |
+| `tm_cert.neg`, `tm_cert.p_value`, `tm_cert.tm_const`; the dd frame constants `ha`, `a6`, `a4`, `h_err` of `tm_frame.frame` and of `Frames` | no code on the td path uses them |
 | the Q_e form of the local forms (tag `e`, `mode_j` false) in the box, in `tm_local_forms.py` and in `cert_box.py` | quartic only; the Delta form replaced it |
 | the option `--td` of `cert_run.py` and `cert_box.py`; the dd and Q_e modes of `tm_local_forms.py`, which then always writes the Delta form in td | they serve only the dd chain |
 | `scripts/tm_ref.py` | quartic only; neither the run nor the checks use it |
@@ -111,6 +113,8 @@ The tag `pre-tmgpu` on 8f0c1e8 keeps every removed path reachable.
   `sys.path`. `cert_check.py` still imports `tm_box` from `scripts/`, because the
   independent reference must not share code with the box.
 * The docstrings name the new modules.
+* `cert_box.py` reads the six parts of the td local forms in its check of p0.
+* `box_f` stops with a clear `ValueError` if the local forms are not in Delta and in td.
 
 ## Not in this work
 
@@ -128,13 +132,14 @@ The tag `pre-tmgpu` on 8f0c1e8 keeps every removed path reachable.
 
 1. **On the laptop:** `python3 -m py_compile` on every changed file; a search for each
    removed name; `tests/test_boundary.py` reads the imports of `tmgpu` as text.
-2. **On a GPU node, before the merge (one job):**
-   * the unit test suites of `tmgpu/tests/` and `tests/`, in one job with a loop over
-     the suites;
-   * `cert_run.py` on 3 reference centers (one at small rho, one near rho = 0.4, one at
-     the largest rho), with `--grad`, at 8f0c1e8 and at the branch, on the same cover
-     and the same td local forms; every column of the records must be equal, bit for bit;
-   * `cert_partition.py` and `cert_local_values.py` on the 3 reference centers, with no
-     change of their result.
-3. **After the merge:** the tag `pre-tmgpu`, a section of `CLAUDE.md` on the new layout,
+2. **On a GPU node, after each task:** the unit tests, the paths of the imported packages,
+   and cert_run.py with --grad on reference center 297, compared bit for bit with the
+   records of main.
+3. **Before the merge:** cert_run.py with --grad on 4 reference centers (0, 243, 297, and
+   the center with the most split cells in run_f6t_v2.npz), bit for bit; the sha256 of
+   the four CUDA sources against main; cert_partition.py --grad on the full run_f6t_v2.npz
+   with the code of main and of the branch, with the same output; cert_check.py with
+   --points 300 --dropped 300 on the branch. cert_local_values.py imports no moved code,
+   so it is not part of the test.
+4. **After the merge:** the tag `pre-tmgpu`, a section of `CLAUDE.md` on the new layout,
    and a pull on the cluster when no certificate job runs.
