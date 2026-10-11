@@ -1,8 +1,10 @@
 """The CUDA source of the dd primitives, and the compiler options of every tmgpu kernel.
 
-two_sum and quick_two_sum are exact; the bounds of dd_add and dd_mul are in the docstring
-of `tmgpu.tm`. --fmad=false keeps the compiler from a merge of a product and a sum into
-one FMA, which would change the error term that two_sum computes.
+two_sum is exact for all inputs, and quick_two_sum is exact when abs(a) >= abs(b); the
+bounds of dd_add and dd_mul are in the docstring of `tmgpu.tm`. The primitives use only the
+intrinsics __dadd_rn, __dsub_rn, __dmul_rn and __fma_rn, which the compiler never merges.
+--fmad=false keeps the plain products and sums of the kernels, for example in the running
+error bounds of `tmgpu.tmtd`, from a merge into FMAs, so each one rounds as written.
 """
 import cupy as cp
 

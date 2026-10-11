@@ -180,19 +180,15 @@ def local_on_gpu(path):
     return out
 
 
-def form_abs(mats, q_abs, bdl=None):
-    """A bound of a form on the polydisc from abs(Q): the sum of full^T abs(Q) full over e.
-
-    With bdl (the bound of Delta), the blocks are the R_j and block j has the factor bdl^j.
-    """
+def form_abs(mats, q_abs, bdl):
+    """A bound of a form on the polydisc from abs(R_j): the sum over the blocks j of
+    bdl^j full^T abs(R_j) full, with bdl the bound of Delta."""
+    _, b_low, b_high, r = mats[0][:4]
     out = None
     for e in range(4):
-        _, b_low, b_high, r = mats[0 if bdl is not None else e][:4]
         n = q_abs[e].shape[-1]
         full = (b_low + b_high + r)[:n]
-        v = cp.einsum('ab,bac,cb->b', full, q_abs[e], full)
-        if bdl is not None:
-            v = v * bdl ** e
+        v = cp.einsum('ab,bac,cb->b', full, q_abs[e], full) * bdl ** e
         out = v if out is None else out + v
     return out * SAFE
 

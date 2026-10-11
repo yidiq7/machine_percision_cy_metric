@@ -1,8 +1,9 @@
 """Compare two record files of scripts/cert_run.py, column by column.
 
 For each column the script prints the largest absolute difference and the largest
-difference relative to abs(A). Two NaN in the same place count as equal. With --exact the
-exit status is 0 only if the targets and every column agree bit for bit.
+difference relative to abs(A). Equal means the same bits: -0.0 differs from +0.0, and two
+NaN are equal only with the same bits. With --exact the exit status is 0 only if the
+targets and every column agree bit for bit.
 
 Usage:
     uv run --extra gpu python scripts/cert_compare.py A.npz B.npz --exact
@@ -15,7 +16,7 @@ import numpy as np
 
 def compare(a, b):
     """The column names, and for each column (name, largest absolute difference, largest
-    relative difference, equal bit for bit with NaN equal to NaN)."""
+    relative difference, equal bit for bit)."""
     ra, rb = a['records'], b['records']
     cols = [str(c) for c in a['columns']]
     if [str(c) for c in b['columns']] != cols:
@@ -29,7 +30,9 @@ def compare(a, b):
         diff = np.abs(x[both] - y[both])
         rel = diff / np.maximum(np.abs(x[both]), 1e-300)
         rows.append((name, float(diff.max(initial=0.0)), float(rel.max(initial=0.0)),
-                     bool(np.array_equal(x, y, equal_nan=True))))
+                     bool(x.dtype == y.dtype and np.array_equal(
+                         np.ascontiguousarray(x).view(np.uint8),
+                         np.ascontiguousarray(y).view(np.uint8)))))
     return cols, rows
 
 
