@@ -3,11 +3,11 @@
 C[b] = A[b] B[b] (mode 0) or C[b] = A[b] B[b]^H (mode 1). Each array is (nb, 4, rows,
 cols) with the parts re_hi, re_lo, im_hi, im_lo; nb = 1 for B means one B for all.
 Each thread computes one entry of C in a tile of 16 by 16, from tiles of A and B in
-shared memory, with the dd operations of `quartic.tmc` (__dadd_rn, __fma_rn,
+shared memory, with the dd operations of `tmgpu.tm` (__dadd_rn, __fma_rn,
 --fmad=false).
 
 **The bound.** An entry is a sum of K complex products, and each part (re or im) is a
-sum of 2K dd products. With 7 u^2 for each product (`quartic.tmc`), 3.1 u^2 of the
+sum of 2K dd products. With 7 u^2 for each product (`tmgpu.tm`), 3.1 u^2 of the
 partial sum for each sum and an exact first sum, abs(error) <= (3.1 (2K - 1) + 7) u^2
 (abs(A) abs(B))_ij = (6.2 K + 3.9) u^2 (abs(A) abs(B))_ij, with abs = abs(re) + abs(im).
 `gamma(K)` returns (6.2 K + 6) u^2, which also holds the terms of order K^2 u^3.
@@ -27,13 +27,14 @@ from __future__ import annotations
 import numpy as np
 import cupy as cp
 
-from .tmc import _SRC as _DD_SRC
+from .cuda import DD_PRIMITIVES, module
+from .tmtd import ERR_SAFE, TD_SRC
 
 U2 = 2.0 ** -106
 U3 = 2.0 ** -159
 TILE = 16
 
-_SRC = _DD_SRC.split('// Z[k] = sum over t')[0] + r'''
+_SRC = DD_PRIMITIVES + r'''
 #define TILE 16
 // C[b] = A[b] op(B[b]); A (nb, 4, M, K); B (nbB, 4, K, N) for mode 0 or (nbB, 4, N, K) for
 // mode 1 (conjugate transpose); C (nb, 4, M, N).
@@ -250,8 +251,7 @@ def zgemm_tt(a, b, mode=0, out_td=True):
     error of each entry of C (abs re + abs im), from the running bound of the kernel."""
     global _TT_MOD
     if _TT_MOD is None:
-        from .tmtd import TD_SRC
-        _TT_MOD = cp.RawModule(code=TD_SRC + _TT_SRC, options=('--fmad=false', '-std=c++14'))
+        _TT_MOD = module(TD_SRC + _TT_SRC)
     nb, _, m, k = a.shape
     if mode == 0:
         nbb, _, kb, n = b.shape
@@ -267,14 +267,13 @@ def zgemm_tt(a, b, mode=0, out_td=True):
         grid, (TILE, TILE), (cp.ascontiguousarray(a), cp.ascontiguousarray(b), c, err,
                              np.int32(m), np.int32(n), np.int32(k), np.int32(stride),
                              np.int32(mode), np.int32(1 if out_td else 0)))
-    from .tmtd import ERR_SAFE
     return c, err * ERR_SAFE
 
 
 def _kernel(td=False):
     global _MOD
     if _MOD is None:
-        _MOD = cp.RawModule(code=_SRC, options=('--fmad=false', '-std=c++14'))
+        _MOD = module(_SRC)
     return _MOD.get_function('zgemm_td' if td else 'zgemm_dd')
 
 

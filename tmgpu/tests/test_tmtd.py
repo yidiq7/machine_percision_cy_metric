@@ -1,7 +1,7 @@
-"""Test of `quartic.tmtd` and `ddgemm.zgemm_tt` against mpmath: every coefficient of a
+"""Test of `tmgpu.tmtd` and `gemm.zgemm_tt` against mpmath: every coefficient of a
 product, a sum, a scaled model and every GEMM entry lies within its running error bound.
 
-Run on a GPU node: uv run --extra gpu --with cupy-cuda12x python -m tests.test_tmtd
+Run on a GPU node: uv run --extra gpu --with cupy-cuda12x python -m tmgpu.tests.test_tmtd
 """
 import sys
 from pathlib import Path
@@ -10,9 +10,9 @@ import mpmath as mp
 import numpy as np
 import cupy as cp
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from quartic import tmc, tmtd, ddgemm                       # noqa: E402
+from tmgpu import tm, tmtd, gemm                       # noqa: E402
 
 mp.mp.dps = 80
 RNG = np.random.default_rng(11)
@@ -40,7 +40,7 @@ def absdiff(a, b):
 
 
 def check_tm_ops():
-    sp = tmc.Space(2, 8)
+    sp = tm.Space(2, 8)
     b = 3
     delta = cp.full(b, 1.0)          # with delta = 1 each coefficient error is at most rem
     x = tmtd.TMT(cp.asarray(random_td((sp.size, b))), cp.zeros(b), delta)
@@ -107,7 +107,7 @@ def check_gemm(mode, out_td, cancel):
         noise = np.moveaxis(random_td(bshape, 1e-17), 0, 1)
         bm = np.concatenate([bm, -bm + noise], axis=-2 if mode == 0 else -1)
         k = 2 * k
-    c, err = ddgemm.zgemm_tt(cp.asarray(a), cp.asarray(bm), mode, out_td)
+    c, err = gemm.zgemm_tt(cp.asarray(a), cp.asarray(bm), mode, out_td)
     c, err = cp.asnumpy(c), cp.asnumpy(err)
     worst, rel = 0.0, 0.0
     for bi in range(nb):

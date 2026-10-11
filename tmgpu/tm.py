@@ -43,37 +43,13 @@ from fractions import Fraction
 import numpy as np
 import cupy as cp
 
+from .cuda import DD_PRIMITIVES, module
+
 U2 = 2.0 ** -106
 SAFE = 1.0 + 1e-9
 TINY = 1e-290
 
-_SRC = r'''
-__device__ __forceinline__ void two_sum(double a, double b, double &s, double &e) {
-    s = __dadd_rn(a, b);
-    double bb = __dsub_rn(s, a);
-    e = __dadd_rn(__dsub_rn(a, __dsub_rn(s, bb)), __dsub_rn(b, bb));
-}
-__device__ __forceinline__ void quick_two_sum(double a, double b, double &s, double &e) {
-    s = __dadd_rn(a, b);
-    e = __dsub_rn(b, __dsub_rn(s, a));
-}
-__device__ __forceinline__ void dd_add(double ah, double al, double bh, double bl,
-                                       double &sh, double &sl) {
-    double s1, s2, t1, t2;
-    two_sum(ah, bh, s1, s2);
-    two_sum(al, bl, t1, t2);
-    two_sum(s1, __dadd_rn(s2, t1), s1, s2);
-    two_sum(s1, __dadd_rn(s2, t2), sh, sl);
-}
-__device__ __forceinline__ void dd_mul(double ah, double al, double bh, double bl,
-                                       double &ph, double &pl) {
-    double p = __dmul_rn(ah, bh);
-    double e = __fma_rn(ah, bh, -p);
-    double t = __fma_rn(al, bl, __dmul_rn(ah, bl));
-    t = __fma_rn(al, bh, t);
-    quick_two_sum(p, __dadd_rn(e, t), ph, pl);
-}
-// Z[k] = sum over t of X[I[t]] Y[J[t]], t in [start[k], start[k] + cnt[k]); arrays (4, S, B).
+_SRC = DD_PRIMITIVES + r'''// Z[k] = sum over t of X[I[t]] Y[J[t]], t in [start[k], start[k] + cnt[k]); arrays (4, S, B).
 extern "C" __global__ void tm_mul(const double* __restrict__ X, const double* __restrict__ Y,
                                   const int* __restrict__ start, const int* __restrict__ cnt,
                                   const int* __restrict__ I, const int* __restrict__ J,
@@ -154,7 +130,7 @@ _MOD = None
 def _kernels():
     global _MOD
     if _MOD is None:
-        _MOD = cp.RawModule(code=_SRC, options=('--fmad=false', '-std=c++14'))
+        _MOD = module(_SRC)
     return _MOD
 
 

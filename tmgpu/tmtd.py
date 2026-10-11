@@ -2,7 +2,7 @@
 
 A td number is three FP64 limbs x0 + x1 + x2. A batch of models has coefficients c of
 shape (6, S, B): re0, re1, re2, im0, im1, im2. The polynomial part is the exact data and
-every rounding goes into the remainder, as in `quartic.tmc`.
+every rounding goes into the remainder, as in `tmgpu.tm`.
 
 **Arithmetic.** A product accumulates into three levels A0 + A1 + A2 (`acc_tt`): the
 products of the high limbs split exactly by FMA, the sums into A0 and A1 are two_sum, and
@@ -15,7 +15,7 @@ term, summed as it runs and multiplied by ERR_SAFE at the end. This holds for li
 order, so no normalization of the inputs is assumed. The FP64 sum of N error terms rounds
 by at most N u of itself; ERR_SAFE = 1 + 1e-9 covers N up to 9e6, and the largest N here
 is about 2e4 (a GEMM of inner dimension 325, with 52 terms for each inner index).
-Underflow adds TINY through `tmc.poly_bound_g`, as in `quartic.tmc`.
+Underflow adds TINY through `tm.poly_bound_g`, as in `tmgpu.tm`.
 """
 from __future__ import annotations
 
@@ -24,14 +24,15 @@ from dataclasses import dataclass
 import numpy as np
 import cupy as cp
 
-from . import tmc
-from .tmc import _SRC as _DD_SRC, SAFE
+from . import tm
+from .cuda import DD_PRIMITIVES, module
+from .tm import SAFE
 
 U = 2.0 ** -53
-U2 = tmc.U2
+U2 = tm.U2
 ERR_SAFE = 1.0 + 1e-9
 
-TD_SRC = _DD_SRC.split('// Z[k] = sum over t')[0] + r'''
+TD_SRC = DD_PRIMITIVES + r'''
 #define UNIT 1.1102230246251565e-16
 // A0 + A1 + A2 += (a0 + a1 + a2)(b0 + b1 + b2), and E += a bound of the error of this step.
 __device__ __forceinline__ void acc_tt(double &A0, double &A1, double &A2, double &E,
@@ -156,7 +157,7 @@ _MOD = None
 def _kernels():
     global _MOD
     if _MOD is None:
-        _MOD = cp.RawModule(code=TD_SRC, options=('--fmad=false', '-std=c++14'))
+        _MOD = module(TD_SRC)
     return _MOD
 
 
@@ -178,7 +179,7 @@ def graded(sp, x):
 
 
 def poly_bound(sp, x, delta=None):
-    return tmc.poly_bound_g(graded(sp, x), x.delta if delta is None else delta)
+    return tm.poly_bound_g(graded(sp, x), x.delta if delta is None else delta)
 
 
 def bound(sp, x):
@@ -188,11 +189,11 @@ def bound(sp, x):
 def err_bound(sp, err, delta):
     """sum over the coefficients of err * delta^deg, for err (S, B)."""
     g = (sp.onehot.T @ err) * SAFE
-    return tmc.poly_bound_g(g, delta)
+    return tm.poly_bound_g(g, delta)
 
 
 def from_dd(x):
-    """A dd model of `quartic.tmc` as a td model: exact, with a zero third limb."""
+    """A dd model of `tmgpu.tm` as a td model: exact, with a zero third limb."""
     _, s, b = x.c.shape
     c = cp.zeros((6, s, b))
     c[0], c[1], c[3], c[4] = x.c[0], x.c[1], x.c[2], x.c[3]
@@ -211,11 +212,11 @@ def to_dd(sp, x):
     c = cp.empty((4,) + x.c.shape[1:])
     c[0], c[1], c[2], c[3] = s[0], err[0], s[1], err[1]
     e = cp.sum(cp.abs(lo), axis=0) * U * (1 + 1e-12)
-    return tmc.TM(cp.ascontiguousarray(c), (x.rem + err_bound(sp, e, x.delta)) * SAFE, x.delta)
+    return tm.TM(cp.ascontiguousarray(c), (x.rem + err_bound(sp, e, x.delta)) * SAFE, x.delta)
 
 
 def tconst(z, b):
-    """A td constant (6, b) from a dd constant (4, b) of tmc: exact."""
+    """A td constant (6, b) from a dd constant (4, b) of tmgpu.tm: exact."""
     out = cp.zeros((6, b))
     out[0], out[1], out[3], out[4] = z[0], z[1], z[2], z[3]
     return out
@@ -285,8 +286,8 @@ def mul(sp, x, y, threads=64, return_err=False):
         (cp.ascontiguousarray(x.c), cp.ascontiguousarray(y.c), start, cnt, ii, jj, z, err,
          np.int32(s), np.int32(b)))
     gx, gy = graded(sp, x), graded(sp, y)
-    bx, by = tmc.poly_bound_g(gx, x.delta), tmc.poly_bound_g(gy, x.delta)
-    rem = (tmc.tail_g(gx, gy, x.delta, sp.n) + bx * y.rem + x.rem * by + x.rem * y.rem
+    bx, by = tm.poly_bound_g(gx, x.delta), tm.poly_bound_g(gy, x.delta)
+    rem = (tm.tail_g(gx, gy, x.delta, sp.n) + bx * y.rem + x.rem * by + x.rem * y.rem
            + err_bound(sp, err * ERR_SAFE, x.delta)) * SAFE
     if return_err:
         return TMT(z, rem, x.delta), err * ERR_SAFE

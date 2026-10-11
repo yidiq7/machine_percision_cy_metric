@@ -20,8 +20,8 @@ Delta = abs(y_2)^2 - s2.
    local forms; F_k for k > K enter only through a bound.
 6. Phi = log p0 + psi, g = d_tau d_sigma Phi (Cauchy), det g, v, f = v / vbar - 1.
 
-Every round-off of the GPU goes into a remainder by the bounds of `quartic.tmc`,
-`quartic.tmtd` and `quartic.ddgemm`.
+Every round-off of the GPU goes into a remainder by the bounds of `tmgpu.tm`,
+`tmgpu.tmtd` and `tmgpu.gemm`.
 """
 from __future__ import annotations
 
@@ -33,11 +33,11 @@ import numpy as np
 import cupy as cp
 import mpmath as mp
 
-from . import tmc, tmtd, ddgemm
+from tmgpu import tm, tmtd, gemm
 
-U2 = tmc.U2
-SAFE = tmc.SAFE
-TINY = tmc.TINY
+U2 = tm.U2
+SAFE = tm.SAFE
+TINY = tm.TINY
 # Every host number that enters a bound comes from exact rationals (dd_frac, frac_dd) or
 # from ball arithmetic (quartic.tm_frame), so no bound depends on the precision of mpmath.
 # mpmath only picks free numbers (s_r, s_p, zeta); each is rounded to dd and then exact.
@@ -119,11 +119,11 @@ def make_frames(centers, k0):
 
 def lin_tm(sp, p, e0, e1, delta):
     """p + e0 tau_0 + e1 tau_1 with dd numbers (4, B): exact, with no rounding."""
-    c = tmc.zeros(sp, delta.shape[0])
+    c = tm.zeros(sp, delta.shape[0])
     c[:, 0, :] = p
     c[:, sp.index[(1, 0)], :] = e0
     c[:, sp.index[(0, 1)], :] = e1
-    return tmc.TM(c, cp.zeros_like(delta), delta)
+    return tm.TM(c, cp.zeros_like(delta), delta)
 
 
 def offset_consts(fr, ref, limbs=2):
@@ -143,7 +143,7 @@ def offset_consts(fr, ref, limbs=2):
 def conj_tm(x):
     c = x.c.copy()
     c[2:] = -c[2:]
-    return tmc.TM(c, x.rem.copy(), x.delta)
+    return tm.TM(c, x.rem.copy(), x.delta)
 
 
 def mats_at(mats, sp_k):
@@ -159,17 +159,17 @@ def mats_at(mats, sp_k):
 
 
 def _from_bidegree(sp4, sp_low, w, rem, delta, tail_done=False):
-    rows, cols = tmc.split_index(sp4, sp_low)
+    rows, cols = tm.split_index(sp4, sp_low)
     rows, cols = cp.asarray(rows), cp.asarray(cols)
     c = cp.moveaxis(w[:, :, rows, cols], 0, -1)                # (4, S4, B)
     if tail_done:
-        return tmc.TM(cp.ascontiguousarray(c), rem * SAFE, delta)
-    a = ddgemm.cabs(w)
+        return tm.TM(cp.ascontiguousarray(c), rem * SAFE, delta)
+    a = gemm.cabs(w)
     d = sp_low.deg
     mask = cp.asarray(((d[:, None] + d[None, :]) > sp4.n).astype(np.float64))
     dd = cp.asarray(d[:, None] + d[None, :])
     tail = cp.sum(a * mask[None] * delta[:, None, None] ** dd[None], axis=(1, 2)) * SAFE
-    return tmc.TM(cp.ascontiguousarray(c), (rem + tail) * SAFE, delta)
+    return tm.TM(cp.ascontiguousarray(c), (rem + tail) * SAFE, delta)
 
 
 def reexpand_weights(zeta_dd, k_max, top, limbs=2):
@@ -235,8 +235,8 @@ def _to_dd(vals):
 def _power(sp, x, m, cache):
     if m not in cache:
         half = _power(sp, x, m // 2, cache)
-        cache[m] = (tmc.mul(sp, half, half) if m % 2 == 0
-                    else tmc.mul(sp, _power(sp, x, m - 1, cache), x))
+        cache[m] = (tm.mul(sp, half, half) if m % 2 == 0
+                    else tm.mul(sp, _power(sp, x, m - 1, cache), x))
     return cache[m]
 
 
@@ -293,15 +293,15 @@ def delta_model(sp4, sp2, fr, v, local, delta):
     """
     b = delta.shape[0]
     d0, err = delta_const(fr, np.asarray(local['s2']))
-    one = tmc.const(sp2, tmc.cconst(1, b), delta)
+    one = tm.const(sp2, tm.cconst(1, b), delta)
     vc = conj_tm(v)
     p2c = fr.p[2].copy()
     p2c[2:] = -p2c[2:]
-    t1 = tmc.tensor(sp4, sp2, tmc.scale(sp2, v, p2c), one)
-    t2 = tmc.tensor(sp4, sp2, one, tmc.scale(sp2, vc, fr.p[2]))
-    t3 = tmc.tensor(sp4, sp2, v, vc)
-    x = tmc.add_const(sp4, tmc.add(sp4, tmc.add(sp4, t1, t2), t3), d0)
-    return tmc.TM(x.c, (x.rem + err) * SAFE, x.delta)
+    t1 = tm.tensor(sp4, sp2, tm.scale(sp2, v, p2c), one)
+    t2 = tm.tensor(sp4, sp2, one, tm.scale(sp2, vc, fr.p[2]))
+    t3 = tm.tensor(sp4, sp2, v, vc)
+    x = tm.add_const(sp4, tm.add(sp4, tm.add(sp4, t1, t2), t3), d0)
+    return tm.TM(x.c, (x.rem + err) * SAFE, x.delta)
 
 
 # ---- h, the offsets, the monomials, the re-expansion and the compositions run in td: near
@@ -358,22 +358,22 @@ def implicit_h_td(sp, fr, delta, hmax=None):
         h = tmtd.TMT(h.c, cp.zeros(b), delta)
     th, ws = t_map(h)
     bw = [tmtd.bound(sp, w) for w in ws]
-    iabs = tmc.abs_ub(fr.c1inv[:, None, :])[0]
+    iabs = tm.abs_ub(fr.c1inv[:, None, :])[0]
     he = fr.h_err_td
     eps = (he[0] + (he[1] + he[2]) * delta + he[3] * tmtd.bound(sp, h)
            + iabs * sum(he[4] * x ** 2 + he[5] * x ** 3 for x in bw)) * SAFE
     bd = (tmtd.bound(sp, tmtd.sub(sp, th, h)) + eps) * SAFE
     h_dd = tmtd.to_dd(sp, h)
     lin = [lin_tm(sp, fr.p[k], fr.e[0, k], fr.e[1, k], delta) for k in range(3)]
-    ys = [tmc.add(sp, lin[k], tmc.scale(sp, h_dd, fr.n[k])) for k in range(3)]
+    ys = [tm.add(sp, lin[k], tm.scale(sp, h_dd, fr.n[k])) for k in range(3)]
     dp = None
     for k in range(3):
-        cube = tmc.mul(sp, tmc.mul(sp, ys[k], ys[k]), ys[k])
-        term = tmc.scale(sp, cube, 4 * fr.n[k])
-        dp = term if dp is None else tmc.add(sp, dp, term)
-    lam0 = tmc.bound(sp, tmc.add_const(sp, tmc.scale(sp, dp, -fr.c1inv), tmc.cconst(1, b)))
-    by = [tmc.bound(sp, y) for y in ys]
-    nabs = [tmc.abs_ub(fr.n[k][:, None, :])[0] for k in range(3)]
+        cube = tm.mul(sp, tm.mul(sp, ys[k], ys[k]), ys[k])
+        term = tm.scale(sp, cube, 4 * fr.n[k])
+        dp = term if dp is None else tm.add(sp, dp, term)
+    lam0 = tm.bound(sp, tm.add_const(sp, tm.scale(sp, dp, -fr.c1inv), tm.cconst(1, b)))
+    by = [tm.bound(sp, y) for y in ys]
+    nabs = [tm.abs_ub(fr.n[k][:, None, :])[0] for k in range(3)]
     ok = lam0 < 1
     r = cp.where(ok, 2 * bd / cp.where(ok, 1 - lam0, 1.0), cp.inf) * SAFE
     second = sum(12 * nabs[k] ** 2 * (by[k] + r * nabs[k]) ** 2 for k in range(3))
@@ -382,13 +382,13 @@ def implicit_h_td(sp, fr, delta, hmax=None):
     rho = cp.where(good, r, cp.inf)
     lam_big = cp.full(b, cp.nan)
     if hmax is not None:
-        big = (cp.asarray(hmax) + tmc.bound(sp, h_dd) + r) * SAFE
+        big = (cp.asarray(hmax) + tm.bound(sp, h_dd) + r) * SAFE
         second_big = sum(12 * nabs[k] ** 2 * (by[k] + big * nabs[k]) ** 2 for k in range(3))
         lam_big = (lam0 + big * second_big * iabs) * SAFE
         rho = cp.where(lam_big < 1, rho, cp.inf)
     h_td = tmtd.TMT(h.c, rho, delta)
-    h_dd = tmc.TM(h_dd.c, (h_dd.rem + rho) * SAFE, delta)
-    ys = [tmc.add(sp, lin[k], tmc.scale(sp, h_dd, fr.n[k])) for k in range(3)]
+    h_dd = tm.TM(h_dd.c, (h_dd.rem + rho) * SAFE, delta)
+    ys = [tm.add(sp, lin[k], tm.scale(sp, h_dd, fr.n[k])) for k in range(3)]
     return ys, rho, lam, h_td, h_dd, lam_big
 
 
@@ -405,8 +405,8 @@ def offset_models_td(sp, fr, h_td, h_dd, ref, delta):
                                  tmtd.tconst(fr.e[1, i], b), delta),
                      tmtd.scale(sp, h_td, tmtd.tconst(fr.n[i], b)))
         out.append(tmtd.TMT(x.c, (x.rem + err) * SAFE, x.delta))
-    v = tmc.add(sp, lin_tm(sp, cp.zeros((4, b)), fr.e[0, 2], fr.e[1, 2], delta),
-                tmc.scale(sp, h_dd, fr.n[2]))
+    v = tm.add(sp, lin_tm(sp, cp.zeros((4, b)), fr.e[0, 2], fr.e[1, 2], delta),
+                tm.scale(sp, h_dd, fr.n[2]))
     return out, v
 
 
@@ -464,7 +464,7 @@ def reexpand_td(local, zeta_dd, k_max, top):
 
     For each j this is one product of the td weights of `reexpand_weights` with the stacked
     td local forms. The error of the product has the bound that the kernel of
-    `ddgemm.zgemm_tt` sums as it runs. With w the weights and M the
+    `gemm.zgemm_tt` sums as it runs. With w the weights and M the
     stored forms, w M - w_true M_true = (w - w_true) M + w_true (M - M_true), and the
     modulus bound of M_true also bounds the stored M (its td rounding of the midpoint),
     so rad = wa mr + we ma + qerr needs no term we mr."""
@@ -475,7 +475,7 @@ def reexpand_td(local, zeta_dd, k_max, top):
     for e in range(4):
         n = local[f'mt0_j{e}'].shape[-1]
         mt = cp.stack([local[f'mt{m}_j{e}'].reshape(6, n * n) for m in range(nm)], axis=1)
-        q, qerr = ddgemm.zgemm_tt(wd, mt[None], mode=0, out_td=True)  # (B, 6, K+1, n*n)
+        q, qerr = gemm.zgemm_tt(wd, mt[None], mode=0, out_td=True)  # (B, 6, K+1, n*n)
         ma = cp.stack([local[f'mt{m}_j{e}_abs'].reshape(n * n) for m in range(nm)])
         mr = cp.stack([local[f'mt{m}_j{e}_rad'].reshape(n * n) for m in range(nm)])
         absq = cp.matmul(wa, ma) * SAFE
@@ -507,8 +507,8 @@ def compose_td(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     y, b_low, b_high, r = mats[0][:4]
     y = cp.ascontiguousarray(y[:, :, :, :n])
     b_low, b_high, r = b_low[:n], b_high[:n], r[:n]
-    t, terr = ddgemm.zgemm_tt(y, q, mode=0, out_td=True)
-    w, werr = ddgemm.zgemm_tt(t, y, mode=1, out_td=False)
+    t, terr = gemm.zgemm_tt(y, q, mode=0, out_td=True)
+    w, werr = gemm.zgemm_tt(t, y, mode=1, out_td=False)
     del t
     pw = delta[:, None] ** cp.asarray(sp_low.deg)[None, :]   # (B, low)
     rnd = (cp.einsum('bi,bic,cb->b', pw, terr, b_low) + cp.einsum('bi,bij,bj->b', pw, werr, pw)) * SAFE
@@ -534,7 +534,7 @@ def delta_form_td(sp4, sp_low, mats, q, q_rad, q_abs, delta, dl, bdl):
     ws = [compose_td(sp4, sp_low, mats, q[j], q_rad[j], q_abs[j], delta) for j in range(4)]
     s = ws[3]
     for j in (2, 1, 0):
-        s = tmc.add(sp4, ws[j], tmc.mul(sp4, dl, s))
+        s = tm.add(sp4, ws[j], tm.mul(sp4, dl, s))
     s.parts = {key: sum(ws[j].parts[key] * bdl ** j for j in range(4)) for key in ws[0].parts}
     return s
 
@@ -573,13 +573,13 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     clock('h')
     mats = monomial_mats_td(sp2, sp_low, base_t, top)
     dls = {n: delta_model(sp4, sp2, fr, v2, local, d_phi)}
-    bdl = tmc.bound(sp4, dls[n])
+    bdl = tm.bound(sp4, dls[n])
     info['bound_delta'] = bdl
     clock('monomials')
 
     def form(sp4k, splk, mk, q, rr, aa):
         if sp4k.n not in dls:
-            dls[sp4k.n] = tmc.truncate(sp4k, sp4, dls[n])
+            dls[sp4k.n] = tm.truncate(sp4k, sp4, dls[n])
         return delta_form_td(sp4k, splk, mk, q, rr, aa, d_phi, dls[sp4k.n], bdl)
 
     # The base and abs(y)^2.
@@ -587,34 +587,34 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     rb = [local[f'base_j{e}_rad'][None] for e in range(4)]
     ab = [local[f'base_j{e}_abs'][None] for e in range(4)]
     p0 = form(sp4, sp_low, mats, qb, rb, ab)
-    one = tmc.cconst(1, b)
-    r2 = tmc.const(sp4, one, d_phi)
+    one = tm.cconst(1, b)
+    r2 = tm.const(sp4, one, d_phi)
     for k in range(3):
-        r2 = tmc.add(sp4, r2, tmc.tensor(sp4, sp2, ys[k], yc[k]))
+        r2 = tm.add(sp4, r2, tm.tensor(sp4, sp2, ys[k], yc[k]))
     # With any exact s, 1/r2 = s (1 + yr)^-1 and log r2 = log(1 + yr) - log s, yr = s r2 - 1.
     s_r = _to_dd([1 / v for v in _host_dd(r2.c[:, 0, :])])
-    yr = tmc.add_const(sp4, tmc.scale(sp4, r2, s_r), -one)
-    eta_r = tmc.bound(sp4, yr)
-    pw_r = tmc.powers(sp4, yr, _series_order(eta_r, n))
-    ir2 = tmc.scale(sp4, tmc.power_series(sp4, pw_r, -1, eta_r), s_r)
-    log_r2 = tmc.log1p_series(sp4, pw_r, eta_r)
+    yr = tm.add_const(sp4, tm.scale(sp4, r2, s_r), -one)
+    eta_r = tm.bound(sp4, yr)
+    pw_r = tm.powers(sp4, yr, _series_order(eta_r, n))
+    ir2 = tm.scale(sp4, tm.power_series(sp4, pw_r, -1, eta_r), s_r)
+    log_r2 = tm.log1p_series(sp4, pw_r, eta_r)
     cache = {1: ir2}
-    pt = tmc.mul(sp4, p0, _power(sp4, ir2, k0, cache))
+    pt = tm.mul(sp4, p0, _power(sp4, ir2, k0, cache))
     # A real s_p, so that p~^(-1/k0) = xh s_p^(1/k0) holds with the real root below.
     s_p = _to_dd([mp.mpc(1 / v.real) for v in _host_dd(pt.c[:, 0, :])])
-    yp = tmc.add_const(sp4, tmc.scale(sp4, pt, s_p), -one)
-    eta_p = tmc.bound(sp4, yp)
-    pw_p = tmc.powers(sp4, yp, _series_order(eta_p, n))
-    xh = tmc.power_series(sp4, pw_p, Fraction(-1, k0), eta_p)
-    log_pt = tmc.log1p_series(sp4, pw_p, eta_p)
-    info.update(eta_r=eta_r, eta_p=eta_p, rem_p0=p0.rem / tmc.abs_ub(p0.c[:, :1, :])[0],
+    yp = tm.add_const(sp4, tm.scale(sp4, pt, s_p), -one)
+    eta_p = tm.bound(sp4, yp)
+    pw_p = tm.powers(sp4, yp, _series_order(eta_p, n))
+    xh = tm.power_series(sp4, pw_p, Fraction(-1, k0), eta_p)
+    log_pt = tm.log1p_series(sp4, pw_p, eta_p)
+    info.update(eta_r=eta_r, eta_p=eta_p, rem_p0=p0.rem / tm.abs_ub(p0.c[:, :1, :])[0],
                 parts_p0=p0.parts)
 
     # x = r2^-1 p~^(-1/k0) = ir2 xh s_p^(1/k0); x_c = x0 (1 + zeta) with an exact dd zeta.
     x0 = dd_mp(np.asarray(local['x0']))
     sp_host = _host_dd(s_p)
     xc_raw = [v.real ** (mp.mpf(1) / k0) * w for v, w in
-              zip(sp_host, _host_dd(tmc.mul(sp4, ir2, xh).c[:, 0, :]))]
+              zip(sp_host, _host_dd(tm.mul(sp4, ir2, xh).c[:, 0, :]))]
     # zeta is a free dd number near x_c / x0 - 1; from here on its dd value is exact, and
     # kappa and the weights of the re-expansion both take that value in ball arithmetic.
     zeta = [mp_dd(x / x0 - 1) for x in xc_raw]
@@ -625,10 +625,10 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     kap = [_kappa(list(sp_dd[:, i]), k0, x0_dd, z) for i, z in enumerate(zeta)]
     kappa_dd = cp.asarray(np.array([k[0] for k in kap]).T)
     kap_err = cp.asarray(np.array([k[1] for k in kap]) * (1 + 1e-9) + 1e-300)
-    xw = tmc.mul(sp4, ir2, xh)
-    xi = tmc.add_const(sp4, tmc.scale(sp4, xw, kappa_dd), -one)
-    xi.rem = (xi.rem + kap_err * tmc.bound(sp4, xw)) * SAFE
-    bxi = tmc.bound(sp4, xi)
+    xw = tm.mul(sp4, ir2, xh)
+    xi = tm.add_const(sp4, tm.scale(sp4, xw, kappa_dd), -one)
+    xi.rem = (xi.rem + kap_err * tm.bound(sp4, xw)) * SAFE
+    bxi = tm.bound(sp4, xi)
 
     clock('base')
     # F_k for k <= k_max as models; the rest through a bound.
@@ -653,7 +653,7 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     xis = {n: xi}
     for m in set(orders):
         if m not in xis:
-            xis[m] = tmc.truncate(_space(4, m), sp4, xi)
+            xis[m] = tm.truncate(_space(4, m), sp4, xi)
     # The parts of the remainder of psi, carried through Horner's rule: the remainder of
     # s enters each later step times the bound of xi.
     split = {key: cp.zeros(b) for key in ('F_k', 'xi', 'xi cut', 'tails', 'rounding')}
@@ -662,46 +662,46 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
     for k in range(k_max - 1, -1, -1):
         spk = _space(4, orders[k])
         if orders[k + 1] < orders[k]:
-            s = tmc.embed(spk, s)
+            s = tm.embed(spk, s)
         xk = xis[orders[k]]
-        mp_ = tmc.mul_parts(spk, xk, s)
-        prod = tmc.mul(spk, xk, s)
+        mp_ = tm.mul_parts(spk, xk, s)
+        prod = tm.mul(spk, xk, s)
         for key in split:
             split[key] = split[key] * mp_['bx']
         split['xi'] += xi.rem * (mp_['by'] + s.rem)
         split['xi cut'] += (xk.rem - xi.rem) * (mp_['by'] + s.rem)
         split['tails'] += mp_['tail']
-        split['rounding'] += mp_['round'] + 4 * U2 * (tmc.poly_bound(spk, fk[k])
-                                                      + tmc.poly_bound(spk, prod))
+        split['rounding'] += mp_['round'] + 4 * U2 * (tm.poly_bound(spk, fk[k])
+                                                      + tm.poly_bound(spk, prod))
         split['F_k'] += fk[k].rem
-        s = tmc.add(spk, fk[k], prod)
+        s = tm.add(spk, fk[k], prod)
     info['psi_parts'] = split
     info['xi_parts'] = dict(xi=xi.rem, xw=xw.rem, ir2=ir2.rem, xh=xh.rem, log_r2=log_r2.rem,
-                            yr=yr.rem, yp=yp.rem, pt=pt.rem / tmc.abs_ub(pt.c[:, :1, :])[0])
+                            yr=yr.rem, yp=yp.rem, pt=pt.rem / tm.abs_ub(pt.c[:, :1, :])[0])
     info['fk_rem'] = cp.stack([fk[k].rem * bxi ** k for k in range(k_max + 1)])
-    psi = tmc.TM(s.c, (s.rem + tail * SAFE) * SAFE, s.delta)
+    psi = tm.TM(s.c, (s.rem + tail * SAFE) * SAFE, s.delta)
     clock('level sum')
-    phi = tmc.add(sp4, tmc.add(sp4, tmc.scale(sp4, log_r2, tmc.cconst(k0, b)), log_pt), psi)
-    info.update(parts_f0=fk[0].parts, value_f0=tmc.abs_ub(fk[0].c[:, :1, :])[0])
+    phi = tm.add(sp4, tm.add(sp4, tm.scale(sp4, log_r2, tm.cconst(k0, b)), log_pt), psi)
+    info.update(parts_f0=fk[0].parts, value_f0=tm.abs_ub(fk[0].c[:, :1, :])[0])
     info.update(rem_f0=fk[0].rem, rem_psi=psi.rem, rem_logpt=log_pt.rem, rem_logr2=log_r2.rem,
                 rem_phi=phi.rem, bxi=bxi, tail=tail, zeta=zeta)
 
     # The metric, the volume and f.
-    g = {(i, j): tmc.cauchy_mixed(sp4, phi, i, 2 + j, d_f) for i in range(2) for j in range(2)}
-    det = tmc.sub(sp4, tmc.mul(sp4, g[0, 0], g[1, 1]), tmc.mul(sp4, g[0, 1], g[1, 0]))
+    g = {(i, j): tm.cauchy_mixed(sp4, phi, i, 2 + j, d_f) for i in range(2) for j in range(2)}
+    det = tm.sub(sp4, tm.mul(sp4, g[0, 0], g[1, 1]), tm.mul(sp4, g[0, 1], g[1, 0]))
     dp = None
     for k in range(3):
-        cube = tmc.mul(sp2, tmc.mul(sp2, ys[k], ys[k]), ys[k])
-        term = tmc.scale(sp2, cube, 4 * fr.n[k])
-        dp = term if dp is None else tmc.add(sp2, dp, term)
-    dp = tmc.restrict(dp, d_f)
-    q4 = tmc.tensor(sp4, sp2, dp, conj_tm(dp))
-    dq = tmc.mul(sp4, det, q4)
-    v = tmc.scale(sp4, dq, fr.vol)
+        cube = tm.mul(sp2, tm.mul(sp2, ys[k], ys[k]), ys[k])
+        term = tm.scale(sp2, cube, 4 * fr.n[k])
+        dp = term if dp is None else tm.add(sp2, dp, term)
+    dp = tm.restrict(dp, d_f)
+    q4 = tm.tensor(sp4, sp2, dp, conj_tm(dp))
+    dq = tm.mul(sp4, det, q4)
+    v = tm.scale(sp4, dq, fr.vol)
     # vol_err is relative to the true vol; times abs(vol in dd) it misses vol_err^2, which
     # SAFE covers.
-    v.rem = (v.rem + fr.vol_err * tmc.abs_ub(fr.vol[:, None, :])[0] * tmc.bound(sp4, dq)) * SAFE
-    f = tmc.add_const(sp4, v, -one)
+    v.rem = (v.rem + fr.vol_err * tm.abs_ub(fr.vol[:, None, :])[0] * tm.bound(sp4, dq)) * SAFE
+    f = tm.add_const(sp4, v, -one)
     if grad:
         info.update(gradient_bounds(sp4, f, g, d, k0))
     clock('metric')
@@ -715,19 +715,19 @@ def gradient_bounds(sp4, f, g, d, k0):
 
     In the tangent coordinates tau (variables 0, 1; sigma = conj(tau) are 2, 3), f is real
     on the real points, so abs(d f)^2 = 4 sum_i abs(df/dtau_i)^2 in the real coordinates of
-    tau, and abs(df/dtau_i) <= B of the model of `tmc.deriv1` (Cauchy from d_f to d). In
+    tau, and abs(df/dtau_i) <= B of the model of `tm.deriv1` (Cauchy from d_f to d). In
     the metric of volume 1, G = c Re(g) with c = 1 / (sqrt(2) pi k0), abs(grad f)^2 =
     4 (df)^H g^-1 df / c <= 4 abs(df)^2 / (c lam_min), and lam_min >= det g / tr g with
     det g >= Re det(center) - (its variation and remainder) on the box; g_00 > 0 there as
     well makes g positive definite. A box without that proof gets an infinite bound.
     """
-    dfs = [tmc.deriv1(sp4, f, i, d) for i in range(2)]
-    b = [tmc.bound(sp4, x) for x in dfs]
+    dfs = [tm.deriv1(sp4, f, i, d) for i in range(2)]
+    b = [tm.bound(sp4, x) for x in dfs]
     grad_tau = cp.sqrt(b[0] ** 2 + b[1] ** 2) * SAFE           # bound of abs(df/dtau)
-    det = tmc.sub(sp4, tmc.mul(sp4, g[0, 0], g[1, 1]), tmc.mul(sp4, g[0, 1], g[1, 0]))
+    det = tm.sub(sp4, tm.mul(sp4, g[0, 0], g[1, 1]), tm.mul(sp4, g[0, 1], g[1, 0]))
     det_low = _real_low(sp4, det, d)
-    tr_up = (tmc.poly_bound(sp4, g[0, 0], d) + g[0, 0].rem
-             + tmc.poly_bound(sp4, g[1, 1], d) + g[1, 1].rem) * SAFE
+    tr_up = (tm.poly_bound(sp4, g[0, 0], d) + g[0, 0].rem
+             + tm.poly_bound(sp4, g[1, 1], d) + g[1, 1].rem) * SAFE
     # g is positive definite on the box when det g > 0 and g_00 > 0 there.
     g00_low = _real_low(sp4, g[0, 0], d)
     ok = (det_low > 0) & (g00_low > 0)
@@ -744,7 +744,7 @@ def _real_low(sp4, x, d):
     round-off of this sum."""
     var = x.c.copy()
     var[:, 0, :] = 0
-    pb = tmc.poly_bound(sp4, tmc.TM(var, x.rem, d), d)
+    pb = tm.poly_bound(sp4, tm.TM(var, x.rem, d), d)
     a0, a1, b0, b1 = x.c[0, 0], x.c[1, 0], x.c[2, 0], x.c[3, 0]
     mag = cp.abs(a0) + cp.abs(a1) + cp.abs(b0) + cp.abs(b1) + pb + x.rem
     return (a0 + a1) - cp.abs(b0 + b1) - pb - x.rem - 1e-12 * mag
@@ -756,7 +756,7 @@ _SPACES = {}
 def _space(nvars, n):
     """One Space for each (nvars, n), so that its tables are built once."""
     if (nvars, n) not in _SPACES:
-        _SPACES[nvars, n] = tmc.Space(nvars, n)
+        _SPACES[nvars, n] = tm.Space(nvars, n)
     return _SPACES[nvars, n]
 
 
@@ -779,8 +779,8 @@ class _Clock:
 
 def sup_bound(sp4, f, d):
     """abs(f) <= abs(f(c)) + B(f - f(c)) on the box delta d + the remainder of f."""
-    c0 = tmc.abs_ub(f.c[:, :1, :])[0]
+    c0 = tm.abs_ub(f.c[:, :1, :])[0]
     var = f.c.copy()
     var[:, 0, :] = 0
-    pb = tmc.poly_bound(sp4, tmc.TM(var, f.rem, d), d)
+    pb = tm.poly_bound(sp4, tm.TM(var, f.rem, d), d)
     return (c0 + pb + f.rem) * SAFE + TINY, c0, pb

@@ -1,6 +1,6 @@
-"""Test of `quartic.ddgemm`: the products against mpmath, inside the a priori bound.
+"""Test of `tmgpu.gemm`: the products against mpmath, inside the a priori bound.
 
-Run on a GPU node: uv run --extra gpu --with cupy-cuda12x python -m tests.test_ddgemm
+Run on a GPU node: uv run --extra gpu --with cupy-cuda12x python -m tmgpu.tests.test_gemm
 """
 import sys
 from pathlib import Path
@@ -9,9 +9,9 @@ import mpmath as mp
 import numpy as np
 import cupy as cp
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from quartic import ddgemm                                  # noqa: E402
+from tmgpu import gemm                                  # noqa: E402
 
 mp.mp.dps = 50
 RNG = np.random.default_rng(5)
@@ -50,9 +50,9 @@ def run(nb, m, k, n, mode, shared, td=False, cancel=False):
     if cancel:
         a, b = cancel_pair(a, b, mode)
         k = 2 * k
-    c = cp.asnumpy(ddgemm.zgemm(cp.asarray(a), cp.asarray(b), mode, td=td))
-    g = ddgemm.gamma(k)
-    lin, cub = ddgemm.gamma_td(k)
+    c = cp.asnumpy(gemm.zgemm(cp.asarray(a), cp.asarray(b), mode, td=td))
+    g = gemm.gamma(k)
+    lin, cub = gemm.gamma_td(k)
     worst, gain = 0.0, 0.0
     for bi in range(nb):
         bb = b[0 if shared else bi]
@@ -86,4 +86,4 @@ if __name__ == '__main__':
                 run(3, 37, 53, 29, mode, shared, td)
         for mode in (0, 1):
             run(2, 21, 231, 19, mode, False, td, cancel=True)
-    print('\nall ddgemm tests pass')
+    print('\nall gemm tests pass')

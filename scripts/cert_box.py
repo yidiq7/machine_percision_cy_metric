@@ -27,7 +27,7 @@ os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from quartic import tmc, tm_cert as tc                      # noqa: E402
+from quartic import tm_cert as tc                      # noqa: E402
 from quartic.tm_forms import Poly2                          # noqa: E402
 
 mp.mp.dps = 50

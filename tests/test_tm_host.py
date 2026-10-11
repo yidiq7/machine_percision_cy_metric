@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'scripts'))
 
-from quartic import tmc, tm_cert as tc, tm_frame                # noqa: E402
+from quartic import tm_cert as tc, tm_frame                # noqa: E402
+from tmgpu import tm                                       # noqa: E402
 import cert_cover as cc                                         # noqa: E402
 
 RNG = np.random.default_rng(20261010)
@@ -158,14 +159,14 @@ def check_dropped_cells():
 
 
 def check_real_low():
-    sp = tmc.Space(4, 6)
+    sp = tm.Space(4, 6)
     b = 4
     delta = cp.asarray([0.02, 0.05, 0.1, 0.2])
     c = cp.asarray(RNG.normal(size=(4, sp.size, b)) * 0.1)
     c[1] *= 2.0 ** -53
     c[3] *= 2.0 ** -53
     c[0, 0] = 2.0
-    x = tmc.TM(c, cp.full(b, 1e-6), delta)
+    x = tm.TM(c, cp.full(b, 1e-6), delta)
     low = cp.asnumpy(tc._real_low(sp, x, delta))
     cn = cp.asnumpy(c)
     for bi in range(b):
