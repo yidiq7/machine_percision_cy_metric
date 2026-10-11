@@ -9,21 +9,22 @@ the cells:
    the side is a final box, fails `may_meet_f`, or divides in the same way, down to the
    largest depth of the run. So the final boxes and the cells that miss F make a
    partition of each cell of the cover.
-3. Each record is one final box of that partition, and each record has a finite bound at
-   or below the target and lam_big < 1.
+3. Each record is one final box of that partition, and each record has a bound in
+   (0, target] and 0 <= lam_big < 1.
 4. With --radii, `cert_cover.box_radius` with the present code gives, for the cell and the
    center of each record, a radius and a bound of abs(h) at or below the delta and the
    h_max that the record used (columns 7 and 12); a NaN fails. The center of a box is
    the center of its cell: for the cells of the cover the cover file holds it, and the
    script checks that file; cert_run forms the center of each smaller cell in the same
    way.
-5. A run with --grad has a finite bound of abs(grad f) in G and in tau, and lam_low > 0,
-   in every record; a NaN fails.
+5. With --grad (for a run of cert_run.py --grad), every record must have a finite bound
+   of abs(grad f) in G and in tau above 0, and a finite lam_low > 0; a NaN fails. With no
+   --grad, the script only reports these columns if one of them is finite.
 
 The corners of the records are multiples of s / 2^depth, so they are compared as
 integers. Usage, on CPU cores:
     uv run --extra gpu python -u scripts/cert_partition.py --run runs_tm/run_f6t.npz \\
-        --cover runs_tm/cover_s0.03_c6_v2.npz --procs 32
+        --cover runs_tm/cover_s0.03_c6_v2.npz --radii --grad --procs 32
 """
 import argparse
 import itertools
@@ -135,6 +136,8 @@ def main():
     ap.add_argument('--procs', type=int, default=16)
     ap.add_argument('--radii', action='store_true',
                     help='also compute delta and h_max of the cell of every record again')
+    ap.add_argument('--grad', action='store_true',
+                    help='require the gradient bound in every record (a run with --grad)')
     args = ap.parse_args()
     t0 = time.perf_counter()
     z = np.load(args.run)
@@ -146,7 +149,8 @@ def main():
     corners = rec[:, 2:6] / unit
     sizes = rec[:, 6] / unit
     ci, si = np.rint(corners).astype(np.int64), np.rint(sizes).astype(np.int64)
-    if np.abs(corners - ci).max() > 1e-6 or np.abs(sizes - si).max() > 1e-6:
+    # The FP64 corner of a record is within about 1e-14 units of its exact corner.
+    if not (np.abs(corners - ci).max() <= 1e-9 and np.abs(sizes - si).max() <= 1e-9):
         raise SystemExit('a record corner is not a multiple of s / 2^depth')
     recs = {}
     for j, (c, n) in enumerate(zip(map(tuple, ci.tolist()), si.tolist())):
@@ -169,14 +173,15 @@ def main():
     missing = [m for _, ms in res for m in ms]
     unused = sorted(set(range(len(rec))) - used)
     bounds, lam = rec[:, 8], rec[:, 13]
-    bad_bound = int(np.sum(~(bounds <= target)))
-    bad_lam = int(np.sum(~(lam < 1)))
+    # Each comparison is False for NaN, so a NaN counts as bad.
+    bad_bound = int(np.sum(~((bounds > 0) & (bounds <= target))))
+    bad_lam = int(np.sum(~((lam >= 0) & (lam < 1))))
     print(f'grid {G["grid"]}: {len(bad)} dropped cells that may meet F', flush=True)
     print(f'cover: {len(cov["idx"])} cells, depth {depth}; {len(missing)} cells of the '
           f'partition without a record; {len(unused)} records outside the partition', flush=True)
     print(f'records: {len(rec)}; largest bound {np.max(bounds):.4e} (target {target:.1e}), '
-          f'{bad_bound} not at or below it; largest lam_big {np.max(lam):.3f}, {bad_lam} not '
-          f'below 1; {time.perf_counter() - t0:.0f}s', flush=True)
+          f'{bad_bound} not in (0, target]; largest lam_big {np.max(lam):.3f}, {bad_lam} not '
+          f'in [0, 1); {time.perf_counter() - t0:.0f}s', flush=True)
     ok = not bad and not missing and not unused and bad_bound == 0 and bad_lam == 0
     if args.radii:
         rd = max(r[0][0] for r in radii)
@@ -188,12 +193,17 @@ def main():
               f'whose center is not the center of the cell', flush=True)
         ok = ok and not bad_rad and not bad_cen
     print('the partition check passes' if ok else 'THE PARTITION CHECK FAILS', flush=True)
-    if rec.shape[1] > 18 and np.any(np.isfinite(rec[:, 17])):
+    has_grad = rec.shape[1] > 18
+    if args.grad and not has_grad:
+        print('THE GRADIENT CHECK FAILS: the records have no gradient columns', flush=True)
+    elif args.grad or (has_grad and np.any(np.isfinite(rec[:, 17]))):
         gt, gg, ll = rec[:, 16], rec[:, 17], rec[:, 18]
-        bad_grad = int(np.sum(~np.isfinite(gg) | ~np.isfinite(gt) | ~(ll > 0)))
+        good = (np.isfinite(gg) & (gg > 0) & np.isfinite(gt) & (gt > 0) & np.isfinite(ll)
+                & (ll > 0))
+        bad_grad = int(np.sum(~good))
         print(f'gradient: largest bound in G {np.max(gg):.4e}, in tau {np.max(gt):.4e}; '
-              f'smallest lam_low {np.min(ll):.4e}; {bad_grad} records without a finite bound',
-              flush=True)
+              f'smallest lam_low {np.min(ll):.4e}; {bad_grad} records without a finite bound '
+              f'above 0 or with lam_low not finite and above 0', flush=True)
         print('the gradient bound holds on every record' if bad_grad == 0 and ok
               else 'THE GRADIENT CHECK FAILS', flush=True)
     if not ok:

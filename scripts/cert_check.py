@@ -7,8 +7,18 @@
    cert_cover.may_meet_f again, and no random point of F may lie in one.
 3. The boxes. For random final boxes of the record, the GPU model of f at random
    points of the box (on the real slice sigma = conj(tau)) must agree with f from
-   tm_box.py in arb (the chart z_3 = 1, m = 2, at order 2) within the remainder, and
-   the bound of the box must exceed abs(f) there.
+   tm_box.py in arb (the chart z_3 = 1, m = 2, at order 2) within the remainder, the
+   bound of the box must exceed abs(f) there, and the bound of the box computed again
+   must agree with the record within --tol.
+4. With --recompute R, all final boxes of R random reference centers again, in new
+   batches: each bound of abs(f), and of abs(grad f) for a run with --grad, must agree
+   with its record within --tol. The series order of a batch depends on its largest eta,
+   so the agreement is not exact.
+5. With --local, the file of each reference center and its center; the content of the
+   files is the check of scripts/cert_local_values.py.
+
+The centers of the boxes are exact: the corner of a record is a multiple of s / 2^depth.
+The checks 3 and 4 take the defaults of cert_run.py for kmax (top) and --ny-extra.
 
 Usage, on one GPU node:
     uv run --extra gpu --with cupy-cuda12x --with python-flint python -u \\
@@ -17,8 +27,10 @@ Usage, on one GPU node:
         --forms runs_tm/r20_forms.npz --points 2000 --boxes 8
 """
 import argparse
+import hashlib
 import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +55,19 @@ def in_f(t0, t1):
         return False
     a0, a1 = mp.arg(t0), mp.arg(t1)
     return 0 <= a0 <= mp.pi / 4 and 0 <= a1 < mp.pi / 2
+
+
+def exact_cell(row, side):
+    """The exact lower corner and side (mpmath) and the dd center of the cell of a record;
+    its corner is a multiple of s / 2^depth, with the depth of column 1."""
+    unit = mp.mpf(side) / 2 ** int(row[1])
+    k = [int(round(float(v) / float(unit))) for v in row[2:7]]
+    if not max(abs(float(v) / float(unit) - kk) for v, kk in zip(row[2:7], k)) <= 1e-9:
+        raise ValueError(f'the corner {row[2:7]} is not a multiple of s / 2^depth')
+    lo = [mp.mpf(kk) * unit for kk in k[:4]]
+    h = mp.mpf(k[4]) * unit
+    c = [cc.dd(mp.mpc(lo[0] + h / 2, lo[1] + h / 2)), cc.dd(mp.mpc(lo[2] + h / 2, lo[3] + h / 2))]
+    return lo, h, c
 
 
 def tau_of(t, center):
@@ -73,15 +98,15 @@ def check_cover(rec, cov, count):
             continue
         done += 1
         x = np.array([float(t[0].real), float(t[0].imag), float(t[1].real), float(t[1].imag)])
-        hit = np.flatnonzero(np.all((lo_all <= x) & (x <= lo_all + sides[:, None]), axis=1))
+        # The FP64 search keeps a margin; the test of tau decides.
+        hit = np.flatnonzero(np.all((lo_all - 1e-12 <= x) & (x <= lo_all + sides[:, None] + 1e-12),
+                                    axis=1))
         if hit.size == 0:
             missed += 1
             continue
         ok = False
         for j in hit:
-            lo, s = list(rec[j, 2:6]), rec[j, 6]
-            c = [cc.dd(mp.mpc(lo[0] + s / 2, lo[1] + s / 2)), cc.dd(mp.mpc(lo[2] + s / 2, lo[3] + s / 2))]
-            tau = tau_of(t, c)
+            tau = tau_of(t, exact_cell(rec[j], side)[2])
             ratio = max(float(abs(v)) for v in tau) / rec[j, 7]
             worst = max(worst, ratio)
             ok = ok or ratio <= 1
@@ -120,7 +145,8 @@ def _span(v):
 
 def check_local(cov, local_dir, prec=256):
     """Each reference center has a file with its exact center c, td forms (parts 6) in
-    Delta, and dd numbers x0 and s2 that are exact balls at the precision of the forms."""
+    Delta, and dd numbers x0 and s2 that are exact balls at the precision of the forms.
+    scripts/cert_local_values.py checks the content of the forms."""
     refs = len(cov['ref_centers'])
     bad = []
     for i in range(refs):
@@ -150,19 +176,28 @@ def check_boxes(rec, args):
     class A:
         data, forms, prec, col = args.data, args.forms, 192, 3
     tb.load(A)
+    side = float(np.load(args.cover)['side'])
     picks = RNG.choice(len(rec), size=min(args.boxes, len(rec)), replace=False)
-    worst_gap, worst_bound = 0.0, 0.0
+    worst_gap, worst_bound, worst_dev = 0.0, 0.0, 0.0
     for j in picks:
         r = int(rec[j, 0])
-        lo, s, delta = list(rec[j, 2:6]), rec[j, 6], rec[j, 7]
+        lo_mp, h_mp, c = exact_cell(rec[j], side)
+        lo, s, delta = [float(v) for v in lo_mp], float(h_mp), rec[j, 7]
         local = tc.local_on_gpu(Path(args.local) / f'center_{r}.npz')
-        c = [cc.dd(mp.mpc(lo[0] + s / 2, lo[1] + s / 2)), cc.dd(mp.mpc(lo[2] + s / 2, lo[3] + s / 2))]
         fr = tc.make_frames([c], int(local['k0']))
         # The order and gap fraction of the record (columns 14, 15), all k as models.
         order = int(rec[j, 14]) if rec.shape[1] > 14 else args.order
         a = float(rec[j, 15]) if rec.shape[1] > 15 else None
-        f, (d, _, _), info, parts = tc.box_f(fr, local, [delta], order, order + 6,
-                                             k_max=int(local['top']), a=a)
+        grad = rec.shape[1] > 18 and bool(np.isfinite(rec[j, 17]))
+        f, (d, _, _), info, parts = tc.box_f(fr, local, [delta], order, order + args.ny_extra,
+                                             k_max=int(local['top']), a=a,
+                                             hmax=cp.asarray([float(rec[j, 12])]), grad=grad)
+        sup = float(tc.sup_bound(parts['sp4'], f, d)[0][0])
+        dev = abs(sup / rec[j, 8] - 1)
+        if grad:
+            dev = max(dev, abs(float(info['grad_g'][0]) / rec[j, 17] - 1))
+        # A NaN counts as an infinite deviation.
+        worst_dev = max(worst_dev, float(np.nan_to_num(dev, nan=np.inf)))
         sp4 = parts['sp4']
         coef = cp.asnumpy(f.c[:, :, 0])
         rem = float(f.rem[0])
@@ -189,8 +224,64 @@ def check_boxes(rec, args):
             worst_gap = max(worst_gap, gap / rem)
             worst_bound = max(worst_bound, abs(f_arb) / rec[j, 8])
         print(f'box {j} (reference {r}, delta {delta:.4f}): largest gap over remainder '
-              f'{worst_gap:.2e}, largest abs(f) over the bound {worst_bound:.2e}', flush=True)
-    return worst_gap <= 1 and worst_bound <= 1
+              f'{worst_gap:.2e}, largest abs(f) over the bound {worst_bound:.2e}; bound again '
+              f'{sup:.4e} against {rec[j, 8]:.4e} in the record', flush=True)
+    print(f'boxes: largest deviation of a bound computed again from its record {worst_dev:.2e} '
+          f'(at most {args.tol})', flush=True)
+    return worst_gap <= 1 and worst_bound <= 1 and worst_dev <= args.tol
+
+
+def check_recompute(rec, args):
+    """All final boxes of --recompute random reference centers again, in new batches of one
+    order and gap fraction, with the delta and h_max of their records."""
+    import cupy as cp
+    from quartic import tm_cert as tc
+    side = float(np.load(args.cover)['side'])
+    grad = rec.shape[1] > 18 and bool(np.all(np.isfinite(rec[:, 17])))
+    refs = np.unique(rec[:, 0].astype(int))
+    pick = sorted(int(x) for x in RNG.choice(refs, size=min(args.recompute, len(refs)),
+                                             replace=False))
+    worst_f, worst_g, n_bad, n_box = 0.0, 0.0, 0, 0
+    for r in pick:
+        t0 = time.perf_counter()
+        local = tc.local_on_gpu(Path(args.local) / f'center_{r}.npz')
+        k0, top = int(local['k0']), int(local['top'])
+        rows = np.flatnonzero(rec[:, 0] == r)
+        keys = sorted({(int(rec[j, 14]), float(rec[j, 15])) for j in rows})
+        dev_f, dev_g = [], []
+        for order, a in keys:
+            js = [int(j) for j in rows if int(rec[j, 14]) == order and float(rec[j, 15]) == a]
+            for b in range(0, len(js), args.batch):
+                part = js[b:b + args.batch]
+                fr = tc.make_frames([exact_cell(rec[j], side)[2] for j in part], k0)
+                f, (d, _, _), info, parts = tc.box_f(
+                    fr, local, [float(rec[j, 7]) for j in part], order, order + args.ny_extra,
+                    k_max=top, a=a, hmax=cp.asarray(rec[part, 12]), grad=grad)
+                sup = cp.asnumpy(tc.sup_bound(parts['sp4'], f, d)[0])
+                dev_f.append(np.abs(sup / rec[part, 8] - 1))
+                if grad:
+                    dev_g.append(np.abs(cp.asnumpy(info['grad_g']) / rec[part, 17] - 1))
+        dev_f = np.nan_to_num(np.concatenate(dev_f), nan=np.inf)
+        dev_g = np.nan_to_num(np.concatenate(dev_g), nan=np.inf) if grad else np.zeros(1)
+        n_bad += int(np.sum(~(dev_f <= args.tol))) + (int(np.sum(~(dev_g <= args.tol))) if grad else 0)
+        n_box += len(rows)
+        worst_f, worst_g = max(worst_f, float(dev_f.max())), max(worst_g, float(dev_g.max()))
+        print(f'reference {r}: {len(rows)} final boxes again; largest deviation of the bound of '
+              f'abs(f) {dev_f.max():.2e}' + (f', of abs(grad f) {dev_g.max():.2e}' if grad else '')
+              + f'; {time.perf_counter() - t0:.0f}s', flush=True)
+    print(f'recompute: {n_box} final boxes of {len(pick)} reference centers; largest deviation '
+          f'of the bound of abs(f) {worst_f:.2e}' + (f', of abs(grad f) {worst_g:.2e}' if grad
+                                                      else ' (no gradient in the run)')
+          + f'; {n_bad} above {args.tol}', flush=True)
+    return n_bad == 0
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for block in iter(lambda: fh.read(1 << 24), b''):
+            h.update(block)
+    return h.hexdigest()
 
 
 def main():
@@ -206,7 +297,15 @@ def main():
     ap.add_argument('--dropped', type=int, default=2000)
     ap.add_argument('--boxes', type=int, default=0)
     ap.add_argument('--per-box', type=int, default=3)
+    ap.add_argument('--recompute', type=int, default=0,
+                    help='compute all final boxes of this many random reference centers again')
+    ap.add_argument('--batch', type=int, default=64)
+    ap.add_argument('--ny-extra', type=int, default=6, help='the --ny-extra of the run')
+    ap.add_argument('--tol', type=float, default=0.02,
+                    help='the largest relative deviation of a bound computed again')
     args = ap.parse_args()
+    for name, path in (('run', args.run), ('cover', args.cover)):
+        print(f'{name} {path}: SHA-256 {sha256(path)}', flush=True)
     rec = np.load(args.run)['records']
     cov = np.load(args.cover)
     ok = check_cover(rec, cov, args.points)
@@ -215,6 +314,8 @@ def main():
         ok = check_local(cov, args.local) and ok
     if args.boxes:
         ok = check_boxes(rec, args) and ok
+    if args.recompute:
+        ok = check_recompute(rec, args) and ok
     print('all checks pass' if ok else 'A CHECK FAILED', flush=True)
 
 

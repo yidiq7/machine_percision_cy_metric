@@ -471,10 +471,11 @@ def cauchy_mixed(sp, x, a, b, delta_small):
 
     The rest of x is at most x.rem on x.delta, so its mixed derivative is at most
     x.rem / (x.delta - delta_small)^2 on delta_small. The two dd products by the exact
-    integers alpha_a, alpha_b round by 6 u^2 each, relative to their results, so each
-    computed coefficient is within 13 u^2 of its abs value; on delta_small that adds
-    13 u^2 times the bound of the computed derivative. (The general bound of dd_mul is
-    7 u^2; with the low part of the integer zero, only al m and e + t round, by 3 u^2.)
+    integers alpha_a, alpha_b round by at most 3 u^2 each, relative to their results: the
+    low part of an integer is zero, so only al m and e + t round (the general bound of
+    dd_mul is 7 u^2). So each computed coefficient is within 6.1 u^2 of the exact one,
+    relative to its abs value; the code takes 13 u^2, and on delta_small that adds 13 u^2
+    times the bound of the computed derivative.
     """
     if a == b:
         raise ValueError('cauchy_mixed takes two different variables')
