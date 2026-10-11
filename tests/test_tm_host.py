@@ -182,6 +182,17 @@ def check_real_low():
     print(f'  _real_low: below Re(model) - rem at 800 points; bounds {low.round(4)}', flush=True)
 
 
+def check_old_local_forms():
+    for bad in ({'parts': 4, 's2': np.zeros(4)}, {'parts': 6}):
+        try:
+            tc._check_local(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f'local forms with keys {sorted(bad)} passed the check')
+    tc._check_local({'parts': 6, 's2': np.zeros(4)})
+    print('  _check_local: local forms that are not in Delta and td fail', flush=True)
+
+
 def main():
     check_frac_dd()
     check_offsets_and_delta()
@@ -189,6 +200,7 @@ def main():
     check_lower()
     check_dropped_cells()
     check_real_low()
+    check_old_local_forms()
     print('all host tests pass', flush=True)
 
 
