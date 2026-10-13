@@ -88,8 +88,11 @@ def main():
     args = ap.parse_args()
     cov = np.load(args.cover)
     refs = args.refs if args.refs is not None else list(range(len(cov['ref_centers'])))
-    commit = subprocess.run(['git', 'describe', '--always', '--dirty', '--abbrev=40'], cwd=ROOT,
-                            capture_output=True, text=True, check=True).stdout.strip()
+    # The commit of the code, with -dirty if a tracked file differs from it.
+    commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True,
+                            text=True, check=True).stdout.strip()
+    if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=ROOT).returncode != 0:
+        commit += '-dirty'
     shas = []
     if args.order == args.order_high and args.a != args.a_high:
         raise SystemExit('--order equals --order-high, so --a must equal --a-high')
