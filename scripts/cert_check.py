@@ -71,8 +71,7 @@ def exact_cell(row, side):
         raise ValueError(f'the corner {row[2:7]} is not a multiple of s / 2^depth')
     lo = [mp.mpf(kk) * unit for kk in k[:4]]
     h = mp.mpf(k[4]) * unit
-    c = [cc.dd(mp.mpc(lo[0] + h / 2, lo[1] + h / 2)), cc.dd(mp.mpc(lo[2] + h / 2, lo[3] + h / 2))]
-    return lo, h, c
+    return lo, h, cc.center(lo, h)
 
 
 def tau_of(t, center):
@@ -179,7 +178,6 @@ def check_local(cov, local_dir, prec=256):
 def check_boxes(rec, args):
     import cupy as cp
     from quartic.cert import box as tc
-    sys.argv = ['tm_box']
     import tm_box as tb
 
     class A:
@@ -194,17 +192,12 @@ def check_boxes(rec, args):
         lo, s, delta = [float(v) for v in lo_mp], float(h_mp), rec[j, 7]
         local = tc.local_on_gpu(Path(args.local) / f'center_{r}.npz')
         fr = tc.make_frames([c], int(local['k0']))
-        # The order and gap fraction of the record (columns 14, 15), all k as models.
-        order = int(rec[j, 14]) if rec.shape[1] > 14 else args.order
-        a = float(rec[j, 15]) if rec.shape[1] > 15 else None
-        grad = rec.shape[1] > 18 and bool(np.isfinite(rec[j, 17]))
-        f, (d, _, _), info, parts = tc.box_f(fr, local, [delta], order, order + args.ny_extra,
-                                             k_max=int(local['top']), a=a,
-                                             hmax=cp.asarray([float(rec[j, 12])]), grad=grad)
+        # The order and the gap fraction of the record (columns 14, 15).
+        order, a = int(rec[j, 14]), float(rec[j, 15])
+        f, (d, _, _), info, parts = tc.box_f(fr, local, [delta], order, order + tc.NY_EXTRA, a,
+                                             cp.asarray([float(rec[j, 12])]), grad=True)
         sup = float(sup_bound(parts['sp4'], f, d)[0][0])
-        dev = abs(sup / rec[j, 8] - 1)
-        if grad:
-            dev = max(dev, abs(float(info['grad_g'][0]) / rec[j, 17] - 1))
+        dev = max(abs(sup / rec[j, 8] - 1), abs(float(info['grad_g'][0]) / rec[j, 17] - 1))
         # A NaN counts as an infinite deviation.
         worst_dev = max(worst_dev, float(np.nan_to_num(dev, nan=np.inf)))
         sp4 = parts['sp4']
@@ -246,7 +239,6 @@ def check_recompute(rec, args):
     import cupy as cp
     from quartic.cert import box as tc
     side = float(np.load(args.cover)['side'])
-    grad = rec.shape[1] > 18 and bool(np.all(np.isfinite(rec[:, 17])))
     refs = np.unique(rec[:, 0].astype(int))
     pick = sorted(int(x) for x in RNG.choice(refs, size=min(args.recompute, len(refs)),
                                              replace=False))
@@ -254,7 +246,7 @@ def check_recompute(rec, args):
     for r in pick:
         t0 = time.perf_counter()
         local = tc.local_on_gpu(Path(args.local) / f'center_{r}.npz')
-        k0, top = int(local['k0']), int(local['top'])
+        k0 = int(local['k0'])
         rows = np.flatnonzero(rec[:, 0] == r)
         keys = sorted({(int(rec[j, 14]), float(rec[j, 15])) for j in rows})
         dev_f, dev_g = [], []
@@ -264,24 +256,22 @@ def check_recompute(rec, args):
                 part = js[b:b + args.batch]
                 fr = tc.make_frames([exact_cell(rec[j], side)[2] for j in part], k0)
                 f, (d, _, _), info, parts = tc.box_f(
-                    fr, local, [float(rec[j, 7]) for j in part], order, order + args.ny_extra,
-                    k_max=top, a=a, hmax=cp.asarray(rec[part, 12]), grad=grad)
+                    fr, local, [float(rec[j, 7]) for j in part], order, order + tc.NY_EXTRA, a,
+                    cp.asarray(rec[part, 12]), grad=True)
                 sup = cp.asnumpy(sup_bound(parts['sp4'], f, d)[0])
                 dev_f.append(np.abs(sup / rec[part, 8] - 1))
-                if grad:
-                    dev_g.append(np.abs(cp.asnumpy(info['grad_g']) / rec[part, 17] - 1))
+                dev_g.append(np.abs(cp.asnumpy(info['grad_g']) / rec[part, 17] - 1))
         dev_f = np.nan_to_num(np.concatenate(dev_f), nan=np.inf)
-        dev_g = np.nan_to_num(np.concatenate(dev_g), nan=np.inf) if grad else np.zeros(1)
-        n_bad += int(np.sum(~(dev_f <= args.tol))) + (int(np.sum(~(dev_g <= args.tol))) if grad else 0)
+        dev_g = np.nan_to_num(np.concatenate(dev_g), nan=np.inf)
+        n_bad += int(np.sum(~(dev_f <= args.tol))) + int(np.sum(~(dev_g <= args.tol)))
         n_box += len(rows)
         worst_f, worst_g = max(worst_f, float(dev_f.max())), max(worst_g, float(dev_g.max()))
         print(f'reference {r}: {len(rows)} final boxes again; largest deviation of the bound of '
-              f'abs(f) {dev_f.max():.2e}' + (f', of abs(grad f) {dev_g.max():.2e}' if grad else '')
-              + f'; {time.perf_counter() - t0:.0f}s', flush=True)
+              f'abs(f) {dev_f.max():.2e}, of abs(grad f) {dev_g.max():.2e}; '
+              f'{time.perf_counter() - t0:.0f}s', flush=True)
     print(f'recompute: {n_box} final boxes of {len(pick)} reference centers; largest deviation '
-          f'of the bound of abs(f) {worst_f:.2e}' + (f', of abs(grad f) {worst_g:.2e}' if grad
-                                                      else ' (no gradient in the run)')
-          + f'; {n_bad} above {args.tol}', flush=True)
+          f'of the bound of abs(f) {worst_f:.2e}, of abs(grad f) {worst_g:.2e}; {n_bad} above '
+          f'{args.tol}', flush=True)
     return n_bad == 0
 
 
@@ -293,7 +283,6 @@ def main():
     ap.add_argument('--local', type=str, default='')
     ap.add_argument('--data', type=str, default='')
     ap.add_argument('--forms', type=str, default='')
-    ap.add_argument('--order', type=int, default=28)
     ap.add_argument('--points', type=int, default=2000)
     ap.add_argument('--dropped', type=int, default=2000)
     ap.add_argument('--boxes', type=int, default=0)
@@ -301,7 +290,6 @@ def main():
     ap.add_argument('--recompute', type=int, default=0,
                     help='compute all final boxes of this many random reference centers again')
     ap.add_argument('--batch', type=int, default=64)
-    ap.add_argument('--ny-extra', type=int, default=6, help='the --ny-extra of the run')
     ap.add_argument('--tol', type=float, default=0.02,
                     help='the largest relative deviation of a bound computed again')
     args = ap.parse_args()

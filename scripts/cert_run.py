@@ -6,7 +6,9 @@ for reference center i.
 
 For each reference center of the cover (or of --refs), its boxes run in batches of one order: a
 cell with rho >= --rho-high at --order-high (with --a-high), the others at --order
-(with --a). A box whose bound of abs(f) exceeds --target tries --order-high first, and
+(with --a); the models in tau alone take quartic.cert.box.NY_EXTRA more. Each box also
+gets the bound of abs(grad f). A box whose bound of abs(f) exceeds --target tries
+--order-high first, and
 then splits into the cells of half the side that may meet F, each with the radius and
 the bound of abs(h) of quartic.cert.cover.box_radius, at most --depth times; cell corners stay
 exact mpmath numbers. Each final box gives one record: the
@@ -49,8 +51,7 @@ def split(lo, s):
         sub = [lo[i] + h * ((k >> i) & 1) for i in range(4)]
         if not cc.may_meet_f(sub, h):
             continue
-        c = (mp.mpc(sub[0] + h / 2, sub[1] + h / 2), mp.mpc(sub[2] + h / 2, sub[3] + h / 2))
-        cdd = [cc.dd(c[0]), cc.dd(c[1])]
+        cdd = cc.center(sub, h)
         rad, hmax = cc.box_radius(sub, h, cdd)
         out.append((sub, h, cdd, rad, hmax))
     return out
@@ -72,19 +73,12 @@ def main():
     ap.add_argument('--order-high', type=int, default=32,
                     help='the order of the cells at or above --rho-high, and of each second try')
     ap.add_argument('--rho-high', type=float, default=0.3)
-    ap.add_argument('--a', type=float, default=0.35, help='the gap fraction at --order (0: 2 / order)')
+    ap.add_argument('--a', type=float, default=0.35, help='the gap fraction at --order')
     ap.add_argument('--a-high', type=float, default=0.12, help='the gap fraction at --order-high')
-    ap.add_argument('--kmax', type=int, default=0, help='the largest k with a full model (0: top)')
-    ap.add_argument('--ny-extra', type=int, default=6)
     ap.add_argument('--target', type=float, default=5e-20,
                     help='a box whose bound of abs(f) exceeds this tries --order-high, then splits')
     ap.add_argument('--depth', type=int, default=2)
     ap.add_argument('--batch', type=int, default=64)
-    ap.add_argument('--grad', action='store_true',
-                    help='also bound abs(grad f) on each box (quartic.cert.box.gradient_bounds)')
-    ap.add_argument('--grad-target', type=float, default=0.0,
-                    help='> 0: decide second tries and splits by the gradient bound and not '
-                         'by --target')
     ap.add_argument('--refs', type=int, nargs='*', default=None,
                     help='only these reference centers (default: every one of the cover)')
     ap.add_argument('--verbose', action='store_true')
@@ -95,7 +89,9 @@ def main():
     commit = subprocess.run(['git', 'describe', '--always', '--dirty', '--abbrev=40'], cwd=ROOT,
                             capture_output=True, text=True, check=True).stdout.strip()
     shas = []
-    settings = {args.order: args.a or None, args.order_high: args.a_high or None}
+    if args.order == args.order_high and args.a != args.a_high:
+        raise SystemExit('--order equals --order-high, so --a must equal --a-high')
+    settings = {args.order: args.a, args.order_high: args.a_high}
     t0 = time.perf_counter()
     records = []
     n_boxes = 0
@@ -103,8 +99,7 @@ def main():
         path = Path(args.local) / f'center_{r}.npz'
         shas.append(rs.sha256(path))
         local = tc.local_on_gpu(path)
-        k0, top = int(local['k0']), int(local['top'])
-        kmax = args.kmax or top
+        k0 = int(local['k0'])
         idx = np.flatnonzero(cov['ref'] == r)
         side = mp.mpf(float(cov['side']))
         # Queue items: (lo, side, center, delta, hmax, depth, order).
@@ -126,35 +121,28 @@ def main():
             deltas = [b[3] for b in batch]
             hmaxs = cp.asarray(np.array([b[4] for b in batch]))
             a = settings[order]
-            f, (d, _, _), info, parts = tc.box_f(fr, local, deltas, order, order + args.ny_extra,
-                                                 k_max=kmax, a=a, hmax=hmaxs,
-                                                 grad=args.grad)
+            f, (d, _, _), info, parts = tc.box_f(fr, local, deltas, order, order + tc.NY_EXTRA,
+                                                 a, hmaxs, grad=True)
             sup, c0, pb = sup_bound(parts['sp4'], f, d)
             sup, c0, pb, rem, lam_big = (cp.asnumpy(x) for x in (sup, c0, pb, f.rem,
                                                                   info['lam_big']))
-            nanb = np.full(len(batch), np.nan)
-            gt, gg, ll = ((cp.asnumpy(info[k]) for k in ('grad_tau', 'grad_g', 'lam_low'))
-                          if args.grad else (nanb, nanb, nanb))
-            # The quantity that decides a second try or a split.
-            crit = gg if args.grad_target > 0 else sup
-            limit = args.grad_target if args.grad_target > 0 else args.target
+            gt, gg, ll = (cp.asnumpy(info[k]) for k in ('grad_tau', 'grad_g', 'lam_low'))
             n_boxes += len(batch)
             n_ref += len(batch)
             n_split, n_retry = 0, 0
             for j, (lo, s, cen, dl, hm, depth, od) in enumerate(batch):
-                if not crit[j] <= limit and od < args.order_high:
+                if not sup[j] <= args.target and od < args.order_high:
                     queue.append((lo, s, cen, dl, hm, depth, args.order_high))
                     n_retry += 1
                     continue
-                if not crit[j] <= limit and depth < args.depth:
+                if not sup[j] <= args.target and depth < args.depth:
                     for sub, h, c, rad, hmx in split(lo, s):
                         sub_order = args.order_high if cell_rho(c) >= args.rho_high else args.order
                         queue.append((sub, h, c, rad, hmx, depth + 1, sub_order))
                     n_split += 1
                     continue
                 records.append((r, depth, *[float(v) for v in lo], float(s), dl, sup[j], c0[j],
-                                pb[j], rem[j], hm, lam_big[j], od, a or 2.0 / od, gt[j], gg[j],
-                                ll[j]))
+                                pb[j], rem[j], hm, lam_big[j], od, a, gt[j], gg[j], ll[j]))
             if args.verbose:
                 print(f'    batch of {len(batch)} at order {order} (depth {min(b[5] for b in batch)} '
                       f'to {max(b[5] for b in batch)}): {n_retry} to order {args.order_high}, '
@@ -174,8 +162,7 @@ def main():
     rec = np.array(records)
     # np.max and np.min give NaN if one record has NaN, so no NaN can hide here.
     grad_text = (f', largest gradient bound {np.max(rec[:, 17]):.4e} (in tau '
-                 f'{np.max(rec[:, 16]):.4e}), smallest lam_low {np.min(rec[:, 18]):.3e}'
-                 if args.grad else '')
+                 f'{np.max(rec[:, 16]):.4e}), smallest lam_low {np.min(rec[:, 18]):.3e}')
     # A bound that is NaN fails both tests below: max gives NaN, and it counts as above.
     print(f'done: {len(rec)} boxes, {n_boxes} computed, largest bound {rec[:, 8].max():.4e}, '
           f'{np.sum(~(rec[:, 8] <= args.target))} above the target, largest lam_big '

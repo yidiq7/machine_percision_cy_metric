@@ -15,23 +15,16 @@ A level form N_L of `level_matrices.py` is a sum over S_4 of one block of each o
 Each orbit block goes to the residues r' = sigma r with the monomial matrix
 Pi_sigma (F C_o F^T) Pi_sigma^T, and the matrices of one residue are summed first.
 
-M_L = N_L abs(z)^(2 (20 - L)) with abs(z)^2 = 1 + t_0 w_0 + t_1 w_1 + z_2 w_2, and
-z_2^4 w_2^4 = u_m(t) u_m(w), so the product stays in the same form.
-
 The levels cancel strongly, so they are combined here in arb, at a fixed x0:
-M~_m = sum over L of C(L, m) x0^L M_L. A box with x_c = x0 (1 + zeta) then takes
+M~_m = sum over L of C(L, m) x0^L N_L. A box with x_c = x0 (1 + zeta) then takes
 F_k = (1 + zeta)^k sum over m >= k of C(m, k) zeta^(m - k) M~_m, which is the exact
-sum over L of C(L, k) x_c^L M_L, and its terms do not cancel.
+sum over L of C(L, k) x_c^L N_L, and its terms do not cancel.
 """
 import itertools
 import math
 
 import numpy as np
-try:
-    import flint
-    from flint import acb, arb, arb_mat
-except ImportError:            # The GPU side needs only the monomial order of Poly2.
-    flint = acb = arb = arb_mat = None
+from flint import acb, arb, arb_mat, ctx
 
 from .. import blocks
 
@@ -157,57 +150,16 @@ def level_blocks(forms, k1):
     return [(rp, groups[gi][0], c) for (rp, gi), c in acc.items()]
 
 
-def times_radius(p2, q, cur):
-    """Q_e of a form of degree cur times abs(z)^2 = 1 + t_0 w_0 + t_1 w_1 + z_2 w_2.
-
-    Q_e has rows of degree <= cur - e, so each product stays inside the space if
-    cur + 1 <= p2.d.
-    """
-    if cur + 1 > p2.d:
-        raise ValueError('the degree of the space is too small for abs(z)^2')
-    n = p2.size
-    shifts = []
-    for axis in range(2):
-        s = arb_mat(n, n)
-        for i, e in enumerate(p2.mons):
-            f = list(e)
-            f[axis] += 1
-            if sum(f) <= p2.d:
-                s[p2.index[tuple(f)], i] = 1
-        shifts.append(s)
-    um = p2.u_m()
-    u = arb_mat(n, n)
-    for i, e in enumerate(p2.mons):
-        for j, ej in enumerate(p2.mons):
-            if um[j] != 0:
-                f = (e[0] + ej[0], e[1] + ej[1])
-                if sum(f) <= p2.d:
-                    u[p2.index[f], i] = int(um[j])
-    out = []
-    for e in range(4):
-        x = q[e] + shifts[0] * q[e] * shifts[0].transpose() + shifts[1] * q[e] * shifts[1].transpose()
-        if e == 0:
-            x += u * q[3] * u.transpose()
-        else:
-            x += q[e - 1]
-        out.append(x)
-    return out
-
-
 def chart_forms_arb(data, forms, prec=256):
-    """Q_e of the base (degree k0), of each N_L and of each M_L (degree top), as arb_mat."""
-    flint.ctx.prec = prec
+    """Q_e of the base (degree k0) and of each N_L (degree top), as arb_mat."""
+    ctx.prec = prec
     k0 = int(data['k0'])
     top = int(max(forms['k1']))
     out = {'k0': k0, 'top': top, 'levels': [int(x) for x in forms['k1']]}
     out['base'] = form_q(Poly2(k0), base_blocks(data))
     p2 = Poly2(top)
     for k1 in out['levels']:
-        q = form_q(p2, level_blocks(forms, k1))
-        out[f'N{k1}'] = q
-        for cur in range(k1, top):
-            q = times_radius(p2, q, cur)
-        out[f'M{k1}'] = q
+        out[f'N{k1}'] = form_q(p2, level_blocks(forms, k1))
     return out
 
 

@@ -12,7 +12,7 @@ import math
 import mpmath as mp
 from mpmath import iv
 
-from tmgpu.host import lower, precision, upper
+from tmgpu.host import lower, mp_dd, precision, upper
 
 from .frame import frame
 
@@ -120,15 +120,20 @@ def box_radius(lo, s, c_dd):
     return delta, hmax
 
 
-def dd(x):
-    x = mp.mpc(x)
-    rh, ih = float(x.real), float(x.imag)
-    return [rh, float(x.real - rh), ih, float(x.imag - ih)]
+def grid(s):
+    """The number of cells of side s along each axis of the box around F: Re t_0 in [0, 1],
+    Im t_0 in [0, 1 / sqrt 2], Re t_1 and Im t_1 in [0, 1]."""
+    return [math.ceil(1 / s), math.ceil(0.7072 / s), math.ceil(1 / s), math.ceil(1 / s)]
+
+
+def center(lo, s):
+    """The exact dd center of the cell [lo, lo + s]^4 (exact mpmath numbers)."""
+    _exact_corners()
+    return [mp_dd(mp.mpc(lo[0] + s / 2, lo[1] + s / 2)), mp_dd(mp.mpc(lo[2] + s / 2, lo[3] + s / 2))]
 
 
 def cell(idx, s):
     """The exact lower corner idx s and the exact dd center of a cell."""
     _exact_corners()
     lo = [mp.mpf(int(i)) * s for i in idx]
-    c = (mp.mpc(lo[0] + s / 2, lo[1] + s / 2), mp.mpc(lo[2] + s / 2, lo[3] + s / 2))
-    return lo, [dd(c[0]), dd(c[1])]
+    return lo, center(lo, s)

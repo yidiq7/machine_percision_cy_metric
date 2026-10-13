@@ -19,8 +19,8 @@ Output: an npz with the cells (lower corners, side), the box centers as dd, the 
 the index of the reference center of each box, and the reference centers as dd.
 
 Usage, on CPU cores:
-    uv run --extra gpu python -u scripts/cert_cover.py --side 0.03 --coarse 5 \\
-        --out runs_tm/cover_s030.npz --procs 16
+    uv run --extra gpu python -u scripts/cert_cover.py --side 0.03 --coarse 6 \\
+        --out runs_tm/cover_s0.03_c6_v2.npz --procs 16
 """
 import argparse
 import itertools
@@ -34,8 +34,8 @@ import mpmath as mp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-
-from quartic.cert.cover import box_radius, cell, dd, may_meet_f      # noqa: E402
+from tmgpu.host import mp_dd                                          # noqa: E402
+from quartic.cert import cover as cc                                  # noqa: E402
 
 
 def one_slab(job):
@@ -45,10 +45,10 @@ def one_slab(job):
     out = []
     for i1, i2, i3 in itertools.product(*(range(g) for g in grid[1:])):
         idx = (i0, i1, i2, i3)
-        lo, c = cell(idx, s)
-        if not may_meet_f(lo, s):
+        lo, c = cc.cell(idx, s)
+        if not cc.may_meet_f(lo, s):
             continue
-        delta, hmax = box_radius(lo, s, c)
+        delta, hmax = cc.box_radius(lo, s, c)
         out.append((idx, [float(x) for x in lo], c, delta, hmax))
     return out
 
@@ -57,13 +57,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--side', type=float, required=True)
-    ap.add_argument('--coarse', type=int, default=5)
+    ap.add_argument('--coarse', type=int, default=6)
     ap.add_argument('--out', type=str, required=True)
     ap.add_argument('--procs', type=int, default=8)
     args = ap.parse_args()
     s = args.side
-    # The bounding box: Re t_0 in [0, 1], Im t_0 in [0, 1/sqrt 2], Re t_1, Im t_1 in [0, 1].
-    grid = [int(np.ceil(1 / s)), int(np.ceil(0.7072 / s)), int(np.ceil(1 / s)), int(np.ceil(1 / s))]
+    grid = cc.grid(s)
     t0 = time.perf_counter()
     jobs = [(i0, s, grid) for i0 in range(grid[0])]
     cells = []
@@ -79,8 +78,8 @@ def main():
     big = args.coarse * s
     coarse = np.floor((lo + s / 2) / big).astype(np.int64)
     keys, ref = np.unique(coarse, axis=0, return_inverse=True)
-    ref_centers = np.array([[dd(mp.mpc((k[0] + 0.5) * big, (k[1] + 0.5) * big)),
-                             dd(mp.mpc((k[2] + 0.5) * big, (k[3] + 0.5) * big))] for k in keys])
+    ref_centers = np.array([[mp_dd(mp.mpc((k[0] + 0.5) * big, (k[1] + 0.5) * big)),
+                             mp_dd(mp.mpc((k[2] + 0.5) * big, (k[3] + 0.5) * big))] for k in keys])
     np.savez(args.out, idx=idx, lo=lo, side=s, centers=centers, deltas=deltas, hmaxs=hmaxs,
              ref=ref.ravel(), ref_centers=ref_centers, coarse=big)
     vol = len(cells) * s ** 4

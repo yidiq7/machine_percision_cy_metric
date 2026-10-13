@@ -48,10 +48,6 @@ from quartic.cert import records as rs                                   # noqa:
 G = {}
 
 
-def _grid(s):
-    return [int(np.ceil(1 / s)), int(np.ceil(0.7072 / s)), int(np.ceil(1 / s)), int(np.ceil(1 / s))]
-
-
 def dropped_slab(i0):
     """The cells of the grid with first index i0 that are not in the cover and may meet F."""
     s = mp.mpf(G['side'])
@@ -98,9 +94,7 @@ def radii_chunk(rows):
         corner, size = G['cells'][j]
         lo = [mp.mpf(int(v)) * unit for v in corner]
         h = mp.mpf(int(size)) * unit
-        cen = [cc.dd(mp.mpc(lo[0] + h / 2, lo[1] + h / 2)),
-               cc.dd(mp.mpc(lo[2] + h / 2, lo[3] + h / 2))]
-        delta, hmax = cc.box_radius(lo, h, cen)
+        delta, hmax = cc.box_radius(lo, h, cc.center(lo, h))
         d_rec, h_rec = float(G['rec'][j, 7]), float(G['rec'][j, 12])
         if not (delta <= d_rec and hmax <= h_rec):
             bad.append(int(j))
@@ -156,7 +150,7 @@ def main():
         if (c, n) in recs:
             raise SystemExit(f'record {j} repeats the cell of record {recs[(c, n)]}')
         recs[(c, n)] = j
-    G.update(side=side, depth=depth, grid=_grid(side), recs=recs, rec=rec,
+    G.update(side=side, depth=depth, grid=cc.grid(side), recs=recs, rec=rec,
              cells=list(zip(map(tuple, ci.tolist()), si.tolist())),
              kept={tuple(int(v) for v in i) for i in cov['idx']}, idx=cov['idx'],
              centers=cov['centers'])

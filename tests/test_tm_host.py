@@ -2,8 +2,8 @@
 
 1. The offsets p_i - c_i and the constant abs(p_2)^2 - s2 of Delta do not depend on the
    precision of mpmath, and lie within their bounds of the exact values.
-2. The weights of the re-expansion in zeta (reexpand_weights), in dd and in td, lie within
-   their bounds of the values in mpmath at 150 digits, and the moduli bound the values.
+2. The weights of the re-expansion in zeta (reexpand_weights), in td, lie within their
+   bounds of the values in mpmath at 150 digits, and the moduli bound the values.
 3. A cell that quartic.cert.cover.may_meet_f drops holds no point of F.
 4. quartic.cert.box._real_low is a lower bound of the real part of a model on its polydisc.
 5. box_f stops on local forms that are not in Delta and td (_check_local).
@@ -53,15 +53,14 @@ def check_offsets_and_delta():
     outs = []
     for dps in (15, 100):
         mp.mp.dps = dps
-        outs.append((tc.offset_consts(fr, ref, 2), tc.offset_consts(fr, ref, 3),
-                     tc.delta_const(fr, np.array(s2))))
+        outs.append((tc.offset_consts(fr, ref), tc.delta_const(fr, np.array(s2))))
     for a, b in zip(outs[0], outs[1]):
         for x, y in zip(a if isinstance(a, list) else [a], b if isinstance(b, list) else [b]):
             assert all(bool(cp.all(u == v)) for u, v in zip(x, y)), 'depends on mpmath precision'
-    (off2, off3, (d0, derr)) = outs[1]
+    (off3, (d0, derr)) = outs[1]
     for i in range(2):
         rq = host.dd_frac(ref[i])
-        for limbs, (vals, errs) in ((2, off2[i]), (3, off3[i])):
+        for limbs, (vals, errs) in ((3, off3[i]),):
             vals, errs = cp.asnumpy(vals), cp.asnumpy(errs)
             for bi, box in enumerate(boxes):
                 re, im = (a - c for a, c in zip(host.dd_frac(box[i]), rq))
@@ -80,16 +79,16 @@ def check_offsets_and_delta():
 
 
 def check_weights():
-    k_max, top = 24, 24
+    top = 24
     zeta = [[float(RNG.normal() * 0.05), float(RNG.normal() * 2.0 ** -58),
              float(RNG.normal() * 0.05), float(RNG.normal() * 2.0 ** -58)] for _ in range(3)]
     mp.mp.dps = 150
-    for limbs in (2, 3):
-        w, werr, wabs = tc.reexpand_weights(zeta, k_max, top, limbs)
+    for limbs in (3,):
+        w, werr, wabs = tc.reexpand_weights(zeta, top)
         worst, worst_rel = 0.0, 0.0
         for i, zd in enumerate(zeta):
             z = host.dd_mp(zd)
-            for k in range(k_max + 1):
+            for k in range(top + 1):
                 for m in range(k, top + 1):
                     v = (1 + z) ** k * mp.binomial(m, k) * z ** (m - k)
                     got = w[i, :, k, m]
@@ -100,9 +99,9 @@ def check_weights():
                     assert abs(v) <= wabs[i, k, m], (limbs, k, m)
                     worst = max(worst, float(gap / werr[i, k, m]))
                     worst_rel = max(worst_rel, werr[i, k, m] / float(abs(v)))
-        print(f'  weights ({"dd" if limbs == 2 else "td"}): largest error over its bound '
-              f'{worst:.2f}; largest bound over abs(weight) {worst_rel:.1e}', flush=True)
-        assert worst_rel < (1e-30 if limbs == 2 else 1e-46)
+        print(f'  weights (td): largest error over its bound {worst:.2f}; largest bound over '
+              f'abs(weight) {worst_rel:.1e}', flush=True)
+        assert worst_rel < 1e-46
 
 
 def in_f(t0, t1):
@@ -167,38 +166,12 @@ def check_old_local_forms():
     print('  _check_local: local forms that are not in Delta and td fail', flush=True)
 
 
-def check_form_abs():
-    rng = np.random.default_rng(5)
-    n, b = 5, 3
-    b_low, b_high, r = (cp.asarray(rng.uniform(0, 1, (n + 2, b))) for _ in range(3))
-    mats = [(None, b_low, b_high, r, None)]
-    q_abs = [cp.asarray(rng.uniform(0, 1, (b, n, n))) for _ in range(4)]
-    bdl = cp.asarray(rng.uniform(0, 0.1, b))
-    try:
-        tc.form_abs(mats, q_abs)
-    except TypeError:
-        pass
-    except Exception as err:
-        raise AssertionError(f'form_abs with no bound of Delta gave {type(err).__name__}, '
-                             'not TypeError')
-    else:
-        raise AssertionError('form_abs ran with no bound of Delta')
-    full = cp.asnumpy((b_low + b_high + r)[:n])
-    want = sum(np.einsum('ab,bac,cb->b', full, cp.asnumpy(q_abs[j]), full) * cp.asnumpy(bdl) ** j
-               for j in range(4)) * tc.SAFE
-    got = cp.asnumpy(tc.form_abs(mats, q_abs, bdl))
-    assert np.allclose(got, want, rtol=1e-14, atol=0), (got, want)
-    print('  form_abs: needs the bound of Delta; sum over j of bdl^j full^T abs(R_j) full',
-          flush=True)
-
-
 def main():
     check_offsets_and_delta()
     check_weights()
     check_dropped_cells()
     check_real_low()
     check_old_local_forms()
-    check_form_abs()
     print('all host tests pass', flush=True)
 
 

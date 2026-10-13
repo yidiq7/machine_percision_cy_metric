@@ -1,16 +1,17 @@
 """The GPU Taylor models of f (quartic.cert.box) on boxes at given centers, with checks.
 
 Each box has its center at a reference center of `scripts/tm_local_forms.py`, so the
-local forms are those of the box. For each order and radius the script prints the bound
-of abs(f) on the box and the parts of the remainder.
+local forms are those of the box, or (with --cover) at the cells of that reference center.
+For each order and radius the script prints the bound of abs(f) on the box and the parts
+of the remainder. With no cover a box has no cell, so h_max = 0 there, and the check of
+implicit_h_td covers only the ball around the model of h.
 
 The checks: the model of p0 at a point of the box against p0 in mpmath from the same
 local forms; and f(c) against --fref (values from tm_box.py).
 
 Usage, on one GPU node:
     uv run --extra gpu python -u scripts/cert_box.py \\
-        --local /n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td --centers 0 \\
-        --orders 28 --kmax 24 --deltas 0.01 0.02
+        --local <directory of the local forms> --centers 0 --orders 28 --deltas 0.01 0.02
 """
 import argparse
 import sys
@@ -89,9 +90,7 @@ def main():
     ap.add_argument('--local', type=str, required=True)
     ap.add_argument('--centers', type=int, nargs='+', default=[0, 1, 2])
     ap.add_argument('--orders', type=int, nargs='+', default=[16, 20])
-    ap.add_argument('--ny-extra', type=int, default=6)
-    ap.add_argument('--kmax', type=int, default=20,
-                    help='the largest k with a full model of F_k; the rest enter by a bound')
+    ap.add_argument('--ny-extra', type=int, default=tc.NY_EXTRA)
     ap.add_argument('--repeat', type=int, default=1, help='copies of each box, for the timing')
     ap.add_argument('--a', type=float, nargs='+', default=[0.0],
                     help='the gap fractions of the Cauchy estimate (0: 2 / order)')
@@ -118,34 +117,31 @@ def main():
         if args.cover:
             centers = [[list(x) for x in cov['centers'][i]] for i in pick]
             args.deltas = [float(cov['deltas'][i]) for i in pick]
-            hmax = (cp.asarray(np.array([float(cov['hmaxs'][i]) for i in pick] * args.repeat))
-                    if 'hmaxs' in cov.files else None)
+            hmax = cp.asarray(np.array([float(cov['hmaxs'][i]) for i in pick] * args.repeat))
             off = [max(abs(dd_mp(c[k]) - dd_mp(cdd[k])) for k in range(2)) for c in centers]
             print(f'reference {ci}: cells {list(pick)}, offsets {[f"{float(o):.3f}" for o in off]}',
                   flush=True)
-        if not args.cover:
-            hmax = None
         deltas = list(args.deltas) * args.repeat
         nb = len(deltas)
+        if not args.cover:
+            hmax = cp.zeros(nb)
         fr = tc.make_frames(centers * args.repeat if args.cover else [cdd] * nb, k0)
         for n, a in [(n, a) for n in args.orders for a in args.a]:
-            a = a or None
+            a = a or 2.0 / n
             if args.repeat > 1:
-                tc.box_f(fr, local, deltas, n, n + args.ny_extra, args.kmax, a, hmax=hmax)
+                tc.box_f(fr, local, deltas, n, n + args.ny_extra, a, hmax)
             cp.cuda.Device().synchronize()
             t0 = time.perf_counter()
-            f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, deltas, n,
-                                                      n + args.ny_extra, args.kmax, a,
-                                                      hmax=hmax)
+            f, (d, d_f, d_phi), info, parts = tc.box_f(fr, local, deltas, n, n + args.ny_extra,
+                                                      a, hmax)
             sup, c0, pb = sup_bound(parts['sp4'], f, d)
             cp.cuda.Device().synchronize()
             sec = time.perf_counter() - t0
             fc = dd_mp(cp.asnumpy(f.c[:, 0, 0]))
             ref = f', tm_box {args.fref[ci]:+.10e}' if ci < len(args.fref) else ''
-            extra = (f', bound of Delta {float(cp.max(info["bound_delta"])):.2e}'
-                     if 'bound_delta' in info else '')
+            extra = f', bound of Delta {float(cp.max(info["bound_delta"])):.2e}'
             print(f'center {ci}, order {n} (tau alone {n + args.ny_extra}), a '
-                  f'{a or 2 / n:.3f}{extra}: f(c) '
+                  f'{a:.3f}{extra}: f(c) '
                   f'{mp.nstr(fc.real, 11)}{ref}; {sec:.1f}s for {nb} boxes ('
                   + ', '.join(f'{k} {v:.2f}s' for k, v in info['times'].items()) + ')', flush=True)
             # The model of p0 at a point of the smallest box against mpmath.
@@ -165,21 +161,20 @@ def main():
                       f'{pf["round"][i]:.1e}, above the order {pf["high"][i]:.1e}, models '
                       f'{pf["models"][i]:.1e}, radii {pf["radius"][i]:.1e}, sums {pf["sums"][i]:.1e}',
                       flush=True)
-            if 'psi_parts' in info:
-                pp = {k: cp.asnumpy(v) for k, v in info['psi_parts'].items()}
-                xp = {k: cp.asnumpy(v) for k, v in info['xi_parts'].items()}
-                fr_ = cp.asnumpy(info['fk_rem'])
-                for i, dl in enumerate(args.deltas):
-                    kk = int(np.argmax(fr_[:, i]))
-                    print(f'    psi at delta {dl:.4f}: ' + ', '.join(f'{k} {v[i]:.1e}' for k, v in pp.items())
-                          + f'; largest F_k rem xi^k at k = {kk}: {fr_[kk, i]:.1e} | xi parts: '
-                          + ', '.join(f'{k} {v[i]:.1e}' for k, v in xp.items()), flush=True)
+            pp = {k: cp.asnumpy(v) for k, v in info['psi_parts'].items()}
+            xp = {k: cp.asnumpy(v) for k, v in info['xi_parts'].items()}
+            fr_ = cp.asnumpy(info['fk_rem'])
+            for i, dl in enumerate(args.deltas):
+                kk = int(np.argmax(fr_[:, i]))
+                print(f'    psi at delta {dl:.4f}: ' + ', '.join(f'{k} {v[i]:.1e}' for k, v in pp.items())
+                      + f'; largest F_k rem xi^k at k = {kk}: {fr_[kk, i]:.1e} | xi parts: '
+                      + ', '.join(f'{k} {v[i]:.1e}' for k, v in xp.items()), flush=True)
             for i, dl in enumerate(args.deltas):
                 print(f'    delta {dl:.4f}: abs(f) <= {float(sup[i]):.2e} (center {float(c0[i]):.2e},'
                       f' polynomial {float(pb[i]):.2e}, remainder {h["rem_f"][i]:.2e}) | h '
                       f'{h["rho_h"][i]:.1e} (lam {h["lam_h"][i]:.2f}, on the cell {h["lam_big"][i]:.2f}), '
                       f'p0 {h["rem_p0"][i]:.1e} rel, '
-                      f'F_0 {h["rem_f0"][i]:.1e}, psi {h["rem_psi"][i]:.1e} (tail {h["tail"][i]:.1e}), '
+                      f'F_0 {h["rem_f0"][i]:.1e}, psi {h["rem_psi"][i]:.1e}, '
                       f'log p~ {h["rem_logpt"][i]:.1e}, log r2 {h["rem_logr2"][i]:.1e}, Phi '
                       f'{h["rem_phi"][i]:.1e}, g_00 {h["rem_g"][i]:.1e}; eta r2 {h["eta_r"][i]:.3f}, '
                       f'p~ {h["eta_p"][i]:.3f}, xi {h["bxi"][i]:.1e}', flush=True)
