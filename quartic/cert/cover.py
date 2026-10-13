@@ -7,6 +7,8 @@ only if interval arithmetic (mpmath.iv) proves that the cell misses F. `box_radi
 proves, in ball arithmetic, the radius delta and the bound hmax of the box at the center
 of a cell in the frame of `quartic.cert.frame`.
 """
+import math
+
 import mpmath as mp
 from mpmath import iv
 
@@ -104,6 +106,9 @@ def box_radius(lo, s, c_dd):
                + sum(upper(exact_d[i] - d[i]) for i in range(2)) * r) * (1 + 1e-12)
         hmax = num / den * (1 + 1e-12)
         delta = max(r + hmax * upper(n[0]), r + hmax * upper(n[1])) * (1 + 1e-12)
+    # Python max drops a NaN in its second argument, so test both numbers here.
+    if not (math.isfinite(delta) and math.isfinite(hmax)):
+        return float('inf'), float('inf')
     return delta, hmax
 
 

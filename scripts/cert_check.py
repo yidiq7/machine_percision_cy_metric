@@ -28,6 +28,7 @@ Usage, on one GPU node:
 """
 import argparse
 import hashlib
+import math
 import sys
 import time
 from pathlib import Path
@@ -44,6 +45,11 @@ from quartic.cert import cover as cc                                     # noqa:
 
 mp.mp.dps = 40
 RNG = np.random.default_rng(20261009)
+
+
+def _nan_inf(x):
+    """x, with NaN as infinity, so that max and <= count a NaN as a failure."""
+    return x if x == x else math.inf
 
 
 def in_f(t0, t1):
@@ -219,8 +225,8 @@ def check_boxes(rec, args):
             tb.D['v1'].append(acb(0))
             f_arb = tb.run_box((len(tb.D['z']) - 1, 2, [1e-4]))['f_center']
             gap = abs(float(val.real) - f_arb)
-            worst_gap = max(worst_gap, gap / rem)
-            worst_bound = max(worst_bound, abs(f_arb) / rec[j, 8])
+            worst_gap = max(worst_gap, _nan_inf(gap / rem))
+            worst_bound = max(worst_bound, _nan_inf(abs(f_arb) / rec[j, 8]))
         print(f'box {j} (reference {r}, delta {delta:.4f}): largest gap over remainder '
               f'{worst_gap:.2e}, largest abs(f) over the bound {worst_bound:.2e}; bound again '
               f'{sup:.4e} against {rec[j, 8]:.4e} in the record', flush=True)
@@ -315,6 +321,7 @@ def main():
     if args.recompute:
         ok = check_recompute(rec, args) and ok
     print('all checks pass' if ok else 'A CHECK FAILED', flush=True)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == '__main__':

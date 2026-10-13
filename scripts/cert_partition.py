@@ -204,9 +204,13 @@ def main():
               f'above 0 or with lam_low not finite and above 0', flush=True)
         print('the gradient bound holds on every record' if bad_grad == 0 and ok
               else 'THE GRADIENT CHECK FAILS', flush=True)
+        ok = ok and bad_grad == 0
+    if args.grad and not has_grad:
+        ok = False
     if not ok:
         print('first dropped cells:', bad[:5], 'first missing cells:', missing[:5],
               'first unused records:', unused[:5], flush=True)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == '__main__':

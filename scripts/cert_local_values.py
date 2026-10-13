@@ -33,6 +33,7 @@ import hashlib
 import itertools
 import math
 import multiprocessing
+import sys
 import time
 from pathlib import Path
 
@@ -217,7 +218,8 @@ def one(r):
         vals, tols = stored_values(z, name, pts)
         for i, (v, tol) in enumerate(zip(vals, tols)):
             gap = upper(v - exact[i][k])
-            worst = max(worst, gap / tol)
+            # A NaN gap or a bound that is not finite counts as a failure.
+            worst = max(worst, gap / tol if gap == gap and math.isfinite(tol) else math.inf)
             worst_rel = max(worst_rel, gap / max(abs(float(exact[i][k].real.mid())), 1e-300))
     return r, worst, worst_rel, digest, time.perf_counter() - t0, ''
 
@@ -271,8 +273,10 @@ def main():
           f'{max(x[1] for x in res):.3e}, largest gap over abs(value) '
           f'{max(x[2] for x in res):.3e}; {len(bad)} above the bound {bad[:10]}; '
           f'{time.perf_counter() - t0:.0f}s', flush=True)
-    print('the local forms hold the certified potential' if not bad and len(res) == len(refs)
-          else 'THE LOCAL FORM CHECK FAILS', flush=True)
+    ok = not bad and len(res) == len(refs)
+    print(f'the local forms of {len(res)} of the {len(cov["ref_centers"])} reference centers hold '
+          f'the certified potential' if ok else 'THE LOCAL FORM CHECK FAILS', flush=True)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == '__main__':
