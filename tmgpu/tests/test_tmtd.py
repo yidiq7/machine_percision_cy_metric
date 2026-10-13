@@ -19,13 +19,22 @@ RNG = np.random.default_rng(11)
 U = 2.0 ** -53
 
 
+LIMBS = 'normal'
+
+
 def random_td(shape, scale=1.0):
-    """Random complex td limbs (6, ...): each lower limb about u times the one above."""
+    """Random complex td limbs (6, ...). With LIMBS 'normal' each lower limb is about u times
+    the one above; 'reversed' puts the smallest limb first; 'equal' gives three limbs of the
+    same size. The running bounds must hold for limbs in any order."""
     out = np.zeros((6,) + shape)
     for part in (0, 3):
         hi = RNG.normal(size=shape) * scale
         mid = hi * U * RNG.uniform(-1, 1, size=shape)
         lo = mid * U * RNG.uniform(-1, 1, size=shape)
+        if LIMBS == 'reversed':
+            hi, lo = lo, hi
+        elif LIMBS == 'equal':
+            mid, lo = RNG.normal(size=shape) * scale, RNG.normal(size=shape) * scale
         out[part], out[part + 1], out[part + 2] = hi, mid, lo
     return out
 
@@ -134,9 +143,11 @@ def check_gemm(mode, out_td, cancel):
 
 
 if __name__ == '__main__':
-    check_tm_ops()
-    for mode in (0, 1):
-        for out_td in (True, False):
-            for cancel in (False, True):
-                check_gemm(mode, out_td, cancel)
+    for LIMBS in ('normal', 'reversed', 'equal'):
+        print(f'limbs {LIMBS}', flush=True)
+        check_tm_ops()
+        for mode in (0, 1):
+            for out_td in (True, False):
+                for cancel in (False, True):
+                    check_gemm(mode, out_td, cancel)
     print('\nall tmtd tests pass')

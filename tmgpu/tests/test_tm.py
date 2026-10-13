@@ -169,6 +169,141 @@ def test_tensor():
           delta, 'tensor product z(s) w(r)', count=6)
 
 
+def full_poly(sp, b, top):
+    """Random complex coefficients with nonzero low dd parts, zero above the degree top."""
+    return [[mp.mpc(*RNG.normal(size=2)) * mp.pi / 3 if sum(e) <= top else mp.mpc(0)
+             for e in sp.mons] for _ in range(b)]
+
+
+def exact_dd(c, k):
+    """The exact rationals (re, im) of each coefficient of box k of a dd array (4, S, B)."""
+    c = cp.asnumpy(c)
+    return [(Fraction(float(c[0, i, k])) + Fraction(float(c[1, i, k])),
+             Fraction(float(c[2, i, k])) + Fraction(float(c[3, i, k]))) for i in range(c.shape[1])]
+
+
+def cmul(x, y):
+    return x[0] * y[0] - x[1] * y[1], x[0] * y[1] + x[1] * y[0]
+
+
+def coef_gap(sp, got, want, delta):
+    """sum over the coefficients of (abs re + abs im of got - want) delta^deg, exactly."""
+    d = Fraction(delta)
+    return sum((abs(g[0] - w[0]) + abs(g[1] - w[1])) * d ** int(e)
+               for g, w, e in zip(got, want, sp.deg))
+
+
+def test_rounding_bounds():
+    """With no truncation and exact inputs, the remainder is the bound of the round-off
+    alone, so each computed polynomial must lie within it of the exact one. With U2 = 0
+    the same check must fail, which shows that the test sees each rounding constant."""
+    b, delta = 2, 1.0
+    sp4, sp2 = tm.Space(4, 8), tm.Space(2, 8)
+    dl = cp.full(b, delta)
+    va, vb = full_poly(sp4, b, 4), full_poly(sp4, b, 4)
+    vz, vw = full_poly(sp2, b, 3), full_poly(sp2, b, 3)
+    k = to_dd([[mp.mpc(0.3, -1.7) * mp.pi / 3] for _ in range(b)])[:, 0, :]
+
+    def ops(space4):
+        a, bb = tm.TM(to_dd(va), cp.zeros(b), dl), tm.TM(to_dd(vb), cp.zeros(b), dl)
+        z, w = tm.TM(to_dd(vz), cp.zeros(b), dl), tm.TM(to_dd(vw), cp.zeros(b), dl)
+        half = dl / 2
+        return {'mul': (space4, tm.mul(space4, a, bb), delta),
+                'add': (space4, tm.add(space4, a, bb), delta),
+                'scale': (space4, tm.scale(space4, a, k), delta),
+                'tensor': (space4, tm.tensor(space4, sp2, z, w), delta),
+                'deriv1': (space4, tm.deriv1(space4, a, 1, half), delta / 2),
+                'cauchy_mixed': (space4, tm.cauchy_mixed(space4, a, 0, 2, half), delta / 2)}
+
+    def exact(name, kb):
+        a, bb = exact_dd(to_dd(va), kb), exact_dd(to_dd(vb), kb)
+        out = [(Fraction(0), Fraction(0)) for _ in sp4.mons]
+        if name == 'mul':
+            for i, ei in enumerate(sp4.mons):
+                for j, ej in enumerate(sp4.mons):
+                    e = tuple(x + y for x, y in zip(ei, ej))
+                    if sum(e) <= sp4.n:
+                        p = cmul(a[i], bb[j])
+                        q = out[sp4.index[e]]
+                        out[sp4.index[e]] = (q[0] + p[0], q[1] + p[1])
+        elif name == 'add':
+            out = [(x[0] + y[0], x[1] + y[1]) for x, y in zip(a, bb)]
+        elif name == 'scale':
+            kk = exact_dd(k[:, None, :], kb)[0]
+            out = [cmul(x, kk) for x in a]
+        elif name == 'tensor':
+            z, w = exact_dd(to_dd(vz), kb), exact_dd(to_dd(vw), kb)
+            rows, cols = tm.split_index(sp4, sp2)
+            out = [cmul(z[r], w[c]) for r, c in zip(rows, cols)]
+        else:
+            axes = (1,) if name == 'deriv1' else (0, 2)
+            for i, e in enumerate(sp4.mons):
+                f = list(e)
+                m = 1
+                for ax in axes:
+                    f[ax] += 1
+                    m *= f[ax]
+                if sum(f) <= sp4.n:
+                    src = a[sp4.index[tuple(f)]]
+                    out[i] = (src[0] * m, src[1] * m)
+        return out
+
+    good = ops(sp4)
+    u2 = tm.U2
+    try:
+        tm.U2 = 0.0
+        bad = ops(tm.Space(4, 8))
+    finally:
+        tm.U2 = u2
+    for name, (space, m, d) in good.items():
+        rem, rem_bad = cp.asnumpy(m.rem), cp.asnumpy(bad[name][1].rem)
+        for kb in range(b):
+            gap = float(coef_gap(space, exact_dd(m.c, kb), exact(name, kb), d))
+            assert gap <= rem[kb], (name, kb, gap, rem[kb])
+            assert gap > rem_bad[kb], (name, kb, 'the check does not see U2', gap, rem_bad[kb])
+        print(f'  {name}: largest round-off over its bound '
+              f'{max(float(coef_gap(space, exact_dd(m.c, kb), exact(name, kb), d)) / rem[kb] for kb in range(b)):.2e}',
+              flush=True)
+
+
+def test_guards():
+    """A permuted memory layout gives the same results as a C-ordered array, and bad
+    inputs raise ValueError: float32 coefficients, shapes that differ, and a smaller
+    polydisc that is larger."""
+    from tmgpu import tmtd, tools
+    sp = tm.Space(2, 4)
+    b = 3
+    x = model(sp, random_poly(sp, b, 1.0, 1.0), np.full(b, 0.5))
+    perm = tm.TM(cp.ascontiguousarray(cp.moveaxis(x.c, 0, 2)).transpose(2, 0, 1), x.rem, x.delta)
+    assert not perm.c.flags.c_contiguous
+    ops = {'mul': lambda m: tm.mul(sp, m, m), 'add': lambda m: tm.add(sp, m, m),
+           'scale': lambda m: tm.scale(sp, m, tm.cconst(1.5j, b)),
+           'add_const': lambda m: tm.add_const(sp, m, tm.cconst(2, b)),
+           'deriv1': lambda m: tm.deriv1(sp, m, 0, m.delta / 2)}
+    for name, op in ops.items():
+        assert cp.array_equal(op(perm).c, op(x).c), name
+    x6 = tmtd.TMT(cp.asarray(np.concatenate([cp.asnumpy(x.c)[:2], np.zeros((1, sp.size, b)),
+                                              cp.asnumpy(x.c)[2:], np.zeros((1, sp.size, b))])),
+                  x.rem, x.delta)
+    p6 = tmtd.TMT(cp.ascontiguousarray(cp.moveaxis(x6.c, 0, 2)).transpose(2, 0, 1), x.rem, x.delta)
+    assert cp.array_equal(tmtd.mul(sp, p6, p6).c, tmtd.mul(sp, x6, x6).c), 'tmtd.mul'
+    assert cp.array_equal(tmtd.add(sp, p6, p6).c, tmtd.add(sp, x6, x6).c), 'tmtd.add'
+    other = model(sp, random_poly(sp, b + 1, 1.0, 1.0), np.full(b + 1, 0.5))
+    bad = {'float32': lambda: tm.TM(x.c.astype(cp.float32), x.rem, x.delta),
+           'shapes': lambda: tm.add(sp, x, other),
+           'deriv1': lambda: tm.deriv1(sp, x, 0, x.delta * 2),
+           'cauchy_mixed': lambda: tm.cauchy_mixed(sp, x, 0, 1, x.delta * 2),
+           'restrict': lambda: tm.restrict(x, x.delta * 2),
+           'sup_bound': lambda: tools.sup_bound(sp, x, x.delta * 2)}
+    for name, fn in bad.items():
+        try:
+            fn()
+        except ValueError:
+            continue
+        raise AssertionError(f'{name}: no ValueError')
+    print('  the guards hold', flush=True)
+
+
 def test_kernel_speed():
     for n in (20, 24):
         sp = tm.Space(4, n)
@@ -188,7 +323,7 @@ def test_kernel_speed():
 
 if __name__ == "__main__":
     for fn in (test_product_and_cancellation, test_series, test_cauchy_derivatives, test_tensor,
-               test_kernel_speed):
+               test_rounding_bounds, test_kernel_speed, test_guards):
         print(fn.__name__, flush=True)
         fn()
     print("\nall tm tests pass")
