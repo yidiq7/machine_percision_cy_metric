@@ -19,7 +19,11 @@ the cells:
    way.
 5. Every record has a finite bound of abs(grad f) in G and in tau above 0, and a finite
    lam_low > 0; a NaN fails.
+6. With --manifest (the file of scripts/cert_local_values.py --manifest), every file of
+   local forms that the run read has the SHA-256 of the manifest, and its check there
+   passed. So the records come from the local forms that hold the certified potential.
 
+--run takes the files of all parts of one run (quartic.cert.records.load).
 The corners of the records are multiples of s / 2^depth, with the largest depth of the
 records, so they are compared as integers. The exit status is 1 if a check fails. Usage,
 on CPU cores:
@@ -39,6 +43,7 @@ import mpmath as mp
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from quartic.cert import cover as cc                                     # noqa: E402
+from quartic.cert import records as rs                                   # noqa: E402
 
 G = {}
 
@@ -128,13 +133,14 @@ def cover_chunk(cells):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--run', type=str, required=True)
+    ap.add_argument('--run', type=str, nargs='+', required=True)
     ap.add_argument('--cover', type=str, required=True)
     ap.add_argument('--procs', type=int, default=16)
+    ap.add_argument('--manifest', type=str, default='',
+                    help='the manifest of scripts/cert_local_values.py for the local forms')
     args = ap.parse_args()
     t0 = time.perf_counter()
-    z = np.load(args.run)
-    rec, target = z['records'], float(z['target'])
+    rec, target, commit, shas = rs.load(args.run)
     cov = np.load(args.cover)
     side = float(cov['side'])
     depth = int(rec[:, 1].max())
@@ -193,6 +199,20 @@ def main():
     print('the gradient bound holds on every record' if bad_grad == 0 and ok
           else 'THE GRADIENT CHECK FAILS', flush=True)
     ok = ok and bad_grad == 0
+    print(f'code of the run: {commit}; {len(shas)} files of local forms with a SHA-256', flush=True)
+    if args.manifest:
+        listed = {}
+        for line in open(args.manifest):
+            if line.strip() and not line.startswith('#'):
+                r, digest, gap = line.split()
+                listed[int(r)] = (digest, float(gap))
+        refs = set(np.unique(rec[:, 0]).astype(int).tolist())
+        # Each reference center with a record needs a hash, equal to that of a file that passed.
+        bad_sha = sorted(r for r in refs | set(shas) if r not in shas or r not in listed
+                         or listed[r][0] != shas[r] or not listed[r][1] <= 1)
+        print(f'manifest {args.manifest}: {len(bad_sha)} reference centers without a hash, '
+              f'with another hash, or with a failed check {bad_sha[:5]}', flush=True)
+        ok = ok and not bad_sha
     if not ok:
         print('first dropped cells:', bad[:5], 'first missing cells:', missing[:5],
               'first unused records:', unused[:5], flush=True)

@@ -28,7 +28,6 @@ Usage, on one GPU node:
         --forms runs_tm/r20_forms.npz --points 2000 --boxes 8
 """
 import argparse
-import hashlib
 import math
 import sys
 import time
@@ -43,6 +42,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 
 from tmgpu.tools import sup_bound                           # noqa: E402
 from quartic.cert import cover as cc                                     # noqa: E402
+from quartic.cert import records as rs                                   # noqa: E402
 
 mp.mp.dps = 40
 RNG = np.random.default_rng(20261009)
@@ -285,18 +285,10 @@ def check_recompute(rec, args):
     return n_bad == 0
 
 
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, 'rb') as fh:
-        for block in iter(lambda: fh.read(1 << 24), b''):
-            h.update(block)
-    return h.hexdigest()
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--run', type=str, required=True)
+    ap.add_argument('--run', type=str, nargs='+', required=True, help='the files of all parts')
     ap.add_argument('--cover', type=str, required=True)
     ap.add_argument('--local', type=str, default='')
     ap.add_argument('--data', type=str, default='')
@@ -313,9 +305,9 @@ def main():
     ap.add_argument('--tol', type=float, default=0.02,
                     help='the largest relative deviation of a bound computed again')
     args = ap.parse_args()
-    for name, path in (('run', args.run), ('cover', args.cover)):
-        print(f'{name} {path}: SHA-256 {sha256(path)}', flush=True)
-    rec = np.load(args.run)['records']
+    for path in args.run + [args.cover]:
+        print(f'{path}: SHA-256 {rs.sha256(path)}', flush=True)
+    rec = rs.load(args.run)[0]
     cov = np.load(args.cover)
     ok = check_cover(rec, cov, args.points)
     ok = check_dropped(cov, args.dropped) and ok

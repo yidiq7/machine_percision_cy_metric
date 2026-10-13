@@ -4,7 +4,7 @@ Input: a cover of scripts/cert_cover.py and the directory of the local forms of 
 reference centers (scripts/tm_local_forms.py --centers <cover>), with center_<i>.npz
 for reference center i.
 
-For each reference center that has a file, its boxes run in batches of one order: a
+For each reference center of the cover (or of --refs), its boxes run in batches of one order: a
 cell with rho >= --rho-high at --order-high (with --a-high), the others at --order
 (with --a). A box whose bound of abs(f) exceeds --target tries --order-high first, and
 then splits into the cells of half the side that may meet F, each with the radius and
@@ -13,7 +13,8 @@ exact mpmath numbers. Each final box gives one record: the
 lower corner and side of its cell, its radius, the bound of abs(f), the parts of that
 bound, and lam_big, the contraction factor of implicit_h_td on the ball that holds every
 point of X over the cell. A box that still misses the target at the last depth stays in
-the record with its bound, which then enters the maximum.
+the record with its bound, which then enters the maximum. The file also holds the git
+commit of the code and the SHA-256 of each file of local forms (quartic.cert.records).
 
 Usage, on one GPU node:
     uv run --extra gpu --with cupy-cuda12x --with python-flint python -u \\
@@ -21,6 +22,7 @@ Usage, on one GPU node:
         --local /n/netscratch/.../tm_local_f6t_td --target 5e-20 --out runs_tm/run_f6t.npz
 """
 import argparse
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -35,6 +37,7 @@ sys.path.insert(0, str(ROOT))
 from tmgpu.tools import sup_bound                           # noqa: E402
 from quartic.cert import box as tc                           # noqa: E402
 from quartic.cert import cover as cc                                     # noqa: E402
+from quartic.cert import records as rs                                   # noqa: E402
 
 
 def split(lo, s):
@@ -83,23 +86,23 @@ def main():
                     help='> 0: decide second tries and splits by the gradient bound and not '
                          'by --target')
     ap.add_argument('--refs', type=int, nargs='*', default=None,
-                    help='only these reference centers (default: every one with a file)')
+                    help='only these reference centers (default: every one of the cover)')
     ap.add_argument('--verbose', action='store_true')
     ap.add_argument('--out', type=str, required=True)
     args = ap.parse_args()
     cov = np.load(args.cover)
-    refs = args.refs
-    if refs is None:
-        refs = sorted(int(p.stem.split('_')[1]) for p in Path(args.local).glob('center_*.npz'))
+    refs = args.refs if args.refs is not None else list(range(len(cov['ref_centers'])))
+    commit = subprocess.run(['git', 'describe', '--always', '--dirty', '--abbrev=40'], cwd=ROOT,
+                            capture_output=True, text=True, check=True).stdout.strip()
+    shas = []
     settings = {args.order: args.a or None, args.order_high: args.a_high or None}
     t0 = time.perf_counter()
     records = []
     n_boxes = 0
-    columns = ['ref', 'depth', 'lo0', 'lo1', 'lo2', 'lo3', 'side', 'delta', 'bound', 'center',
-               'polynomial', 'remainder', 'hmax', 'lam_big', 'order', 'a', 'grad_tau', 'grad_g',
-               'lam_low']
     for r in refs:
-        local = tc.local_on_gpu(Path(args.local) / f'center_{r}.npz')
+        path = Path(args.local) / f'center_{r}.npz'
+        shas.append(rs.sha256(path))
+        local = tc.local_on_gpu(path)
         k0, top = int(local['k0']), int(local['top'])
         kmax = args.kmax or top
         idx = np.flatnonzero(cov['ref'] == r)
@@ -166,7 +169,8 @@ def main():
               f'boxes, largest bound {worst:.3e}; {time.perf_counter() - t1:.1f}s; total '
               f'{n_boxes} boxes in {time.perf_counter() - t0:.0f}s', flush=True)
         np.savez(args.out, records=np.array(records), target=args.target,
-                 columns=np.array(columns))
+                 columns=np.array(rs.COLUMNS), commit=commit, local_refs=np.array(refs[:len(shas)]),
+                 local_sha=np.array(shas))
     rec = np.array(records)
     # np.max and np.min give NaN if one record has NaN, so no NaN can hide here.
     grad_text = (f', largest gradient bound {np.max(rec[:, 17]):.4e} (in tau '
