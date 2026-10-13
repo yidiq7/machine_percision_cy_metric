@@ -30,6 +30,7 @@ Usage, on CPU cores (about 20 s for each point and file on one core):
 """
 import argparse
 import hashlib
+import io
 import itertools
 import math
 import multiprocessing
@@ -39,6 +40,10 @@ from pathlib import Path
 
 import numpy as np
 from flint import acb, acb_mat, arb, arb_mat, ctx
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from quartic.cert import records as rs                      # noqa: E402
 
 S4 = list(itertools.permutations(range(4)))
 G = {}
@@ -183,9 +188,10 @@ def test_points(r, c_mid, rng):
 def one(r):
     ctx.prec = G['prec']
     t0 = time.perf_counter()
-    path = Path(G['local']) / f'center_{r}.npz'
-    digest = sha256(path) if G['manifest'] else ''
-    z = np.load(path)
+    # One read of the file gives both the hash and the arrays that the check tests.
+    raw = (Path(G['local']) / f'center_{r}.npz').read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    z = np.load(io.BytesIO(raw))
     if int(z['k0']) != G['k0'] or int(z['top']) != G['top']:
         return r, math.inf, math.inf, digest, 0.0, 'k0 or top differs from the data'
     c = z['c']
@@ -243,7 +249,7 @@ def main():
     t0 = time.perf_counter()
     cov = np.load(args.cover)
     refs = args.refs if args.refs else list(range(len(cov['ref_centers'])))
-    G.update(local=args.local, prec=args.prec, manifest=bool(args.manifest), seed=args.seed,
+    G.update(local=args.local, prec=args.prec, seed=args.seed,
              points=max(1, args.points), side=float(cov['side']), ref=np.asarray(cov['ref']),
              idx=np.asarray(cov['idx']))
     ctx.prec = args.prec
@@ -264,11 +270,8 @@ def main():
     res.sort()
     bad = [x[0] for x in res if not x[1] <= 1]
     if args.manifest:
-        with open(args.manifest, 'w') as fh:
-            fh.write(f'# data {args.data} {sums["data"]}\n# forms {args.forms} {sums["forms"]}\n')
-            fh.write('# reference, SHA-256 of center_<r>.npz, largest gap over its bound\n')
-            for r, w, _, digest, _, _ in res:
-                fh.write(f'{r} {digest} {w:.3e}\n')
+        rs.write_manifest(args.manifest, (args.data, sums['data']), (args.forms, sums['forms']),
+                          [(r, digest, w) for r, w, _, digest, _, _ in res])
     print(f'{len(res)} reference centers: largest gap over its bound '
           f'{max(x[1] for x in res):.3e}, largest gap over abs(value) '
           f'{max(x[2] for x in res):.3e}; {len(bad)} above the bound {bad[:10]}; '

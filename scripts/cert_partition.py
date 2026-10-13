@@ -19,9 +19,12 @@ the cells:
    way.
 5. Every record has a finite bound of abs(grad f) in G and in tau above 0, and a finite
    lam_low > 0; a NaN fails.
-6. With --manifest (the file of scripts/cert_local_values.py --manifest), every file of
-   local forms that the run read has the SHA-256 of the manifest, and its check there
-   passed. So the records come from the local forms that hold the certified potential.
+6. With --manifest (the file of scripts/cert_local_values.py --manifest) and the files
+   --data and --forms that define the potential, the manifest is that of those files,
+   and every file of local forms that the run read has the SHA-256 of the manifest and
+   passed its check there (quartic.cert.records.manifest_errors). So the records come
+   from the local forms that hold the certified potential. Records with hashes need
+   --manifest, and the code of the run must have had no change that was not committed.
 
 --run takes the files of all parts of one run (quartic.cert.records.load).
 The corners of the records are multiples of s / 2^depth, with the largest depth of the
@@ -132,6 +135,8 @@ def main():
     ap.add_argument('--procs', type=int, default=16)
     ap.add_argument('--manifest', type=str, default='',
                     help='the manifest of scripts/cert_local_values.py for the local forms')
+    ap.add_argument('--data', type=str, default='', help='the base of the potential (with --manifest)')
+    ap.add_argument('--forms', type=str, default='', help='the forms N_L (with --manifest)')
     args = ap.parse_args()
     t0 = time.perf_counter()
     rec, target, commit, shas = rs.load(args.run)
@@ -194,19 +199,24 @@ def main():
           else 'THE GRADIENT CHECK FAILS', flush=True)
     ok = ok and bad_grad == 0
     print(f'code of the run: {commit}; {len(shas)} files of local forms with a SHA-256', flush=True)
+    if commit is not None and commit.endswith('-dirty'):
+        print('THE CODE OF THE RUN HAD CHANGES THAT WERE NOT COMMITTED', flush=True)
+        ok = False
+    if not shas:
+        print('the records hold no hashes (a run before the hashes), so nothing ties them to the '
+              'files of local forms', flush=True)
+    elif not args.manifest:
+        print('THE RECORDS HOLD HASHES: give --manifest, --data and --forms', flush=True)
+        ok = False
     if args.manifest:
-        listed = {}
-        for line in open(args.manifest):
-            if line.strip() and not line.startswith('#'):
-                r, digest, gap = line.split()
-                listed[int(r)] = (digest, float(gap))
+        if not (args.data and args.forms):
+            raise SystemExit('--manifest needs --data and --forms')
         refs = set(np.unique(rec[:, 0]).astype(int).tolist())
-        # Each reference center with a record needs a hash, equal to that of a file that passed.
-        bad_sha = sorted(r for r in refs | set(shas) if r not in shas or r not in listed
-                         or listed[r][0] != shas[r] or not listed[r][1] <= 1)
-        print(f'manifest {args.manifest}: {len(bad_sha)} reference centers without a hash, '
-              f'with another hash, or with a failed check {bad_sha[:5]}', flush=True)
-        ok = ok and not bad_sha
+        errs = rs.manifest_errors(shas, refs, rs.read_manifest(args.manifest),
+                                  rs.sha256(args.data), rs.sha256(args.forms))
+        print(f'manifest {args.manifest}: ' + ('; '.join(errs) if errs else 'every file of the run '
+              'has its hash and passed its check, for these --data and --forms'), flush=True)
+        ok = ok and not errs
     if not ok:
         print('first dropped cells:', bad[:5], 'first missing cells:', missing[:5],
               'first unused records:', unused[:5], flush=True)

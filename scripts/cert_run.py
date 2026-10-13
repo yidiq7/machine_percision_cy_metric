@@ -24,6 +24,8 @@ Usage, on one GPU node:
         --local /n/netscratch/.../tm_local_f6t_td --target 5e-20 --out runs_tm/run_f6t.npz
 """
 import argparse
+import hashlib
+import io
 import subprocess
 import sys
 import time
@@ -96,9 +98,10 @@ def main():
     records = []
     n_boxes = 0
     for r in refs:
-        path = Path(args.local) / f'center_{r}.npz'
-        shas.append(rs.sha256(path))
-        local = tc.local_on_gpu(path)
+        # One read of the file gives both the hash and the forms that the boxes use.
+        raw = (Path(args.local) / f'center_{r}.npz').read_bytes()
+        shas.append(hashlib.sha256(raw).hexdigest())
+        local = tc.local_on_gpu(io.BytesIO(raw))
         k0 = int(local['k0'])
         idx = np.flatnonzero(cov['ref'] == r)
         side = mp.mpf(float(cov['side']))
@@ -156,7 +159,7 @@ def main():
         print(f'reference {r}: {len(idx)} cells, {n_ref} boxes computed, {len(done)} final '
               f'boxes, largest bound {worst:.3e}; {time.perf_counter() - t1:.1f}s; total '
               f'{n_boxes} boxes in {time.perf_counter() - t0:.0f}s', flush=True)
-        np.savez(args.out, records=np.array(records), target=args.target,
+        np.savez(args.out, records=np.array(records).reshape(-1, len(rs.COLUMNS)), target=args.target,
                  columns=np.array(rs.COLUMNS), commit=commit, local_refs=np.array(refs[:len(shas)]),
                  local_sha=np.array(shas))
     rec = np.array(records)

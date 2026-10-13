@@ -205,9 +205,12 @@ class TM:
 
 
 def check_pair(x, y):
-    """Raise ValueError unless two models have coefficients of the same shape."""
+    """Raise ValueError unless two models have coefficients of the same shape and y holds on
+    the polydisc of x, which the result keeps; the same radius array needs no test."""
     if x.c.shape != y.c.shape:
         raise ValueError(f'the models have shapes {x.c.shape} and {y.c.shape}')
+    if y.delta is not x.delta:
+        check_inside(x.delta, y.delta)
 
 
 def check_inside(small, big):
