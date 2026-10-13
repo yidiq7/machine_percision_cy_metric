@@ -4,28 +4,27 @@
    the conditions of F in mpmath; each point must lie in a final box of the record:
    abs(tau_i) <= delta and abs(h) <= h_max, with (tau, h) = U^-1 (y - p) from the frame
    of that box.
-2. The dropped cells. Random cells of the grid that the cover dropped must fail
-   quartic.cert.cover.may_meet_f again, and no random point of F may lie in one.
-3. The boxes. For random final boxes of the record, the GPU model of f at random
+2. The boxes. For random final boxes of the record, the GPU model of f at random
    points of the box (on the real slice sigma = conj(tau)) must agree with f from
    tm_box.py in arb (the chart z_3 = 1, m = 2, at order 2) within the remainder, the
    bound of the box must exceed abs(f) there, and the bound of the box computed again
    must agree with the record within --tol.
-4. With --recompute R, all final boxes of R random reference centers again, in new
-   batches: each bound of abs(f), and of abs(grad f) for a run with --grad, must agree
-   with its record within --tol. The series order of a batch depends on its largest eta,
-   so the agreement is not exact.
-5. With --local, the file of each reference center and its center; the content of the
-   files is the check of scripts/cert_local_values.py.
+3. With --recompute R, all final boxes of R random reference centers again, in new
+   batches: each bound of abs(f) and of abs(grad f) must agree with its record within
+   --tol. The series order of a batch depends on its largest eta, so the agreement is not
+   exact.
 
-The centers of the boxes are exact: the corner of a record is a multiple of s / 2^depth.
-The checks 3 and 4 take the defaults of cert_run.py for kmax (top) and --ny-extra.
+scripts/cert_partition.py checks every dropped cell and the radii of every record, and
+scripts/cert_local_values.py checks the files of local forms. The centers of the boxes
+are exact: the corner of a record is a multiple of s / 2^depth. The checks 2 and 3 need
+--local (the directory of the local forms), and 2 needs --data and --forms. The exit
+status is 1 if a check fails.
 
 Usage, on one GPU node:
     uv run --extra gpu python -u \\
-        scripts/cert_check.py --run runs_tm/run_r20.npz --cover runs_tm/cover_s0.03_c6.npz \\
-        --local /n/netscratch/.../tm_local_c6 --data runs_tm/r20i_data.npz \\
-        --forms runs_tm/r20_forms.npz --points 2000 --boxes 8
+        scripts/cert_check.py --run runs_tm/run_f6t_v2.npz --cover runs_tm/cover_s0.03_c6_v2.npz \\
+        --local <directory of the local forms> --data runs_tm/f6t_data.npz \\
+        --forms runs_tm/f6t_forms.npz --points 3000 --boxes 8 --recompute 4
 """
 import argparse
 import math
@@ -122,57 +121,6 @@ def check_cover(rec, cov, count):
           f'max abs(tau) / delta {worst:.4f}, largest abs(h) / h_max {worst_h:.4f} (cell side '
           f'{side})', flush=True)
     return missed == 0
-
-
-def check_dropped(cov, count):
-    s = float(cov['side'])
-    side = mp.mpf(s)
-    kept = {tuple(int(v) for v in i) for i in cov['idx']}
-    grid = [int(np.ceil(1 / s)), int(np.ceil(0.7072 / s)), int(np.ceil(1 / s)), int(np.ceil(1 / s))]
-    bad, tested = 0, 0
-    while tested < count:
-        idx = tuple(int(RNG.integers(g)) for g in grid)
-        if idx in kept:
-            continue
-        tested += 1
-        if cc.may_meet_f(cc.cell(idx, side)[0], side):
-            bad += 1
-    print(f'dropped cells: {tested} tested again, {bad} that may meet F', flush=True)
-    return bad == 0
-
-
-def _span(v):
-    """The number of bits from the top bit of v[0] to the last bit of v[1] (dd parts)."""
-    import math
-    if v[1] == 0:
-        return 53
-    _, e0 = math.frexp(v[0])
-    _, e1 = math.frexp(v[1])
-    return e0 - e1 + 53
-
-
-def check_local(cov, local_dir, prec=256):
-    """Each reference center has a file with its exact center c, td forms (parts 6) in
-    Delta, and dd numbers x0 and s2 that are exact balls at the precision of the forms.
-    scripts/cert_local_values.py checks the content of the forms."""
-    refs = len(cov['ref_centers'])
-    bad = []
-    for i in range(refs):
-        path = Path(local_dir) / f'center_{i}.npz'
-        if not path.exists():
-            bad.append((i, 'no file'))
-            continue
-        z = np.load(path)
-        if not np.array_equal(np.asarray(z['c']), np.asarray(cov['ref_centers'][i])):
-            bad.append((i, 'c differs from the cover'))
-        if int(z['parts']) != 6 or 's2' not in z.files:
-            bad.append((i, 'not td forms in Delta'))
-        x0, s2 = np.asarray(z['x0']), np.asarray(z['s2'])
-        if max(_span(x0[:2]), _span(s2[:2])) > prec or x0[2] != 0 or s2[2] != 0:
-            bad.append((i, 'x0 or s2 is not an exact ball'))
-    print(f'local forms: {refs} reference centers, {len(bad)} with a defect {bad[:5]}',
-          flush=True)
-    return not bad
 
 
 def check_boxes(rec, args):
@@ -284,7 +232,6 @@ def main():
     ap.add_argument('--data', type=str, default='')
     ap.add_argument('--forms', type=str, default='')
     ap.add_argument('--points', type=int, default=2000)
-    ap.add_argument('--dropped', type=int, default=2000)
     ap.add_argument('--boxes', type=int, default=0)
     ap.add_argument('--per-box', type=int, default=3)
     ap.add_argument('--recompute', type=int, default=0,
@@ -298,9 +245,6 @@ def main():
     rec = rs.load(args.run)[0]
     cov = np.load(args.cover)
     ok = check_cover(rec, cov, args.points)
-    ok = check_dropped(cov, args.dropped) and ok
-    if args.local:
-        ok = check_local(cov, args.local) and ok
     if args.boxes:
         ok = check_boxes(rec, args) and ok
     if args.recompute:

@@ -4,17 +4,17 @@ For each reference center c (the coordinates t = (z_0, z_1) of a point of X in t
 chart z_3 = 1), the script moves the chart polynomials of the base and of the levels
 to t = c, and combines the levels at x0 = p0(c)^(-1/k0) into M~_m (see
 `quartic.cert.forms.local_forms`). All of it is in arb. Each center gives one file
-with the dd parts, the radii and the absolute-value bounds of every matrix, and the
+with the td parts, the radii and the absolute-value bounds of every matrix, and the
 exact dd numbers c, x0 and s2. Each form is the four R_j of
-`quartic.cert.forms.delta_split`, with each entry in td.
+`quartic.cert.forms.delta_split`.
 
-The centers come from --points (the export points of the data, moved into F) or from
-a cover of scripts/cert_cover.py (--centers, its ref_centers).
+The centers are the ref_centers of a cover of scripts/cert_cover.py (--centers); with
+--only, the script writes the files of those reference centers alone.
 
 Usage, on CPU cores:
-    uv run --extra gpu python -u \\
-        scripts/tm_local_forms.py --data runs_tm/r20i_data.npz \\
-        --forms runs_tm/r20_forms.npz --points 0 1 2 --out runs_tm/local_r20i --procs 3
+    uv run --extra gpu python -u scripts/tm_local_forms.py --data runs_tm/f6t_data.npz \\
+        --forms runs_tm/f6t_forms.npz --centers runs_tm/cover_s0.03_c6_v2.npz \\
+        --out <directory> --procs 48
 """
 import argparse
 import multiprocessing
@@ -29,27 +29,10 @@ from flint import acb, arb
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tmgpu.host import exact, to_dd                                       # noqa: E402
 from quartic.cert import forms as tm_forms                                # noqa: E402
 
 G = {}
-
-
-def exact(x):
-    return acb(x.real.mid(), x.imag.mid())
-
-
-def dd_of(x):
-    """An acb as (re_hi, re_lo, im_hi, im_lo); its value is taken as exact afterwards."""
-    out = []
-    for part in (x.real, x.imag):
-        mid = part.mid()
-        h = float(mid)
-        out += [h, float(mid - arb(h))]
-    return out
-
-
-def from_dd(v):
-    return acb(arb(v[0]) + arb(v[1]), arb(v[2]) + arb(v[3]))
 
 
 def chart_value(cf, name_q, k_deg, t, y2):
@@ -80,16 +63,16 @@ def one(job):
     i, t = job
     flint.ctx.prec = G['prec']
     t0 = time.perf_counter()
-    c = [from_dd(t[0]), from_dd(t[1])]
+    c = [exact(t[0]), exact(t[1])]
     y2 = center_point(c)
     p0 = chart_value(G['cf'], G['cf']['base'], G['cf']['k0'], c, y2)
-    # x0 is a dd number, so that the GPU holds exactly the x0 of the M~_m; the file keeps
-    # the same dd list that defines the ball of the forms.
-    x0_dd = dd_of(exact((p0.real.log() * (-arb(1) / G['cf']['k0'])).exp()))
-    x0 = from_dd(x0_dd)
+    # x0 is the dd rounding of the midpoint of p0(c)^(-1/k0), so that the GPU holds exactly
+    # the x0 of the M~_m; the file keeps the same dd list that defines the ball of the forms.
+    x0_dd = to_dd((p0.real.log() * (-arb(1) / G['cf']['k0'])).exp())[0]
+    x0 = exact(x0_dd)
     # s2 is a dd number near abs(y2)^2, taken as exact; the GPU forms Delta = abs(y2)^2 - s2.
-    s2_dd = dd_of(exact(acb(abs(y2) ** 2)))
-    s2 = from_dd(s2_dd).real
+    s2_dd = to_dd(acb(abs(y2) ** 2))[0]
+    s2 = exact(s2_dd).real
     out = tm_forms.local_forms(G['cf'], c, x0, s2)
     out['c'] = np.array([t[0], t[1]])
     out['x0'] = np.array(x0_dd)
@@ -101,19 +84,12 @@ def one(job):
     return i, time.perf_counter() - t0
 
 
-def to_region(z):
-    """The S_4 image with abs(z_1) <= abs(z_0) <= abs(z_2) <= abs(z_3)."""
-    order = sorted(range(4), key=lambda k: abs(complex(z[k])))
-    return [z[order[1]], z[order[0]], z[order[2]], z[order[3]]]
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--data', type=str, required=True)
     ap.add_argument('--forms', type=str, required=True)
-    ap.add_argument('--points', type=int, nargs='*', default=[])
-    ap.add_argument('--centers', type=str, default='')
+    ap.add_argument('--centers', type=str, required=True)
     ap.add_argument('--out', type=str, required=True)
     ap.add_argument('--prec', type=int, default=256)
     ap.add_argument('--procs', type=int, default=4)
@@ -127,16 +103,8 @@ def main():
     t0 = time.perf_counter()
     G['cf'] = tm_forms.chart_forms_arb(data, forms, args.prec)
     print(f'chart forms in {time.perf_counter() - t0:.0f}s', flush=True)
-    centers = []
-    for k in args.points:
-        z = [acb(complex(a)) + acb(complex(b)) for a, b in zip(data['z_hi'][k], data['z_lo'][k])]
-        z = to_region(z)
-        t = [z[0] / z[3], z[1] / z[3]]
-        centers.append([dd_of(exact(x)) for x in t])
-    if args.centers:
-        # The reference centers of a cover of scripts/cert_cover.py, (n, 2, 4) dd parts.
-        for c in np.load(args.centers)['ref_centers']:
-            centers.append([list(c[0]), list(c[1])])
+    # The reference centers of a cover of scripts/cert_cover.py, (n, 2, 4) dd parts.
+    centers = [[list(c[0]), list(c[1])] for c in np.load(args.centers)['ref_centers']]
     jobs = list(enumerate(centers))
     if args.only is not None:
         jobs = [jobs[i] for i in args.only]
