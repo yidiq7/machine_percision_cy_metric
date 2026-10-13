@@ -23,6 +23,7 @@ def space(nvars, n):
 
 def sup_bound(sp4, f, d):
     """abs(f) <= abs(f(c)) + B(f - f(c)) on the box delta d + the remainder of f."""
+    tm.check_inside(d, f.delta)
     c0 = tm.abs_ub(f.c[:, :1, :])[0]
     var = f.c.copy()
     var[:, 0, :] = 0

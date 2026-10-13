@@ -172,6 +172,8 @@ class Space:
                 jj.append(js)
                 kk.append(lookup[codes[i] + codes[js]])
             ii, jj, kk = np.concatenate(ii), np.concatenate(jj), np.concatenate(kk)
+            if len(ii) >= 2 ** 31:
+                raise ValueError(f'{len(ii)} pairs do not fit the int32 index of the kernel')
             order = np.argsort(kk, kind='stable')
             ii, jj, kk = ii[order], jj[order], kk[order]
             cnt = np.bincount(kk, minlength=self.size)
@@ -194,6 +196,24 @@ class TM:
     c: cp.ndarray
     rem: cp.ndarray
     delta: cp.ndarray
+
+    def __post_init__(self):
+        # The kernels read float64 arrays (4, S, B) with no check of their own.
+        if self.c.dtype != cp.float64 or self.c.ndim != 3 or self.c.shape[0] != 4:
+            raise ValueError(f'a TM needs float64 coefficients (4, S, B), not '
+                             f'{self.c.dtype} {self.c.shape}')
+
+
+def check_pair(x, y):
+    """Raise ValueError unless two models have coefficients of the same shape."""
+    if x.c.shape != y.c.shape:
+        raise ValueError(f'the models have shapes {x.c.shape} and {y.c.shape}')
+
+
+def check_inside(small, big):
+    """Raise ValueError unless each radius of `small` is at most that of `big`."""
+    if bool(cp.any(small > big)):
+        raise ValueError('the smaller polydisc must lie inside the polydisc of the model')
 
 
 def zeros(sp, b):
@@ -260,19 +280,21 @@ def _launch_elem(fn, n, args):
 
 def _axpy(x, y, s):
     n = x[0].size
-    z = cp.empty_like(x)
+    z = cp.empty(x.shape)
     _launch_elem(_kernels().get_function('c_axpy'), n,
                  (cp.ascontiguousarray(x), cp.ascontiguousarray(y), z, np.int64(n), np.float64(s)))
     return z
 
 
 def add(sp, x, y):
+    check_pair(x, y)
     c = _axpy(x.c, y.c, 1.0)
     err = 4 * U2 * (poly_bound(sp, x) + poly_bound(sp, y))
     return TM(c, (x.rem + y.rem + err) * SAFE + TINY, x.delta)
 
 
 def sub(sp, x, y):
+    check_pair(x, y)
     c = _axpy(x.c, y.c, -1.0)
     err = 4 * U2 * (poly_bound(sp, x) + poly_bound(sp, y))
     return TM(c, (x.rem + y.rem + err) * SAFE + TINY, x.delta)
@@ -288,7 +310,7 @@ def scale_raw(c, k):
     products (7 u^2 of each) in one dd_add (3.1 u^2 of the sum), so each entry errs by at
     most 10.1 u^2 abs(c) abs(k)."""
     _, s, b = c.shape
-    z = cp.empty_like(c)
+    z = cp.empty(c.shape)
     _launch_elem(_kernels().get_function('c_scale'), s * b,
                  (cp.ascontiguousarray(c), cp.ascontiguousarray(k), z, np.int32(s), np.int32(b)))
     return z
@@ -304,7 +326,7 @@ def scale(sp, x, k):
 def add_const(sp, x, k):
     """x plus a complex dd number for each box, k (4, B)."""
     _, s, b = x.c.shape
-    c = cp.array(x.c, copy=True)
+    c = cp.array(x.c, copy=True, order='C')
     c0 = abs_ub(x.c[:, :1, :])[0]
     fn = _kernels().get_function('c_add0')
     fn(((b + 255) // 256,), (256,), (c, cp.ascontiguousarray(k), np.int32(s), np.int32(b)))
@@ -314,9 +336,12 @@ def add_const(sp, x, k):
 
 def mul(sp, x, y, threads=64):
     """The product, truncated at degree n, with the tail, the cross terms and the rounding."""
+    check_pair(x, y)
+    if x.c.shape[1] != sp.size:
+        raise ValueError(f'the models have {x.c.shape[1]} coefficients, the space {sp.size}')
     start, cnt, ii, jj, wmax = sp.table()
     _, s, b = x.c.shape
-    z = cp.empty_like(x.c)
+    z = cp.empty(x.c.shape)
     _kernels().get_function('tm_mul')(
         (s, (b + threads - 1) // threads), (min(threads, b),),
         (cp.ascontiguousarray(x.c), cp.ascontiguousarray(y.c), start, cnt, ii, jj, z,
@@ -436,7 +461,7 @@ def deriv_coeffs(sp, c, axis):
     """The coefficients of d/dx_axis of the polynomial part, each a dd product by an integer."""
     src, mult = _deriv_index(sp, axis)
     _, s, b = c.shape
-    z = cp.empty_like(c)
+    z = cp.empty(c.shape)
     _launch_elem(_kernels().get_function('c_mulint'), s * b,
                  (cp.ascontiguousarray(c), src, mult, z, np.int32(s), np.int32(b)))
     return z
@@ -455,6 +480,7 @@ def cauchy_mixed(sp, x, a, b, delta_small):
     """
     if a == b:
         raise ValueError('cauchy_mixed takes two different variables')
+    check_inside(delta_small, x.delta)
     c2 = deriv_coeffs(sp, deriv_coeffs(sp, x.c, a), b)
     gap = (x.delta - delta_small) * (1.0 - 1e-15)
     err = 13 * U2 * poly_bound(sp, TM(c2, x.rem, delta_small))
@@ -468,6 +494,7 @@ def deriv1(sp, x, a, delta_small):
     (only al m and e + t round), so 7 u^2 times the bound of the computed derivative on
     delta_small covers the round-off.
     """
+    check_inside(delta_small, x.delta)
     c1 = deriv_coeffs(sp, x.c, a)
     gap = (x.delta - delta_small) * (1.0 - 1e-15)
     err = 7 * U2 * poly_bound(sp, TM(c1, x.rem, delta_small))
@@ -509,7 +536,7 @@ def _pairwise(x, y):
         _PAIR[s] = (idx, cp.ones(s, cp.int32), idx, idx)
     start, cnt, ii, jj = _PAIR[s]
     b = x.shape[2]
-    z = cp.empty_like(x)
+    z = cp.empty(x.shape)
     _kernels().get_function('tm_mul')(
         (s, (b + 63) // 64), (min(64, b),),
         (cp.ascontiguousarray(x), cp.ascontiguousarray(y), start, cnt, ii, jj, z,
@@ -519,6 +546,7 @@ def _pairwise(x, y):
 
 def restrict(x, delta_small):
     """The same model on a smaller polydisc; its remainder stays valid there."""
+    check_inside(delta_small, x.delta)
     return TM(x.c, x.rem, delta_small)
 
 

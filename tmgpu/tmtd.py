@@ -168,6 +168,12 @@ class TMT:
     rem: cp.ndarray
     delta: cp.ndarray
 
+    def __post_init__(self):
+        # The kernels read float64 arrays (6, S, B) with no check of their own.
+        if self.c.dtype != cp.float64 or self.c.ndim != 3 or self.c.shape[0] != 6:
+            raise ValueError(f'a TMT needs float64 coefficients (6, S, B), not '
+                             f'{self.c.dtype} {self.c.shape}')
+
 
 def abs_ub(c):
     """An upper bound of abs(re) + abs(im) of each td coefficient, (S, B)."""
@@ -234,8 +240,9 @@ def _launch(fn, n, args):
 
 
 def _axpy(sp, x, y, s):
+    tm.check_pair(x, y)
     n = x.c[0].size
-    z = cp.empty_like(x.c)
+    z = cp.empty(x.c.shape)
     err = cp.empty(x.c.shape[1:])
     _launch(_kernels().get_function('tmt_axpy'), n,
             (cp.ascontiguousarray(x.c), cp.ascontiguousarray(y.c), z, err, np.int64(n),
@@ -258,7 +265,7 @@ def neg(x):
 def scale(sp, x, k6):
     """x times a td number for each box, k6 (6, B)."""
     _, s, b = x.c.shape
-    z = cp.empty_like(x.c)
+    z = cp.empty(x.c.shape)
     err = cp.empty((s, b))
     _launch(_kernels().get_function('tmt_scale'), s * b,
             (cp.ascontiguousarray(x.c), cp.ascontiguousarray(k6), z, err, np.int32(s), np.int32(b)))
@@ -277,9 +284,12 @@ def add_const(sp, x, k6):
 def mul(sp, x, y, threads=64, return_err=False):
     """The product truncated at degree n, with the tail, the cross terms and the rounding.
     return_err also returns the error bound of each coefficient (S, B), for tests."""
+    tm.check_pair(x, y)
+    if x.c.shape[1] != sp.size:
+        raise ValueError(f'the models have {x.c.shape[1]} coefficients, the space {sp.size}')
     start, cnt, ii, jj, _ = sp.table()
     _, s, b = x.c.shape
-    z = cp.empty_like(x.c)
+    z = cp.empty(x.c.shape)
     err = cp.empty((s, b))
     _kernels().get_function('tmt_mul')(
         (s, (b + threads - 1) // threads), (min(threads, b),),

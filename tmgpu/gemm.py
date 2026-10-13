@@ -34,9 +34,7 @@ U2 = 2.0 ** -106
 U3 = 2.0 ** -159
 TILE = 16
 
-_SRC = DD_PRIMITIVES + r'''
-#define TILE 16
-// C[b] = A[b] op(B[b]); A (nb, 4, M, K); B (nbB, 4, K, N) for mode 0 or (nbB, 4, N, K) for
+_SRC = DD_PRIMITIVES + f'\n#define TILE {TILE}\n' + r'''// C[b] = A[b] op(B[b]); A (nb, 4, M, K); B (nbB, 4, K, N) for mode 0 or (nbB, 4, N, K) for
 // mode 1 (conjugate transpose); C (nb, 4, M, N).
 extern "C" __global__ void zgemm_dd(const double* __restrict__ A, const double* __restrict__ Bm,
                                     double* __restrict__ C, int M, int N, int K, int bstride,
@@ -176,9 +174,8 @@ extern "C" __global__ void zgemm_td(const double* __restrict__ A, const double* 
     }
 }
 '''
-_TT_SRC = r'''
-#define TT 16
-// C[b] = A[b] op(B[b]) for td arrays: A (nb, 6, M, K), B (nbB, 6, K, N) or (nbB, 6, N, K) for
+# The grid of zgemm_tt in Python and the tile of its kernel take the same TILE.
+_TT_SRC = f'\n#define TT {TILE}\n' + r'''// C[b] = A[b] op(B[b]) for td arrays: A (nb, 6, M, K), B (nbB, 6, K, N) or (nbB, 6, N, K) for
 // mode 1 (conjugate transpose). out_td = 1: C (nb, 6, M, N); else C (nb, 4, M, N) as dd.
 // Err (nb, M, N): the running error bound of acc_tt / levels_dd.
 extern "C" __global__ void zgemm_tt(const double* __restrict__ A, const double* __restrict__ Bm,
