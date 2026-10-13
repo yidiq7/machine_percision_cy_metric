@@ -56,7 +56,7 @@ def check_tm_ops():
     y = tmtd.TMT(cp.asarray(random_td((sp.size, b))), cp.zeros(b), delta)
     z, err = tmtd.mul(sp, x, y, return_err=True)
     zc, er, xc, yc = (cp.asnumpy(v) for v in (z.c, err, x.c, y.c))
-    start, cnt, ii, jj, _ = (cp.asnumpy(v) if hasattr(v, 'get') else v for v in sp.table())
+    start, cnt, ii, jj = (cp.asnumpy(v) for v in sp.table())
     worst, worst_rel = 0.0, 0.0
     for k in range(sp.size):
         for bi in range(b):

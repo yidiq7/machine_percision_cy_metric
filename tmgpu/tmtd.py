@@ -25,11 +25,10 @@ import numpy as np
 import cupy as cp
 
 from . import tm
-from .cuda import DD_PRIMITIVES, module
+from .cuda import DD_PRIMITIVES, launch, module
 from .tm import SAFE
 
 U = 2.0 ** -53
-U2 = tm.U2
 ERR_SAFE = 1.0 + 1e-9
 
 TD_SRC = DD_PRIMITIVES + r'''
@@ -184,8 +183,8 @@ def graded(sp, x):
     return (sp.onehot.T @ abs_ub(x.c)) * SAFE
 
 
-def poly_bound(sp, x, delta=None):
-    return tm.poly_bound_g(graded(sp, x), x.delta if delta is None else delta)
+def poly_bound(sp, x):
+    return tm.poly_bound_g(graded(sp, x), x.delta)
 
 
 def bound(sp, x):
@@ -196,14 +195,6 @@ def err_bound(sp, err, delta):
     """sum over the coefficients of err * delta^deg, for err (S, B)."""
     g = (sp.onehot.T @ err) * SAFE
     return tm.poly_bound_g(g, delta)
-
-
-def from_dd(x):
-    """A dd model of `tmgpu.tm` as a td model: exact, with a zero third limb."""
-    _, s, b = x.c.shape
-    c = cp.zeros((6, s, b))
-    c[0], c[1], c[3], c[4] = x.c[0], x.c[1], x.c[2], x.c[3]
-    return TMT(c, x.rem.copy(), x.delta)
 
 
 def to_dd(sp, x):
@@ -234,19 +225,14 @@ def const(sp, value6, delta):
     return TMT(c, cp.zeros_like(delta), delta)
 
 
-def _launch(fn, n, args):
-    threads = 256
-    fn(((n + threads - 1) // threads,), (threads,), args)
-
-
 def _axpy(sp, x, y, s):
     tm.check_pair(x, y)
     n = x.c[0].size
     z = cp.empty(x.c.shape)
     err = cp.empty(x.c.shape[1:])
-    _launch(_kernels().get_function('tmt_axpy'), n,
-            (cp.ascontiguousarray(x.c), cp.ascontiguousarray(y.c), z, err, np.int64(n),
-             np.float64(s)))
+    launch(_kernels().get_function('tmt_axpy'), n,
+           (cp.ascontiguousarray(x.c), cp.ascontiguousarray(y.c), z, err, np.int64(n),
+            np.float64(s)))
     return TMT(z, (x.rem + y.rem + err_bound(sp, err * ERR_SAFE, x.delta)) * SAFE, x.delta)
 
 
@@ -258,17 +244,13 @@ def sub(sp, x, y):
     return _axpy(sp, x, y, -1.0)
 
 
-def neg(x):
-    return TMT(-x.c, x.rem.copy(), x.delta)
-
-
 def scale(sp, x, k6):
     """x times a td number for each box, k6 (6, B)."""
     _, s, b = x.c.shape
     z = cp.empty(x.c.shape)
     err = cp.empty((s, b))
-    _launch(_kernels().get_function('tmt_scale'), s * b,
-            (cp.ascontiguousarray(x.c), cp.ascontiguousarray(k6), z, err, np.int32(s), np.int32(b)))
+    launch(_kernels().get_function('tmt_scale'), s * b,
+           (cp.ascontiguousarray(x.c), cp.ascontiguousarray(k6), z, err, np.int32(s), np.int32(b)))
     kb = abs_ub(k6[:, None, :])[0]
     return TMT(z, (x.rem * kb + err_bound(sp, err * ERR_SAFE, x.delta)) * SAFE, x.delta)
 
@@ -281,19 +263,18 @@ def add_const(sp, x, k6):
     return add(sp, x, y)
 
 
-def mul(sp, x, y, threads=64, return_err=False):
+def mul(sp, x, y, return_err=False):
     """The product truncated at degree n, with the tail, the cross terms and the rounding.
     return_err also returns the error bound of each coefficient (S, B), for tests."""
     tm.check_pair(x, y)
     if x.c.shape[1] != sp.size:
         raise ValueError(f'the models have {x.c.shape[1]} coefficients, the space {sp.size}')
-    start, cnt, ii, jj, _ = sp.table()
     _, s, b = x.c.shape
     z = cp.empty(x.c.shape)
     err = cp.empty((s, b))
     _kernels().get_function('tmt_mul')(
-        (s, (b + threads - 1) // threads), (min(threads, b),),
-        (cp.ascontiguousarray(x.c), cp.ascontiguousarray(y.c), start, cnt, ii, jj, z, err,
+        (s, (b + 63) // 64), (min(64, b),),
+        (cp.ascontiguousarray(x.c), cp.ascontiguousarray(y.c), *sp.table(), z, err,
          np.int32(s), np.int32(b)))
     gx, gy = graded(sp, x), graded(sp, y)
     bx, by = tm.poly_bound_g(gx, x.delta), tm.poly_bound_g(gy, x.delta)

@@ -42,3 +42,8 @@ __device__ __forceinline__ void dd_mul(double ah, double al, double bh, double b
 def module(code):
     """The CuPy module of CUDA source compiled with OPTIONS."""
     return cp.RawModule(code=code, options=OPTIONS)
+
+
+def launch(fn, n, args):
+    """A kernel with one thread for each of n elements, in blocks of 256."""
+    fn(((n + 255) // 256,), (256,), args)

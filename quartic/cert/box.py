@@ -136,7 +136,7 @@ def _from_bidegree(sp4, sp_low, w, rem, delta, tail_done=False):
     c = cp.moveaxis(w[:, :, rows, cols], 0, -1)                # (4, S4, B)
     if tail_done:
         return tm.TM(cp.ascontiguousarray(c), rem * SAFE, delta)
-    a = gemm.cabs(w)
+    a = tm.abs_ub(w, axis=1)
     d = sp_low.deg
     mask = cp.asarray(((d[:, None] + d[None, :]) > sp4.n).astype(np.float64))
     dd = cp.asarray(d[:, None] + d[None, :])
@@ -598,8 +598,8 @@ def box_f(fr, local, delta_box, n, ny, k_max=20, a=None, k_full=3, hmax=None, gr
         if orders[k + 1] < orders[k]:
             s = tm.embed(spk, s)
         xk = xis[orders[k]]
-        mp_ = tm.mul_parts(spk, xk, s)
         prod = tm.mul(spk, xk, s)
+        mp_ = prod.parts
         for key in split:
             split[key] = split[key] * mp_['bx']
         split['xi'] += xi.rem * (mp_['by'] + s.rem)

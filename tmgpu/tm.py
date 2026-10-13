@@ -43,7 +43,7 @@ from fractions import Fraction
 import numpy as np
 import cupy as cp
 
-from .cuda import DD_PRIMITIVES, module
+from .cuda import DD_PRIMITIVES, launch, module
 
 U2 = 2.0 ** -106
 SAFE = 1.0 + 1e-9
@@ -158,7 +158,7 @@ class Space:
         self._table = None
 
     def table(self):
-        """start, cnt, I, J (CuPy int32) of the product, sorted by output, and max cnt."""
+        """start, cnt, I, J (CuPy int32) of the product, sorted by output."""
         if self._table is None:
             base = self.n + 1
             codes = np.array([sum(c * base ** v for v, c in enumerate(e)) for e in self.mons])
@@ -186,7 +186,7 @@ class Space:
             self.conv = cp.asarray((d[:, None, None] + d[None, :, None] == d[None, None, :])
                                    .astype(np.float64))
             self._table = (cp.asarray(start, cp.int32), cp.asarray(cnt, cp.int32),
-                           cp.asarray(ii, cp.int32), cp.asarray(jj, cp.int32), int(cnt.max()))
+                           cp.asarray(ii, cp.int32), cp.asarray(jj, cp.int32))
         return self._table
 
 
@@ -220,9 +220,11 @@ def zeros(sp, b):
     return cp.zeros((4, sp.size, b))
 
 
-def abs_ub(c):
-    """An upper bound of abs(re) + abs(im) of each coefficient, (S, B)."""
-    return (cp.abs(c[0]) + cp.abs(c[1]) + cp.abs(c[2]) + cp.abs(c[3])) * (1.0 + 8e-16)
+def abs_ub(c, axis=0):
+    """An upper bound of abs(re) + abs(im) of each entry of a dd array with its four parts
+    along `axis`, for example (S, B) for coefficients (4, S, B)."""
+    p = cp.moveaxis(c, axis, 0)
+    return (cp.abs(p[0]) + cp.abs(p[1]) + cp.abs(p[2]) + cp.abs(p[3])) * (1.0 + 8e-16)
 
 
 def graded(sp, x):
@@ -273,52 +275,33 @@ def cconst(z, b):
     return cp.asarray(np.array([[rh] * b, [rl] * b, [ih] * b, [il] * b]))
 
 
-def _launch_elem(fn, n, args):
-    threads = 256
-    fn(((n + threads - 1) // threads,), (threads,), args)
-
-
-def _axpy(x, y, s):
-    n = x[0].size
-    z = cp.empty(x.shape)
-    _launch_elem(_kernels().get_function('c_axpy'), n,
-                 (cp.ascontiguousarray(x), cp.ascontiguousarray(y), z, np.int64(n), np.float64(s)))
-    return z
+def _axpy(sp, x, y, s):
+    """x + s y for s = +1 or -1; dd_add errs by at most 3.1 u^2 of the sum."""
+    check_pair(x, y)
+    n = x.c[0].size
+    c = cp.empty(x.c.shape)
+    launch(_kernels().get_function('c_axpy'), n,
+           (cp.ascontiguousarray(x.c), cp.ascontiguousarray(y.c), c, np.int64(n), np.float64(s)))
+    err = 4 * U2 * (poly_bound(sp, x) + poly_bound(sp, y))
+    return TM(c, (x.rem + y.rem + err) * SAFE + TINY, x.delta)
 
 
 def add(sp, x, y):
-    check_pair(x, y)
-    c = _axpy(x.c, y.c, 1.0)
-    err = 4 * U2 * (poly_bound(sp, x) + poly_bound(sp, y))
-    return TM(c, (x.rem + y.rem + err) * SAFE + TINY, x.delta)
+    return _axpy(sp, x, y, 1.0)
 
 
 def sub(sp, x, y):
-    check_pair(x, y)
-    c = _axpy(x.c, y.c, -1.0)
-    err = 4 * U2 * (poly_bound(sp, x) + poly_bound(sp, y))
-    return TM(c, (x.rem + y.rem + err) * SAFE + TINY, x.delta)
-
-
-def neg(x):
-    """-x; a change of sign is exact."""
-    return TM(-x.c, x.rem.copy(), x.delta)
-
-
-def scale_raw(c, k):
-    """c (4, S, B) times a complex dd number k (4, B) for each box. Each part sums two dd
-    products (7 u^2 of each) in one dd_add (3.1 u^2 of the sum), so each entry errs by at
-    most 10.1 u^2 abs(c) abs(k)."""
-    _, s, b = c.shape
-    z = cp.empty(c.shape)
-    _launch_elem(_kernels().get_function('c_scale'), s * b,
-                 (cp.ascontiguousarray(c), cp.ascontiguousarray(k), z, np.int32(s), np.int32(b)))
-    return z
+    return _axpy(sp, x, y, -1.0)
 
 
 def scale(sp, x, k):
-    """x times a complex dd number for each box, k of shape (4, B)."""
-    z = scale_raw(x.c, k)
+    """x times a complex dd number for each box, k of shape (4, B). Each part sums two dd
+    products (7 u^2 of each) in one dd_add (3.1 u^2 of the sum), so each coefficient errs
+    by at most 10.1 u^2 abs(c) abs(k); the code takes 20 u^2."""
+    _, s, b = x.c.shape
+    z = cp.empty(x.c.shape)
+    launch(_kernels().get_function('c_scale'), s * b,
+           (cp.ascontiguousarray(x.c), cp.ascontiguousarray(k), z, np.int32(s), np.int32(b)))
     kb = abs_ub(k[:, None, :])[0]
     return TM(z, (x.rem * kb + 20 * U2 * poly_bound(sp, x) * kb) * SAFE + TINY, x.delta)
 
@@ -328,44 +311,39 @@ def add_const(sp, x, k):
     _, s, b = x.c.shape
     c = cp.array(x.c, copy=True, order='C')
     c0 = abs_ub(x.c[:, :1, :])[0]
-    fn = _kernels().get_function('c_add0')
-    fn(((b + 255) // 256,), (256,), (c, cp.ascontiguousarray(k), np.int32(s), np.int32(b)))
+    launch(_kernels().get_function('c_add0'), b, (c, cp.ascontiguousarray(k), np.int32(s), np.int32(b)))
     err = 4 * U2 * (c0 + abs_ub(k[:, None, :])[0])
     return TM(c, (x.rem + err) * SAFE + TINY, x.delta)
 
 
-def mul(sp, x, y, threads=64):
-    """The product, truncated at degree n, with the tail, the cross terms and the rounding."""
+def _tm_mul(x, y, table):
+    """The kernel tm_mul on arrays (4, S, B) with the pair table (start, cnt, I, J)."""
+    _, s, b = x.shape
+    z = cp.empty(x.shape)
+    _kernels().get_function('tm_mul')(
+        (s, (b + 63) // 64), (min(64, b),),
+        (cp.ascontiguousarray(x), cp.ascontiguousarray(y), *table, z, np.int32(s), np.int32(b)))
+    return z
+
+
+def mul(sp, x, y):
+    """The product, truncated at degree n, with the tail, the cross terms and the rounding.
+    The result carries these parts of its remainder in `parts`: tail, round, bx and by,
+    the bounds of the polynomial parts of x and y."""
     check_pair(x, y)
     if x.c.shape[1] != sp.size:
         raise ValueError(f'the models have {x.c.shape[1]} coefficients, the space {sp.size}')
-    start, cnt, ii, jj, wmax = sp.table()
-    _, s, b = x.c.shape
-    z = cp.empty(x.c.shape)
-    _kernels().get_function('tm_mul')(
-        (s, (b + threads - 1) // threads), (min(threads, b),),
-        (cp.ascontiguousarray(x.c), cp.ascontiguousarray(y.c), start, cnt, ii, jj, z,
-         np.int32(s), np.int32(b)))
+    z = _tm_mul(x.c, y.c, sp.table())
     gx, gy = graded(sp, x), graded(sp, y)
     bx, by = poly_bound_g(gx, x.delta), poly_bound_g(gy, x.delta)
     # The outputs of degree d hold sums of at most cmax(d) pairs, whose abs values add up
     # to at most (gx * gy)[d], the convolution of the graded bounds.
     gxy = cp.einsum('ijd,ib,jb->db', sp.conv, gx, gy) * SAFE
     rnd = poly_bound_g(sp.gamma_deg[:, None] * gxy, x.delta)
-    rem = (tail_g(gx, gy, x.delta, sp.n) + bx * y.rem + x.rem * by + x.rem * y.rem
-           + rnd) * SAFE + TINY
-    return TM(z, rem, x.delta)
-
-
-def mul_parts(sp, x, y):
-    """The parts of the remainder that mul(sp, x, y) adds: the tail above the degree n,
-    the rounding, and the bounds bx, by of the two polynomial parts."""
-    sp.table()
-    gx, gy = graded(sp, x), graded(sp, y)
-    gxy = cp.einsum('ijd,ib,jb->db', sp.conv, gx, gy) * SAFE
-    return dict(tail=tail_g(gx, gy, x.delta, sp.n),
-                round=poly_bound_g(sp.gamma_deg[:, None] * gxy, x.delta),
-                bx=poly_bound_g(gx, x.delta), by=poly_bound_g(gy, x.delta))
+    tail = tail_g(gx, gy, x.delta, sp.n)
+    out = TM(z, (tail + bx * y.rem + x.rem * by + x.rem * y.rem + rnd) * SAFE + TINY, x.delta)
+    out.parts = dict(tail=tail, round=rnd, bx=bx, by=by)
+    return out
 
 
 def powers(sp, y, k):
@@ -462,8 +440,8 @@ def deriv_coeffs(sp, c, axis):
     src, mult = _deriv_index(sp, axis)
     _, s, b = c.shape
     z = cp.empty(c.shape)
-    _launch_elem(_kernels().get_function('c_mulint'), s * b,
-                 (cp.ascontiguousarray(c), src, mult, z, np.int32(s), np.int32(b)))
+    launch(_kernels().get_function('c_mulint'), s * b,
+           (cp.ascontiguousarray(c), src, mult, z, np.int32(s), np.int32(b)))
     return z
 
 
@@ -513,35 +491,24 @@ def tensor(sp4, sp2, z, w):
     rows, cols = split_index(sp4, sp2)
     zc = z.c[:, cp.asarray(rows), :]
     wc = w.c[:, cp.asarray(cols), :]
-    b = z.delta.shape[0]
-    out = TM(cp.empty_like(zc), cp.zeros(b), z.delta)
-    # Elementwise complex dd products through the scale kernel, one column at a time is
-    # slow; use the product kernel with a one-pair table instead.
-    out.c = _pairwise(zc, wc)
+    # Elementwise complex dd products: the product kernel with a table of one pair each.
+    c = _tm_mul(zc, wc, _pair_table(zc.shape[1]))
     gz, gw = graded(sp2, z), graded(sp2, w)
     bz, bw = poly_bound_g(gz, z.delta), poly_bound_g(gw, z.delta)
-    out.rem = (tail_g(gz, gw, z.delta, sp4.n) + bz * w.rem + z.rem * bw + z.rem * w.rem
-               + 16 * U2 * bz * bw) * SAFE + TINY
-    return out
+    rem = (tail_g(gz, gw, z.delta, sp4.n) + bz * w.rem + z.rem * bw + z.rem * w.rem
+           + 16 * U2 * bz * bw) * SAFE + TINY
+    return TM(c, rem, z.delta)
 
 
 _PAIR = {}
 
 
-def _pairwise(x, y):
-    """Elementwise complex dd products of two arrays (4, S, B)."""
-    s = x.shape[1]
+def _pair_table(s):
+    """The table of tm_mul for the elementwise products of arrays with S = s."""
     if s not in _PAIR:
         idx = cp.arange(s, dtype=cp.int32)
         _PAIR[s] = (idx, cp.ones(s, cp.int32), idx, idx)
-    start, cnt, ii, jj = _PAIR[s]
-    b = x.shape[2]
-    z = cp.empty(x.shape)
-    _kernels().get_function('tm_mul')(
-        (s, (b + 63) // 64), (min(64, b),),
-        (cp.ascontiguousarray(x), cp.ascontiguousarray(y), start, cnt, ii, jj, z,
-         np.int32(s), np.int32(b)))
-    return z
+    return _PAIR[s]
 
 
 def restrict(x, delta_small):

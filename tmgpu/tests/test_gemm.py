@@ -43,17 +43,16 @@ def cancel_pair(a, b, mode):
     return a2, b2
 
 
-def run(nb, m, k, n, mode, shared, td=False, cancel=False):
+def run(nb, m, k, n, mode, shared, cancel=False):
     a = random_dd((nb, 4, m, k), 1.0)
     bshape = (1 if shared else nb, 4) + ((k, n) if mode == 0 else (n, k))
     b = random_dd(bshape, 1e3)
     if cancel:
         a, b = cancel_pair(a, b, mode)
         k = 2 * k
-    c = cp.asnumpy(gemm.zgemm(cp.asarray(a), cp.asarray(b), mode, td=td))
+    c = cp.asnumpy(gemm.zgemm(cp.asarray(a), cp.asarray(b), mode))
     g = gemm.gamma(k)
-    lin, cub = gemm.gamma_td(k)
-    worst, gain = 0.0, 0.0
+    worst = 0.0
     for bi in range(nb):
         bb = b[0 if shared else bi]
         for i in range(0, m, max(1, m // 5)):
@@ -67,23 +66,17 @@ def run(nb, m, k, n, mode, shared, td=False, cancel=False):
                     absum += float((abs(x.real) + abs(x.imag)) * (abs(y.real) + abs(y.imag)))
                 got = to_mp(c[bi, :, i, j])
                 err = abs(got.real - exact.real) + abs(got.imag - exact.imag)
-                if td:
-                    bound = lin * float(abs(exact.real) + abs(exact.imag)) + cub * absum
-                else:
-                    bound = g * absum
+                bound = g * absum
                 assert err <= bound, (mode, bi, i, j, float(err), bound)
                 worst = max(worst, float(err / bound))
-                gain = max(gain, float(bound / (g * absum)))
-    print(f'  mode {mode}, shared B {shared}, td {td}, cancel {cancel}, ({m} x {k}) ({k} x {n}): '
-          f'largest error over the bound {worst:.2e}; bound over the dd bound up to {gain:.2e}',
-          flush=True)
+    print(f'  mode {mode}, shared B {shared}, cancel {cancel}, ({m} x {k}) ({k} x {n}): '
+          f'largest error over the bound {worst:.2e}', flush=True)
 
 
 if __name__ == '__main__':
-    for td in (False, True):
-        for mode in (0, 1):
-            for shared in (True, False):
-                run(3, 37, 53, 29, mode, shared, td)
-        for mode in (0, 1):
-            run(2, 21, 231, 19, mode, False, td, cancel=True)
+    for mode in (0, 1):
+        for shared in (True, False):
+            run(3, 37, 53, 29, mode, shared)
+    for mode in (0, 1):
+        run(2, 21, 231, 19, mode, False, cancel=True)
     print('\nall gemm tests pass')

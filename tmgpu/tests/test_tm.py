@@ -304,26 +304,9 @@ def test_guards():
     print('  the guards hold', flush=True)
 
 
-def test_kernel_speed():
-    for n in (20, 24):
-        sp = tm.Space(4, n)
-        b = 64
-        x = tm.TM(cp.asarray(RNG.normal(size=(4, sp.size, b))), cp.zeros(b), cp.full(b, 0.02))
-        tm.mul(sp, x, x)
-        cp.cuda.Device().synchronize()
-        import time
-        t0 = time.perf_counter()
-        for _ in range(5):
-            tm.mul(sp, x, x)
-        cp.cuda.Device().synchronize()
-        each = (time.perf_counter() - t0) / 5
-        print(f"  order {n}: {each / b * 1e3:.3f} ms for each product and box, with the bounds",
-              flush=True)
-
-
 if __name__ == "__main__":
     for fn in (test_product_and_cancellation, test_series, test_cauchy_derivatives, test_tensor,
-               test_rounding_bounds, test_kernel_speed, test_guards):
+               test_rounding_bounds, test_guards):
         print(fn.__name__, flush=True)
         fn()
     print("\nall tm tests pass")
