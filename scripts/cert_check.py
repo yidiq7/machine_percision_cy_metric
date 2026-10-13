@@ -2,7 +2,8 @@
 
 1. The cover. Random points of F, from uniform t in the box around F and a test of
    the conditions of F in mpmath; each point must lie in a final box of the record:
-   abs(tau_i) <= delta, with tau = U^-1 (y - p) from the frame of that box.
+   abs(tau_i) <= delta and abs(h) <= h_max, with (tau, h) = U^-1 (y - p) from the frame
+   of that box.
 2. The dropped cells. Random cells of the grid that the cover dropped must fail
    quartic.cert.cover.may_meet_f again, and no random point of F may lie in one.
 3. The boxes. For random final boxes of the record, the GPU model of f at random
@@ -75,11 +76,13 @@ def exact_cell(row, side):
 
 
 def tau_of(t, center):
-    """The tangent coordinates of the point over t in the box at the center (dd lists)."""
-    from quartic.cert import box as tc
-    fr = tc.make_frames([center], 14)
-    h = fr.host[0]
-    p, e, n = h['p'], h['e'], h['n']
+    """The coordinates (tau_0, tau_1, h) of the point over t in the frame of the box at the
+    center (dd lists)."""
+    from tmgpu.host import dd_mp
+    from quartic.cert.frame import frame
+    f = frame(center, None)
+    p, n = [dd_mp(v) for v in f['p']], [dd_mp(v) for v in f['n']]
+    e = [[dd_mp(v) for v in row] for row in f['e']]
     z2 = (-(1 + t[0] ** 4 + t[1] ** 4)) ** (mp.mpf(1) / 4)
     # The branch of z2 nearest to that of the center.
     units = [1, 1j, -1, -1j]
@@ -87,14 +90,14 @@ def tau_of(t, center):
     y = [t[0], t[1], z2]
     u = mp.matrix([[e[0][i], e[1][i], n[i]] for i in range(3)])
     x = mp.lu_solve(u, mp.matrix([y[i] - p[i] for i in range(3)]))
-    return [x[0], x[1]]
+    return [x[0], x[1], x[2]]
 
 
 def check_cover(rec, cov, count):
     side = float(cov['side'])
     lo_all = rec[:, 2:6]
     sides = rec[:, 6]
-    worst, missed, done = 0.0, 0, 0
+    worst, worst_h, missed, done = 0.0, 0.0, 0, 0
     while done < count:
         t = [mp.mpc(RNG.uniform(0, 1), RNG.uniform(0, 0.7072)),
              mp.mpc(RNG.uniform(0, 1), RNG.uniform(0, 1))]
@@ -110,13 +113,15 @@ def check_cover(rec, cov, count):
             continue
         ok = False
         for j in hit:
-            tau = tau_of(t, exact_cell(rec[j], side)[2])
-            ratio = max(float(abs(v)) for v in tau) / rec[j, 7]
-            worst = max(worst, ratio)
-            ok = ok or ratio <= 1
+            x = tau_of(t, exact_cell(rec[j], side)[2])
+            ratio = max(float(abs(v)) for v in x[:2]) / rec[j, 7]
+            ratio_h = float(abs(x[2])) / rec[j, 12]
+            worst, worst_h = max(worst, ratio), max(worst_h, ratio_h)
+            ok = ok or (ratio <= 1 and ratio_h <= 1)
         missed += 0 if ok else 1
     print(f'cover: {count} random points of F, {missed} outside every box; largest '
-          f'max abs(tau) / delta {worst:.4f} (cell side {side})', flush=True)
+          f'max abs(tau) / delta {worst:.4f}, largest abs(h) / h_max {worst_h:.4f} (cell side '
+          f'{side})', flush=True)
     return missed == 0
 
 
@@ -208,7 +213,7 @@ def check_boxes(rec, args):
         for _ in range(args.per_box):
             tpt = [mp.mpc(*RNG.uniform(lo[0:2], np.array(lo[0:2]) + s)),
                    mp.mpc(*RNG.uniform(lo[2:4], np.array(lo[2:4]) + s))]
-            tau = tau_of(tpt, c)
+            tau = tau_of(tpt, c)[:2]
             x = tau + [mp.conj(v) for v in tau]
             val = mp.mpc(0)
             for i, e in enumerate(sp4.mons):

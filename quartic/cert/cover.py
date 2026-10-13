@@ -22,6 +22,12 @@ mp.mp.dps = max(mp.mp.dps, 30)
 iv.dps = 30
 
 
+def _exact_corners():
+    """Raise ValueError if mpmath has too few bits for exact corners k s and their sums."""
+    if mp.mp.prec < 100:
+        raise ValueError(f'the exact corners need mp.prec >= 100, not {mp.mp.prec}')
+
+
 def cpow4(x, y):
     """Re and Im of (x + i y)^4 for real intervals x, y."""
     x2, y2 = x * x, y * y
@@ -30,6 +36,7 @@ def cpow4(x, y):
 
 def may_meet_f(lo, s):
     """False only if the cell [lo, lo + s]^4 proves to miss F."""
+    _exact_corners()
     a0, b0, a1, b1 = (iv.mpf([lo[k], lo[k] + s]) for k in range(4))
     if b0.a > a0.b:                        # arg t_0 > pi/4 on the whole cell: Im t_0 > Re t_0
         return False
@@ -72,6 +79,7 @@ def box_radius(lo, s, c_dd):
     abs(d(c) - d_i) r, with d(c) the exact derivative. All bounds come from arb balls.
     """
     from flint import acb, arb
+    _exact_corners()
     f = frame(c_dd, None)
     A = f['acb']
     with precision():
@@ -120,6 +128,7 @@ def dd(x):
 
 def cell(idx, s):
     """The exact lower corner idx s and the exact dd center of a cell."""
+    _exact_corners()
     lo = [mp.mpf(int(i)) * s for i in idx]
     c = (mp.mpc(lo[0] + s / 2, lo[1] + s / 2), mp.mpc(lo[2] + s / 2, lo[3] + s / 2))
     return lo, [dd(c[0]), dd(c[1])]
