@@ -196,7 +196,9 @@ def coef_gap(sp, got, want, delta):
 def test_rounding_bounds():
     """With no truncation and exact inputs, the remainder is the bound of the round-off
     alone, so each computed polynomial must lie within it of the exact one. With U2 = 0
-    the same check must fail, which shows that the test sees each rounding constant."""
+    the same check must fail, so the test sees each rounding constant. The random inputs
+    stay 3e-4 to 4e-2 of their bounds, so a constant that is too small by a factor below
+    about 25 would still pass; the derivation of each constant is in its docstring."""
     b, delta = 2, 1.0
     sp4, sp2 = tm.Space(4, 8), tm.Space(2, 8)
     dl = cp.full(b, delta)
@@ -268,8 +270,8 @@ def test_rounding_bounds():
 
 def test_guards():
     """A permuted memory layout gives the same results as a C-ordered array, and bad
-    inputs raise ValueError: float32 coefficients, shapes that differ, and a smaller
-    polydisc that is larger."""
+    inputs raise ValueError: float32 coefficients, shapes that differ, a second model on
+    a smaller polydisc, and a smaller polydisc that is larger."""
     from tmgpu import tmtd, tools
     sp = tm.Space(2, 4)
     b = 3
@@ -291,6 +293,7 @@ def test_guards():
     other = model(sp, random_poly(sp, b + 1, 1.0, 1.0), np.full(b + 1, 0.5))
     bad = {'float32': lambda: tm.TM(x.c.astype(cp.float32), x.rem, x.delta),
            'shapes': lambda: tm.add(sp, x, other),
+           'polydisc': lambda: tm.add(sp, x, tm.TM(x.c, x.rem, x.delta / 2)),
            'deriv1': lambda: tm.deriv1(sp, x, 0, x.delta * 2),
            'cauchy_mixed': lambda: tm.cauchy_mixed(sp, x, 0, 1, x.delta * 2),
            'restrict': lambda: tm.restrict(x, x.delta * 2),

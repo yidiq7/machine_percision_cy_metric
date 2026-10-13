@@ -55,8 +55,40 @@ def test_bad_parts():
         assert fails([part(Path(d) / 'f.npz', [5], columns=cols)]), 'columns in another order'
 
 
+def test_bad_files():
+    with tempfile.TemporaryDirectory() as d:
+        a = Path(d) / 'a.npz'
+        np.savez(a, records=np.zeros((1, len(rs.COLUMNS))), target=5e-20)
+        assert fails([str(a)]), 'a file with no columns'
+        b = Path(d) / 'b.npz'
+        np.savez(b, records=np.array([]), target=5e-20, columns=np.array(rs.COLUMNS))
+        assert fails([str(b)]), 'records that are not a table'
+        c = Path(d) / 'c.npz'
+        np.savez(c, records=np.zeros((0, len(rs.COLUMNS))), target=5e-20,
+                 columns=np.array(rs.COLUMNS), commit='abc', local_refs=np.array([7]),
+                 local_sha=np.array(['h7']))
+        assert rs.load([str(c)])[0].shape == (0, len(rs.COLUMNS)), 'a part with no final box'
+
+
+def test_manifest():
+    """A gap just above 1 must fail after the round trip, and so must NaN and a manifest of
+    other --data or --forms."""
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / 'm.txt'
+        rows = [(0, 'h0', 0.5), (1, 'h1', 1.0004), (2, 'h2', float('nan')), (3, 'h3', 1.0)]
+        rs.write_manifest(path, ('data.npz', 'D'), ('forms.npz', 'F'), rows)
+        man = rs.read_manifest(path)
+        shas = {r: h for r, h, _ in rows}
+        errs = rs.manifest_errors(shas, set(shas), man, 'D', 'F')
+        assert len(errs) == 1 and '[1, 2]' in errs[0], errs
+        assert rs.manifest_errors({0: 'h0'}, {0}, man, 'D', 'F') == []
+        assert rs.manifest_errors({0: 'hX'}, {0}, man, 'D', 'F'), 'another hash'
+        assert rs.manifest_errors({}, {0}, man, 'D', 'F'), 'a reference center with no hash'
+        assert rs.manifest_errors({0: 'h0'}, {0}, man, 'D2', 'F'), 'other --data'
+
+
 if __name__ == '__main__':
-    for fn in (test_join, test_old_file, test_bad_parts):
+    for fn in (test_join, test_old_file, test_bad_parts, test_bad_files, test_manifest):
         fn()
         print(fn.__name__, 'passes', flush=True)
     print('all records tests pass')
