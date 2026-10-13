@@ -12,7 +12,7 @@ The centers come from --points (the export points of the data, moved into F) or 
 a cover of scripts/cert_cover.py (--centers, its ref_centers).
 
 Usage, on CPU cores:
-    uv run --extra gpu --with python-flint python -u \\
+    uv run --extra gpu python -u \\
         scripts/tm_local_forms.py --data runs_tm/r20i_data.npz \\
         --forms runs_tm/r20_forms.npz --points 0 1 2 --out runs_tm/local_r20i --procs 3
 """

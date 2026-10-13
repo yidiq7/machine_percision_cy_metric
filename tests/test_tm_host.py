@@ -10,7 +10,7 @@
 
 The tests of frac_dd and lower are in tmgpu/tests/test_host.py.
 
-Run on a GPU node: uv run --extra gpu --with cupy-cuda12x --with python-flint \\
+Run on a GPU node: uv run --extra gpu \\
     python -m tests.test_tm_host
 """
 import sys

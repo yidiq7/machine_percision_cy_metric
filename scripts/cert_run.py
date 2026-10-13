@@ -17,7 +17,7 @@ the record with its bound, which then enters the maximum. The file also holds th
 commit of the code and the SHA-256 of each file of local forms (quartic.cert.records).
 
 Usage, on one GPU node:
-    uv run --extra gpu --with cupy-cuda12x --with python-flint python -u \\
+    uv run --extra gpu python -u \\
         scripts/cert_run.py --cover runs_tm/cover_s0.03_c6_v2.npz \\
         --local /n/netscratch/.../tm_local_f6t_td --target 5e-20 --out runs_tm/run_f6t.npz
 """

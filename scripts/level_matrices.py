@@ -15,7 +15,7 @@ It reports how much each form cancels: the absolute-value form over the value. A
 Taylor model needs that factor as extra digits.
 
 The input is the export of `level_oracle.py`. Usage, on CPU cores:
-    JAX_PLATFORMS=cpu uv run --extra gpu --with python-flint python -u \\
+    JAX_PLATFORMS=cpu uv run --extra gpu python -u \\
         scripts/level_matrices.py --data runs_tm/r20_data.npz --col 3 --procs 32 \\
         --out runs_tm/r20_forms.npz
 """

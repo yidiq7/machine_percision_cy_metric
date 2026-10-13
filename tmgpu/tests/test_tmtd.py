@@ -1,7 +1,7 @@
 """Test of `tmgpu.tmtd` and `gemm.zgemm_tt` against mpmath: every coefficient of a
 product, a sum, a scaled model and every GEMM entry lies within its running error bound.
 
-Run on a GPU node: uv run --extra gpu --with cupy-cuda12x python -m tmgpu.tests.test_tmtd
+Run on a GPU node: uv run --extra gpu python -m tmgpu.tests.test_tmtd
 """
 import sys
 from pathlib import Path

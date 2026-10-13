@@ -4,7 +4,7 @@ Each test builds models of functions that mpmath evaluates exactly, and checks
 abs(f(x) - P(x)) <= R at random points x of the polydisc, also near its edge. The
 cases include a sum that cancels by 1e8 and a product after it.
 
-Run on a GPU node: uv run --extra gpu --with cupy-cuda12x python -m tmgpu.tests.test_tm
+Run on a GPU node: uv run --extra gpu python -m tmgpu.tests.test_tm
 """
 import sys
 from fractions import Fraction

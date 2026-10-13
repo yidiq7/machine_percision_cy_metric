@@ -1,7 +1,7 @@
 [project]
 name = "machine-percision-cy-metric"
 version = "0.1.0"
-description = "Machine-precision Ricci-flat metric on the Fermat quartic (stage 1, FP64)."
+description = "Machine-precision Ricci-flat metric on the Fermat quartic, with a strict bound of its residual."
 requires-python = ">=3.12"
 dependencies = [
     # JAX 0.11 series. Every measurement in CLAUDE.md used 0.11.0, and FP64 needs
@@ -23,6 +23,9 @@ dependencies = [
     "matplotlib>=3.10,<4",
     # Any reference above FP64. longdouble is float64 on arm64, so use mpmath.
     "mpmath>=1.3",
+    # Ball arithmetic (Arb) for the strict bound. The host numbers of the bound depend on its
+    # rounding to FP64, so the version is fixed: the full run of 2026-10-10 used 0.9.0.
+    "python-flint==0.9.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +35,8 @@ dependencies = [
 #   laptop:   uv sync
 gpu = [
     "jax[cuda12]>=0.11,<0.12",
+    # The CUDA kernels of tmgpu. The full run of 2026-10-10 used 14.2.0.
+    "cupy-cuda12x==14.2.0; sys_platform == 'linux'",
 ]
 
 [tool.uv]

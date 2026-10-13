@@ -20,7 +20,7 @@ each stage. The center value is checked against the dd v of the export.
 
 Inputs: the export of `level_oracle.py` (the base, the points) and the output of
 `level_matrices.py` (the forms of the levels). Usage, on CPU cores:
-    JAX_PLATFORMS=cpu uv run --extra gpu --with python-flint python -u \\
+    JAX_PLATFORMS=cpu uv run --extra gpu python -u \\
         scripts/tm_box.py --data runs_tm/r20_data.npz --forms runs_tm/r20_forms.npz \\
         --orders 12 16 20 --deltas 0.005 0.01 0.02 0.04 --procs 12
 """

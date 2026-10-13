@@ -1,6 +1,6 @@
 """Test of `tmgpu.gemm`: the products against mpmath, inside the a priori bound.
 
-Run on a GPU node: uv run --extra gpu --with cupy-cuda12x python -m tmgpu.tests.test_gemm
+Run on a GPU node: uv run --extra gpu python -m tmgpu.tests.test_gemm
 """
 import sys
 from pathlib import Path

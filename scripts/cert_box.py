@@ -8,7 +8,7 @@ The checks: the model of p0 at a point of the box against p0 in mpmath from the 
 local forms; and f(c) against --fref (values from tm_box.py).
 
 Usage, on one GPU node:
-    uv run --extra gpu --with cupy-cuda12x python -u scripts/cert_box.py \\
+    uv run --extra gpu python -u scripts/cert_box.py \\
         --local /n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td --centers 0 \\
         --orders 28 --kmax 24 --deltas 0.01 0.02
 """

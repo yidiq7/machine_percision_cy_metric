@@ -22,7 +22,7 @@ The centers of the boxes are exact: the corner of a record is a multiple of s / 
 The checks 3 and 4 take the defaults of cert_run.py for kmax (top) and --ny-extra.
 
 Usage, on one GPU node:
-    uv run --extra gpu --with cupy-cuda12x --with python-flint python -u \\
+    uv run --extra gpu python -u \\
         scripts/cert_check.py --run runs_tm/run_r20.npz --cover runs_tm/cover_s0.03_c6.npz \\
         --local /n/netscratch/.../tm_local_c6 --data runs_tm/r20i_data.npz \\
         --forms runs_tm/r20_forms.npz --points 2000 --boxes 8
