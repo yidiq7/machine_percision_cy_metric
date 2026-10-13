@@ -90,14 +90,16 @@ The steps of the proof:
    and their bounds follow. 134,888 final boxes cover F.
 5. Independent checks:
    * `scripts/cert_partition.py` proves that the final boxes fill each cell of the
-     cover, and computes the radii of all records again;
+     cover, that each dropped cell misses F, and that the radii of all records hold
+     again; with `--manifest` it ties the records to checked files of local forms;
    * `scripts/cert_local_values.py` checks the 332 files of local forms against the
      potential through another path;
-   * `scripts/cert_check.py` checks random points of F and dropped cells, compares the
-     model of f at random boxes with arb, and computes boxes again in new batches.
-6. The present code gives records equal bit for bit to those of commit 8f0c1e8, on 4
-   reference centers. The box code of 8f0c1e8 differs from that of the run (commit
-   7c07f0d) only in comments.
+   * `scripts/cert_check.py` checks random points of F, compares the model of f at
+     random boxes with arb, and computes boxes again in new batches.
+   Each check exits with status 1 if it fails.
+6. The code of 2026-10-13 gives records equal bit for bit to those of commit 8f0c1e8,
+   on the 4,459 final boxes of 4 reference centers. The box code of 8f0c1e8 differs from
+   that of the run (commit 7c07f0d) only in comments.
 
 ## The method
 
@@ -148,8 +150,9 @@ NO_GPU=1 ./scripts/setup.sh     # other machines: uv sync --locked
 * The `gpu` extra holds `jax[cuda12]`. Those wheels are for Linux only.
 * Each `uv run` must have the same extras as the sync. A `uv run` with no
   `--extra gpu` removes the CUDA build of JAX again.
-* The strict bound also needs CuPy and python-flint. Add them as overlays:
-  `uv run --extra gpu --with cupy-cuda12x --with python-flint ...`.
+* The strict bound also needs python-flint and CuPy. The lock fixes python-flint 0.9.0
+  (a dependency) and cupy-cuda12x 14.2.0 (in the `gpu` extra), the versions of the full
+  run, because the host numbers of the bound depend on the rounding of python-flint.
 * CuPy compiles the kernels with the CUDA 12 toolkit. Set `CUDA_PATH` to the
   toolkit, and add `$CUDA_PATH/lib64` to `LD_LIBRARY_PATH`. Without it, CuPy cannot
   open `libnvrtc-builtins`.
@@ -164,16 +167,18 @@ for t in blocks sections dd analytic volume invariant ozaki arnoldi arnoldi_dd \
     uv run --extra gpu python -m tests.test_$t
 done
 for t in tests.test_tm_host tests.test_cert_compare tests.test_cert_imports \
-         tmgpu.tests.test_tm tmgpu.tests.test_tmtd tmgpu.tests.test_gemm \
-         tmgpu.tests.test_host tmgpu.tests.test_boundary; do
-    uv run --extra gpu --with cupy-cuda12x --with python-flint python -m $t
+         tests.test_cert_records tmgpu.tests.test_tm tmgpu.tests.test_tmtd \
+         tmgpu.tests.test_gemm tmgpu.tests.test_host tmgpu.tests.test_boundary; do
+    uv run --extra gpu python -m $t
 done
 ```
 
 * `test_dd` and `test_ozaki` run the dd code under `jax.jit`, because the XLA
   simplifier can remove the error terms of dd. Keep it that way.
 * The tests of `tmgpu` check the Taylor-model operations and their error bounds
-  against mpmath and exact rationals.
+  against mpmath and exact rationals. `test_rounding_bounds` builds cases with no
+  truncation, so that the remainder is the bound of the round-off alone, and the same
+  check must fail when the rounding constant is 0.
 * `test_boundary` checks that `tmgpu` imports only the standard library, numpy,
   cupy, mpmath, python-flint and itself. `test_cert_imports` checks that the
   certificate code loads no JAX.
@@ -198,9 +203,14 @@ Each script gives its usage in its docstring.
 3. `scripts/cert_cover.py`: the cover of F.
 4. `scripts/tm_local_forms.py --centers <cover>`: the local forms at the reference
    centers, in arb, stored in td.
-5. `scripts/cert_run.py --grad`: the boxes on the GPU, and a file of records.
-6. `scripts/cert_partition.py --radii --grad`, `scripts/cert_local_values.py` and
-   `scripts/cert_check.py`: the checks.
+5. `scripts/cert_run.py`: the boxes on the GPU, with the bounds of abs(f) and of
+   abs(grad f), and a file of records with the git commit and the SHA-256 of each file
+   of local forms. A run on several GPUs takes `--refs` for each part, and the checks
+   take the files of all parts.
+6. `scripts/cert_local_values.py --manifest <file>`, `scripts/cert_partition.py
+   --manifest <file> --data <data> --forms <forms>` and `scripts/cert_check.py`: the
+   checks. The manifest ties the files of local forms to the files of the potential, and
+   cert_partition ties the records to the manifest.
 7. `scripts/cert_compare.py A.npz B.npz --exact`: a bit-for-bit comparison of two
    files of records.
 
