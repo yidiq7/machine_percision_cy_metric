@@ -1,189 +1,249 @@
 # Machine-precision Calabi-Yau metric on the Fermat quartic
 
-Stage 1 of a Ricci-flat metric on `Σ_a z_a^4 = 0` in CP^3, with the
-algebraic-metric ansatz of Headrick-Nassar
-([arXiv:0908.2635](https://arxiv.org/abs/0908.2635)). The goal is to decrease
-`mean abs(f)` to approximately 1e-15 in FP64, where `f = 1 − η` and
-`η = μ_ω / μ̂`.
+This repository computes an approximate Ricci-flat metric on the Fermat quartic
+X = {Σ_a z_a⁴ = 0} in CP³, in the Kähler class k₀ H, and measures its residual. For
+one fit it also proves a strict bound of the residual and of its gradient on all of
+X, with Taylor models on a graphics processing unit (GPU).
 
-`CLAUDE.md` holds the full specification, the conventions, and every
-measurement. Read it first.
+```
+g = ∂∂̄Φ on X, in the chart coordinates t
+v = det(g) abs(∂P/∂z_m)²         the volume form of g over the measure of Ω
+v̄ = 512 π⁴ k₀² / Γ(1/4)⁸         the exact mean of v (quartic/volume.py)
+f = v / v̄ − 1                    the residual; 1 − 1/η with η = v / v̄ is equal to first order
+σ = Σ_i w_i abs(f_i),  w_i = mass_i / Σ mass, on a hold-out sample
+ρ = min_a abs(z_a) / max_a abs(z_a), the distance of a point from the curves z_a = 0
+```
+
+Abbreviations: dd is double-double (two FP64 values, about 32 digits), td is
+triple-double (three FP64 values, about 48 digits), FP64 is the 64-bit binary
+floating-point format, HN is Headrick-Nassar
+([arXiv:0908.2635](https://arxiv.org/abs/0908.2635)), V+A is Vandermonde with
+Arnoldi, LM is Levenberg-Marquardt, and MSPE is the mean squared percentage error.
+
+## Results
+
+### The final fit, s2e
+
+s2e has the top degree 36 and two stages (see "The method"). The collaborators
+asked for ‖f‖_{H¹} ≤ 1e-23 and [f]_{0,α} ≤ 1e-8. s2e meets both.
+
+| quantity | value | sample |
+|---|---|---|
+| σ, mpmath | 2.7104e-28 ± 1.6e-29 | 256 points |
+| σ, dd | 2.7374e-28 | 8e6 hold-out points |
+| rms(f) = ‖f‖_L² | 4.346e-28 | 8e6 hold-out points |
+| max abs(f) | 1.363e-25 | 8e6 hold-out points; the 12 largest have ρ ≤ 0.018 |
+| ‖grad f‖_L² | 1.2231e-25 | 4 × 32,768 points, from Taylor jets |
+| ‖Δf‖_L² | 3.5842e-23 | the same |
+| ‖Ric‖_L² | 2.5582e-23 | the same |
+
+* The norms of the derivatives use the metric of volume 1. So ‖f‖_{H¹} ≈ 1.2e-25.
+* Between two charts, the mean abs change of f is 6.9 percent of σ. At 12 points
+  from ρ = 0.95 to 0.05, the mean abs difference of dd and mpmath is 6.1 percent of σ.
+* A sample maximum is a lower bound of sup abs(f). It is not a bound.
+
+### Higher top degrees
+
+| fit | top degree | σ, mpmath (256 points) |
+|---|---|---|
+| s2k | 40 | 9.8412e-30 ± 6.2e-31 |
+| s2o | 44 | 2.1273e-31 ± 1.2e-32 |
+
+From the top degree 40 the Taylor jets miss f by about 9 times σ, so these fits
+have no derivatives. At the top degree 44 the dd noise has the size of σ, and only
+the mpmath sample gives σ.
+
+### The strict bound, f6t
+
+f6t is a fit with one stage and the top degree 24: an HN base at k₀ = 16 and the
+levels 24 down to 13. Its σ is 1.7259e-22 on 400,000 hold-out points. For f6t, on all
+of X:
+
+```
+sup abs(f)      ≤ 4.9984e-20
+sup abs(grad f) ≤ 3.7497e-16    in the metric of volume 1
+```
+
+* The bound holds for the potential in two files of the run, with these SHA-256
+  values:
+  * `f6t_data.npz`: 69878fbcaa3d4ea44955ef341b162788c7e34831452f13332ad6200cbbf3dbc1
+  * `f6t_forms.npz`: 2fecc9289368a192c6e4f809a61aef55291150922fd6273e14386a4704bb3cf2
+* The largest abs(f) at a box center is 4.063e-21, so the bound is within a factor
+  12 of the true sup.
+* The box code does not have the second stage yet, so s2e has no strict bound.
+* The run took 38,215 GPU-seconds on H200 GPUs (2.9 hours on 4 GPUs).
+
+The steps of the proof:
+
+1. The potential is exactly invariant under S₄, the phases z_a → i z_a and the
+   complex conjugation. So a bound on a fundamental region F in the chart z₃ = 1 is
+   a bound on X.
+2. `scripts/cert_cover.py` covers F with 113,357 cubes of side 0.03, which share 332
+   reference centers. Interval arithmetic proves that each dropped cube misses F.
+3. For each box, `scripts/cert_run.py` computes a Taylor model of f in four complex
+   variables (τ and conj(τ) as independent variables), of order 28 or 32. The forms
+   of the potential come from arb at the reference centers
+   (`scripts/tm_local_forms.py`), stored in td. Each round-off on the GPU goes into
+   the remainder with a strict bound. A box above the target 5e-20 takes order 32,
+   and then splits.
+4. A Cauchy estimate gives g from the model of Φ on a larger polydisc. Then f, grad f
+   and their bounds follow. 134,888 final boxes cover F.
+5. Independent checks:
+   * `scripts/cert_partition.py` proves that the final boxes fill each cell of the
+     cover, and computes the radii of all records again;
+   * `scripts/cert_local_values.py` checks the 332 files of local forms against the
+     potential through another path;
+   * `scripts/cert_check.py` checks random points of F and dropped cells, compares the
+     model of f at random boxes with arb, and computes boxes again in new batches.
+6. The present code gives records equal bit for bit to those of commit 8f0c1e8, on 4
+   reference centers. The box code of 8f0c1e8 differs from that of the run (commit
+   7c07f0d) only in comments.
+
+## The method
+
+### The potential
+
+```
+p₀ = s(z)* H s(z)            the HN base at degree k₀; s(z) the sections, H real symmetric and S₄-invariant
+G  = W_L q,   W_L = (abs(z)² p₀^(−1/k₀))^L,   q from the V+A recurrence of level L
+Φ₁ = log p₀ + ψ₁,   ψ₁ = Σ c_t G_t  over the levels S₁ = {24, …, 17}
+Φ  = Φ₁ + ψ₂,       ψ₂ = Σ c'_t abs(z)^(2L) exp(−(L/k₀) Φ₁) q_t  over S₂ = {36, …, 29}
+```
+
+Each G is homogeneous of degree 0 and invariant under the symmetry group, so ψ₁ and
+ψ₂ are functions on X, and g = ∂∂̄Φ is in the class k₀ H. For s2e, k₀ = 12.
+
+### The steps
+
+1. **The HN base.** An LM fit of H on the MSPE (`quartic/fit.py`), which
+   `scripts/vpa_dd_levels.py` runs when it gets no `--theta`.
+2. **The basis of a level.** The V+A recurrence in dd, with Ozaki matrix products
+   (`quartic/arnoldi_dd.py`, `quartic/vpa_dd.py`, `quartic/ozaki.py`).
+3. **The joint basis of several levels.** A pivoted Gram-Schmidt, top level first,
+   with a cutoff on the new part of each function (`quartic/joint_dd.py`). ψ_N, the
+   projection of 1, takes its own column.
+4. **The solve.** v is linear in the coefficients to second order in δg/g, so one
+   linear least-squares solve gives them. Correction steps from the dd residual
+   finish it.
+5. **The second stage** (`scripts/vpa_dd_stage2.py`) does steps 2 to 4 again with
+   the weights of Φ₁.
+6. **The evaluation** is in dd from end to end, at points that one dd Newton step
+   puts on X (`quartic/dd_metric.py`). The references come from mpmath
+   (`scripts/level_oracle.py`, `scripts/stage2_oracle.py`).
+7. **The derivatives** come from Taylor jets of bidegree (2, 2) in complex dd
+   (`quartic/tjets.py`, `scripts/residual_jets.py`).
 
 ## Install
 
-`uv` manages the environment, and `uv.lock` is committed, so every machine gets
-the same versions. The point sampler, the restriction matrix and `ΩΩ̄` come from
+`uv` manages the environment, and `uv.lock` is committed, so every machine gets the
+same versions. The point sampler, the restriction matrix and ΩΩ̄ come from
 [MLGeometry](https://github.com/yidiq7/MLGeometry), which the lock pins as
 `MLGeometry-JAX 2.2.2`. This repository does not contain a copy.
 
 ```bash
-./scripts/setup.sh              # cluster: uv sync --locked --extra gpu
-NO_GPU=1 ./scripts/setup.sh     # laptop:  uv sync --locked
+./scripts/setup.sh              # Linux with an NVIDIA GPU: uv sync --locked --extra gpu
+NO_GPU=1 ./scripts/setup.sh     # other machines: uv sync --locked
 ```
 
-The `gpu` extra holds `jax[cuda12]`. Those wheels are Linux only, so the laptop
-must leave the extra out. `uv sync` makes `.venv`, and `uv run` uses it.
+* The `gpu` extra holds `jax[cuda12]`. Those wheels are for Linux only.
+* Each `uv run` must have the same extras as the sync. A `uv run` with no
+  `--extra gpu` removes the CUDA build of JAX again.
+* The strict bound also needs CuPy and python-flint. Add them as overlays:
+  `uv run --extra gpu --with cupy-cuda12x --with python-flint ...`.
+* CuPy compiles the kernels with the CUDA 12 toolkit. Set `CUDA_PATH` to the
+  toolkit, and add `$CUDA_PATH/lib64` to `LD_LIBRARY_PATH`. Without it, CuPy cannot
+  open `libnvrtc-builtins`.
 
 ## Test
 
+Run the tests on a Linux machine with an NVIDIA GPU:
+
 ```bash
-uv run python -m tests.test_blocks     # the symmetry structure, ~10 s
-uv run python -m tests.test_sections   # the potential p, ~40 s
-uv run python -m tests.test_dd         # the double-double arithmetic, ~30 s
-uv run python -m tests.test_analytic   # the analytic phi and Jacobian, ~5 min
+for t in blocks sections dd analytic volume invariant ozaki arnoldi arnoldi_dd \
+         joint_dd dd_metric tjets correction gradient gradient_dd prepare whiten; do
+    uv run --extra gpu python -m tests.test_$t
+done
+for t in tests.test_tm_host tests.test_cert_compare tests.test_cert_imports \
+         tmgpu.tests.test_tm tmgpu.tests.test_tmtd tmgpu.tests.test_gemm \
+         tmgpu.tests.test_host tmgpu.tests.test_boundary; do
+    uv run --extra gpu --with cupy-cuda12x --with python-flint python -m $t
+done
 ```
 
-* `test_blocks` checks `n_θ` against an independent character-theory count.
-* `test_sections` checks that `p = (Σ_a abs(z_a)²)^k` at the Fubini-Study point,
-  to k = 38.
-* `test_dd` checks the error-free transformations against mpmath, **through
-  `jax.jit`**. Keep it that way: the fault it guards against does not appear
-  outside `jax.jit`.
-* `test_analytic` holds the analytic path against nested autodiff, and holds a
-  whole fit against a whole fit.
+* `test_dd` and `test_ozaki` run the dd code under `jax.jit`, because the XLA
+  simplifier can remove the error terms of dd. Keep it that way.
+* The tests of `tmgpu` check the Taylor-model operations and their error bounds
+  against mpmath and exact rationals.
+* `test_boundary` checks that `tmgpu` imports only the standard library, numpy,
+  cupy, mpmath, python-flint and itself. `test_cert_imports` checks that the
+  certificate code loads no JAX.
 
 ## Run
 
-```bash
-STAGE=dry   ./scripts/run_cluster.sh    # size the blocks, report memory, stop
-STAGE=task1 ./scripts/run_cluster.sh    # k = 12, 16, 20 in FP64
-STAGE=high  ./scripts/run_cluster.sh    # k = 24, 28 with the Gram stage in dd
-```
+Each script gives its usage in its docstring.
 
-`STAGE=dry` first: it compiles the real solve and prints the fit-set size, the
-block size and the measured peak, so an out-of-memory run costs seconds and not
-the job. `K=28`, `SEED`, `TRAIN`, `EVAL`, `BUDGET` all override. One fit takes
-about a minute in FP64 at k = 20, and about 45 minutes at k = 28 in dd.
+**The fit:**
 
-For one degree directly:
+1. `scripts/vpa_dd_levels.py`: the HN base, then the first stage.
+2. `scripts/vpa_dd_stage2.py`: the second stage.
+3. The checks: `scripts/seam_levels.py` (f in two charts), `scripts/stage2_oracle.py`
+   (mpmath at 12 points and at the 256-point sample), and `scripts/residual_jets.py`
+   (the derivatives).
 
-```bash
-uv run python -u scripts/run_fit.py --k 28 --n-train 200000 \
-    --n-eval 8000000 --gram-dd on --max-steps 600 --seed 20260813 --cond
-```
+**The strict bound:**
 
-Each fit writes `runs/theta_k<k>_seed<seed>.npy` and a JSON record with every
-reported number, including `gram_dd` and the sizes used.
-
-The fit set and the hold-out set are two independent samples, because they have
-different limits:
-
-* **fit set: the intermediates of the Jacobian.** `fit.plan_fit` compiles the
-  real solve and sizes both the fit set and the `lax.map` block against the
-  budget. It takes only as many fit points as `--target-risk` needs, which is
-  `n_θ / N_fit` and defaults to 5e-3, and gives the rest of the budget to the
-  block. That order matters: at k = 20 a planner that maximized the fit set took
-  141,948 points, was left with a block of 64, ran 2.5 times longer and moved σ
-  by 0.04 percent. Use `--target-risk 1e-3` for a number you intend to publish.
-  The planner refuses any plan below `4 n_θ` points rather than return a fit that
-  carries no information.
-* **hold-out set: one forward pass in chunks.** The standard error of
-  `mean abs(f)` is `1/sqrt(N)`, so 8e6 points give 0.035 percent. `max abs(f)`
-  also grows with N, and it is a lower bound on `sup abs(f)`.
-
-`h → λh` leaves the metric unchanged, and `θ` is scaled so that the Fubini-Study
-point is ±1. Without that scaling `θ_FS` carries the multinomial coefficients,
-which reach 5.1e11 at k = 24, and LM stops after 2 steps because its damping and
-its step test are both absolute.
-
-## The analytic Jacobian
-
-`quartic/analytic.py` gives `φ` from the Gram sums of the holomorphic section
-vector and its 4 derivatives, and `∂v/∂θ` from Jacobi's formula. **The fit uses
-it by default.** `--autodiff-jac` selects the old nested-autodiff path, and the
-tests hold the two against each other.
-
-Jacobian time on one A100, at 20,000 points:
-
-| k | 6 | 8 | 12 | 16 | 20 |
-|---|---|---|----|----|----|
-| autodiff | 0.070 s | 0.192 s | 0.902 s | 3.405 s | 12.158 s |
-| analytic | 0.005 s | 0.010 s | 0.021 s | 0.047 s | 0.096 s |
-| gain | 14.7x | 19.4x | 42.1x | 72.3x | **126x** |
-| memory | 3.11→0.41 GB | 5.62→0.91 GB | 32.1→1.44 GB | 26.2→0.73 GB | 22.8→0.40 GB |
-
-`optimistix` keeps its own trust region: the residual carries a `jax.custom_jvp`
-whose costly part depends on the primal alone, so `jax.vmap` over the basis of θ
-computes it once. Reproduce the table with:
-
-```bash
-uv run python -u scripts/bench_analytic.py --k 6 8 12 16 20 \
-    --n-points 20000 --budget-gb 20 --out bench_gpu.json
-```
-
-## Precision
-
-`quartic/dd.py` gives double-double arithmetic, and `--gram-dd on` puts the Gram
-stage of the evaluation in it. `scripts/oracle_precision.py` measures the floor
-under `mean abs(f)` against mpmath at 50 digits, and
-`scripts/oracle_stages.py` says which stage of the evaluation carries the error.
-
-| k | floor, FP64 | floor, `--gram-dd on` |
-|---|---|---|
-| 24 | 6.04e-14 | 4.33e-15 |
-| 28 | 3.97e-13 | **1.61e-14** |
-| 32 | 5.07e-12 | 3.03e-14 |
-
-**Report no σ that sits below the floor.** At k = 28 in FP64 the fit returned
-1.7077e-13 against a floor of 3.97e-13, which means it fitted round-off and the
-number is not a measurement.
-
-The cost of `--gram-dd on` is 41 times the time and 14 times the memory at
-k = 28. The floor still grows with k, by 1.28 for each unit, so the useful limit
-moves from k = 27.1 to k = 28.6. Reaching 1e-15 needs stages 1 to 3 of the
-evaluation in dd as well, and the oracle says those give a floor of 1.6e-15 that
-does not grow. `analytic.section_vectors_closed` is the piece that work needs,
-because `dd.split` carries no derivative.
-
-## Results so far
-
-`mean abs(f)` on a hold-out set, against σ from the earlier fits of this group,
-which used a different code and a first-order method. The last column is the
-standard error of the reported number.
-
-| k | n_θ | steps | `mean abs(f)` | earlier σ | ratio | `cond(J)` | N | ± |
-|---|-----|-------|---------------|-----------|-------|-----------|---|---|
-| 2 | 2 | 36 | 1.9070e-2 | 1.90e-2 | 1.00 | 1.0 | 8e3 | 1.1% |
-| 4 | 5 | 59 | 1.6655e-3 | 1.68e-3 | 0.99 | 3.1e1 | 2e6 | 0.07% |
-| 6 | 10 | 65 | 1.6268e-4 | 1.60e-4 | 1.02 | 3.7e2 | 2e6 | 0.07% |
-| 8 | 19 | 73 | 1.6278e-5 | 1.69e-5 | 0.96 | 2.3e4 | 8e3 | 1.1% |
-| 10 | 33 | 80 | 1.8202e-6 | 1.85e-6 | 0.98 | 1.9e5 | 8e3 | 1.1% |
-| 12 | 56 | 103 | 2.2018e-7 | 2.96e-7 | 0.74 | 2.2e7 | 8e6 | 0.04% |
-| 16 | 135 | 112 | 3.5096e-9 | 8.5e-9 | 0.41 | 2.1e10 | 8e6 | 0.04% |
-| 20 | 285 | 140 | 6.3276e-11 | 6.3e-10 | 0.10 | 2.3e13 | 8e6 | 0.04% |
-| 24 | 542 | 117 | 1.2566e-12 | — | — | 5.4e16 | 8e6 | 0.04% |
-
-Reproduced after the scaling of θ and the multinomial fix, on 8e6 hold-out
-points: 2.1950e-07, 3.5140e-09 and 6.3524e-11 at k = 12, 16 and 20, in 71, 92
-and 106 LM steps against 103, 112 and 140 before.
-
-The rate is 2.81, 2.73 and 2.67 across 12 → 16 → 20 → 24, against the
-Headrick-Nassar prediction of 2.83. k = 28 needs `--gram-dd on`, because in FP64
-its σ falls below the floor.
-
-`J` has one exact null direction, from the scale of `h`.
-`fit.condition_number` drops it before it reports `cond(J)`.
+1. `scripts/level_oracle.py export --invariant-base`: the data of a fit with one
+   stage.
+2. `scripts/level_matrices.py`: the forms N_L of the levels as Hermitian matrices.
+3. `scripts/cert_cover.py`: the cover of F.
+4. `scripts/tm_local_forms.py --centers <cover>`: the local forms at the reference
+   centers, in arb, stored in td.
+5. `scripts/cert_run.py --grad`: the boxes on the GPU, and a file of records.
+6. `scripts/cert_partition.py --radii --grad`, `scripts/cert_local_values.py` and
+   `scripts/cert_check.py`: the checks.
+7. `scripts/cert_compare.py A.npz B.npz --exact`: a bit-for-bit comparison of two
+   files of records.
 
 ## Layout
 
-| Path | Contents |
+| path | content |
 |---|---|
-| `quartic/blocks.py` | the 64 residue blocks, the S₄ action, the invariant basis of `h` |
-| `quartic/sections.py` | the potential `p` at degree k, and the Fubini-Study point |
-| `quartic/metric.py` | `v = det(g\|_X)/ΩΩ̄`, the residual `f`, and the reported numbers |
-| `quartic/data.py` | point sets from the MLGeometry sampler, with a seed |
-| `quartic/analytic.py` | `φ` from Gram sums, `∂v/∂θ` from Jacobi's formula |
-| `quartic/dd.py` | double-double arithmetic that survives the XLA simplifier |
-| `quartic/fit.py` | the LM fit on MSPE, `plan_fit`, and `cond(J)` |
-| `notes/symmetry_param_counts_s4.py` | the exact count of `n_θ` from character theory |
-| `scripts/setup.sh`, `run_cluster.sh`, `run_fit.py` | environment and fits |
-| `scripts/oracle_precision.py` | the floor on `abs(f)`, against mpmath |
-| `scripts/oracle_stages.py` | which stage of the evaluation carries the error |
-| `scripts/bench_analytic.py` | the analytic path against nested autodiff |
-| `tests/` | the tests above |
-| `pyproject.toml`, `uv.lock` | the environment; `uv sync --locked` reproduces it |
+| `quartic/blocks.py`, `sections.py`, `invariant.py` | the symmetry blocks, the HN potential, and the exactly invariant base |
+| `quartic/dd.py`, `ozaki.py` | dd arithmetic that survives the XLA simplifier, and dd matrix products from FP64 slices |
+| `quartic/arnoldi_dd.py`, `vpa_dd.py`, `joint_dd.py` | the V+A bases of the levels, and the joint basis, in dd |
+| `quartic/dd_metric.py`, `metric.py`, `volume.py` | v and f in dd and in FP64, and the exact volumes |
+| `quartic/tjets.py`, `gradient.py`, `gradient_dd.py` | the derivatives of f |
+| `quartic/fit.py`, `analytic.py`, `data.py` | the LM fit of the HN base, the analytic Jacobian, and the point sets |
+| `quartic/arnoldi.py`, `correction.py`, `whiten.py` | the earlier FP64 forms of the levels and of the base |
+| `quartic/cert/` | the strict bound for the quartic: the frames of the boxes, the forms, the box pipeline and the cover |
+| `tmgpu/` | a general library: Taylor models in dd and td on the GPU (CuPy), with a strict bound of each round-off |
+| `scripts/vpa_dd_levels.py`, `vpa_dd_stage2.py`, `vpa_dd_fit.py`, `vpa_levels_combine.py` | the fits |
+| `scripts/level_oracle.py`, `stage2_oracle.py`, `seam_levels.py`, `vpa_dd_oracle.py` | the checks of the fits against mpmath and in two charts |
+| `scripts/residual_jets.py`, `residual_derivatives.py`, `residual_regions.py`, `vpa_f_stats.py` | the derivatives and the distribution of f |
+| `scripts/cert_*.py`, `tm_local_forms.py`, `level_matrices.py` | the strict bound |
+| `scripts/tm_box.py` | the first Taylor model in arb; `cert_check.py` takes f at a point from it |
+| `scripts/oracle_*.py`, `correction_*.py`, `lm_*.py`, `vpa_fit.py`, `vpa_oracle.py`, `vpa_stability.py`, `arnoldi_test.py`, `basis_condition.py`, `bench_analytic.py`, `gradient_dd_report.py` | studies of the precision and of earlier designs |
+| `scripts/run_fit.py`, `run_cluster.sh`, `report_theta.py`, `export_h.py`, `lift.py` | the HN fits in FP64 of the first period, and tools for a saved θ |
+| `scripts/setup.sh`, `pyproject.toml`, `uv.lock` | the environment |
+| `tests/`, `tmgpu/tests/` | the tests |
+| `notes/symmetry_param_counts_s4.py` | the exact count of the invariant parameters n_θ |
+| `notes/quartic_results.tex` | a write-up of 2026-09-02; its results are out of date |
+| `docs/superpowers/` | the design documents of the strict bound and of the split into `tmgpu` |
+
+## The path to the final fit
+
+| date | method | best σ |
+|---|---|---|
+| 2026-08 | HN, LM in FP64 | 1.2e-12 at k = 24 |
+| 2026-09 | HN, LM with the evaluation in dd | 3.2e-14 at k = 28 |
+| 2026-09-30 | one correction level in the product basis | 2.2e-15 |
+| 2026-10-02 | one V+A level in dd, with ψ_N | 1.1e-17 |
+| 2026-10-03 | levels 44, 40 and 36 in one joint basis | 1.9e-25 |
+| 2026-10-05 | 8 levels with a degree step of 1, one stage | 3.5e-27 at the top degree 36 |
+| 2026-10-07 | two stages, s2e | 2.7e-28 |
+| 2026-10-10 | the strict bound of f6t | sup abs(f) ≤ 5.0e-20 |
 
 ## Language
 
 Every document, comment and commit message in this repository uses ASD-STE100
-Simplified Technical English. `CLAUDE.md` gives the rules.
+Simplified Technical English (STE).
