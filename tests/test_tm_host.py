@@ -8,7 +8,7 @@
 4. quartic.cert.box._real_low is a lower bound of the real part of a model on its polydisc.
 5. box_f stops on local forms that are not in Delta and td (_check_local).
 
-The tests of frac_dd and lower are in tmgpu/tests/test_host.py.
+The tests of frac_dd and lower are in tests/test_host.py of the repository yidiq7/tmgpu.
 
 Run on a GPU node: uv run --extra gpu \\
     python -m tests.test_tm_host
