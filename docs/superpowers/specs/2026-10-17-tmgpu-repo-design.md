@@ -65,7 +65,7 @@ These results make the work a failure, also if the code runs:
 
 ## The interface
 
-The quartic code uses 55 public names of `tmgpu` and no name with a leading underscore.
+The quartic code uses 55 public names of `tmgpu` and no name that starts with an underscore.
 These names are the interface. A change to one of them needs a new version of `tmgpu`.
 
 | module | names that the quartic code uses |
@@ -134,13 +134,13 @@ In STE (ASD-STE100 Simplified Technical English):
 * the install from git now, and from PyPI after the release;
 * the requirements: an NVIDIA GPU with FP64, a CUDA 12 toolkit, and CuPy. CuPy compiles the
   kernels with NVRTC, so the dynamic loader must find `libnvrtc-builtins` of the toolkit.
-  Give the general setting: `CUDA_PATH` and `$CUDA_PATH/lib64` in `LD_LIBRARY_PATH`;
+  Give the general values: `CUDA_PATH` and `$CUDA_PATH/lib64` in `LD_LIBRARY_PATH`;
 * the modules, each in one line;
 * the tests and how to run them.
 
 ### `CLAUDE.md`
 
-`CLAUDE.md` is a local working file, as in this repo. Commit 568a372 of this repo removed
+`CLAUDE.md` is a local file, as in this repo. Commit 568a372 of this repo removed
 it from git with the reason "It is a local working file and it does not belong on the
 remote". So the `.gitignore` of the new repository lists `CLAUDE.md`, and no commit holds
 it. My guess, which the user did not correct: the local file gets these rules from the
