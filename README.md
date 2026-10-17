@@ -156,6 +156,8 @@ NO_GPU=1 ./scripts/setup.sh     # other machines: uv sync --locked
 * CuPy compiles the kernels with the CUDA 12 toolkit. Set `CUDA_PATH` to the
   toolkit, and add `$CUDA_PATH/lib64` to `LD_LIBRARY_PATH`. Without it, CuPy cannot
   open `libnvrtc-builtins`.
+* The lock takes `tmgpu` 0.1.0 from the private repository `yidiq7/tmgpu` over SSH. The
+  install needs a GitHub key with read access to it.
 
 ## Test
 
@@ -167,21 +169,17 @@ for t in blocks sections dd analytic volume invariant ozaki arnoldi arnoldi_dd \
     uv run --extra gpu python -m tests.test_$t
 done
 for t in tests.test_tm_host tests.test_cert_compare tests.test_cert_imports \
-         tests.test_cert_records tmgpu.tests.test_tm tmgpu.tests.test_tmtd \
-         tmgpu.tests.test_gemm tmgpu.tests.test_host tmgpu.tests.test_boundary; do
+         tests.test_cert_records; do
     uv run --extra gpu python -m $t
 done
 ```
 
+The tests of `tmgpu` are in its repository.
+
 * `test_dd` and `test_ozaki` run the dd code under `jax.jit`, because the XLA
   simplifier can remove the error terms of dd. Keep it that way.
-* The tests of `tmgpu` check the Taylor-model operations and their error bounds
-  against mpmath and exact rationals. `test_rounding_bounds` builds cases with no
-  truncation, so that the remainder is the bound of the round-off alone, and the same
-  check must fail when the rounding constant is 0.
-* `test_boundary` checks that `tmgpu` imports only the standard library, numpy,
-  cupy, mpmath, python-flint and itself. `test_cert_imports` checks that the
-  certificate code loads no JAX.
+* `test_cert_imports` checks that the certificate code loads no JAX. It also checks that
+  `tmgpu` comes from the environment and not from a folder of this repository.
 
 ## Run
 
@@ -226,7 +224,7 @@ Each script gives its usage in its docstring.
 | `quartic/fit.py`, `analytic.py`, `data.py` | the LM fit of the HN base, the analytic Jacobian, and the point sets |
 | `quartic/arnoldi.py`, `correction.py`, `whiten.py` | the earlier FP64 forms of the levels and of the base |
 | `quartic/cert/` | the strict bound for the quartic: the frames of the boxes, the forms, the box pipeline and the cover |
-| `tmgpu/` | a general library: Taylor models in dd and td on the GPU (CuPy), with a strict bound of each round-off |
+| `tmgpu` (a dependency, repository `yidiq7/tmgpu`) | a general library: Taylor models in dd and td on the GPU (CuPy), with a strict bound of each round-off |
 | `scripts/vpa_dd_levels.py`, `vpa_dd_stage2.py`, `vpa_dd_fit.py`, `vpa_levels_combine.py` | the fits |
 | `scripts/level_oracle.py`, `stage2_oracle.py`, `seam_levels.py`, `vpa_dd_oracle.py` | the checks of the fits against mpmath and in two charts |
 | `scripts/residual_jets.py`, `residual_derivatives.py`, `residual_regions.py`, `vpa_f_stats.py` | the derivatives and the distribution of f |
@@ -235,7 +233,7 @@ Each script gives its usage in its docstring.
 | `scripts/oracle_*.py`, `correction_*.py`, `lm_*.py`, `vpa_fit.py`, `vpa_oracle.py`, `vpa_stability.py`, `arnoldi_test.py`, `basis_condition.py`, `bench_analytic.py`, `gradient_dd_report.py` | studies of the precision and of earlier designs |
 | `scripts/run_fit.py`, `run_cluster.sh`, `report_theta.py`, `export_h.py`, `lift.py` | the HN fits in FP64 of the first period, and tools for a saved θ |
 | `scripts/setup.sh`, `pyproject.toml`, `uv.lock` | the environment |
-| `tests/`, `tmgpu/tests/` | the tests |
+| `tests/` | the tests |
 | `notes/symmetry_param_counts_s4.py` | the exact count of the invariant parameters n_θ |
 | `notes/quartic_results.tex` | a write-up of 2026-09-02; its results are out of date |
 | `docs/superpowers/` | the design documents of the strict bound and of the split into `tmgpu` |

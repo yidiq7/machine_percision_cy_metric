@@ -1,4 +1,4 @@
-"""The certificate code loads no JAX, and the packages come from this repository."""
+"""The certificate code loads no JAX, quartic comes from this repository, and tmgpu from the environment."""
 import sys
 from pathlib import Path
 
@@ -17,8 +17,10 @@ def test_no_jax():
 def test_paths():
     import quartic
     import tmgpu
-    for mod in (quartic, tmgpu):
-        assert Path(mod.__file__).resolve().is_relative_to(ROOT), mod.__file__
+    assert Path(quartic.__file__).resolve().is_relative_to(ROOT), quartic.__file__
+    path = Path(tmgpu.__file__).resolve()
+    assert not path.is_relative_to(ROOT / 'tmgpu'), path
+    assert path.is_relative_to(Path(sys.prefix).resolve()), path
 
 
 if __name__ == '__main__':

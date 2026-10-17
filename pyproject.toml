@@ -26,6 +26,8 @@ dependencies = [
     # Ball arithmetic (Arb) for the strict bound. The host numbers of the bound depend on its
     # rounding to FP64, so the version is fixed: the full run of 2026-10-10 used 0.9.0.
     "python-flint==0.9.0",
+    # Taylor models with strict bounds on the GPU, from the repository yidiq7/tmgpu.
+    "tmgpu",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +37,7 @@ dependencies = [
 #   laptop:   uv sync
 gpu = [
     "jax[cuda12]>=0.11,<0.12",
-    # The CUDA kernels of tmgpu. The full run of 2026-10-10 used 14.2.0.
+    # CuPy for the kernels of tmgpu. The full run of 2026-10-10 used 14.2.0.
     "cupy-cuda12x==14.2.0; sys_platform == 'linux'",
 ]
 
@@ -45,3 +47,6 @@ managed = true
 # The scripts and the tests put the repository root on sys.path, so uv installs
 # the dependencies only and does not build this project.
 package = false
+
+[tool.uv.sources]
+tmgpu = { git = "ssh://git@github.com/yidiq7/tmgpu.git", tag = "v0.1.0" }
