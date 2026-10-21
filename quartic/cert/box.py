@@ -221,7 +221,7 @@ def lin_tmt(sp, p6, e0, e1, delta):
     return tmtd.TMT(c, cp.zeros_like(delta), delta)
 
 
-def implicit_h_td(sp, fr, delta, hmax):
+def implicit_h_td(sp, fr, delta, hmax, parts=None):
     """The models of y(tau) = p + E tau + h n on X, with a strict remainder of h, in td.
 
     T(h) = h - c1inv P(y(h)). If T maps the ball abs(h - P_h) <= rho into itself with a
@@ -236,7 +236,9 @@ def implicit_h_td(sp, fr, delta, hmax):
     the cover), T must also contract on the ball of radius R = hmax + B(h) + rho around
     the model, which holds both that point and the root: then they are the same point.
     A box whose bound lam_big of T' on that ball is not below 1 gets rho = inf. Returns the
-    dd models ys, rho, lam, the td model of h, its dd model, and lam_big.
+    dd models ys, rho, lam, the td model of h, its dd model, and lam_big. With a dict
+    `parts`, it gets the arrays residual (the bound of T(h) - h), host (the host errors
+    eps), lam0 and rho.
     """
     b = delta.shape[0]
     T6 = tmtd.tconst
@@ -267,7 +269,8 @@ def implicit_h_td(sp, fr, delta, hmax):
     he = fr.h_err_td
     eps = (he[0] + (he[1] + he[2]) * delta + he[3] * tmtd.bound(sp, h)
            + iabs * sum(he[4] * x ** 2 + he[5] * x ** 3 for x in bw)) * SAFE
-    bd = (tmtd.bound(sp, tmtd.sub(sp, th, h)) + eps) * SAFE
+    residual = tmtd.bound(sp, tmtd.sub(sp, th, h))
+    bd = (residual + eps) * SAFE
     h_dd = tmtd.to_dd(sp, h)
     lin = [lin_tm(sp, fr.p[k], fr.e[0, k], fr.e[1, k], delta) for k in range(3)]
     ys = [tm.add(sp, lin[k], tm.scale(sp, h_dd, fr.n[k])) for k in range(3)]
@@ -288,6 +291,8 @@ def implicit_h_td(sp, fr, delta, hmax):
     second_big = sum(12 * nabs[k] ** 2 * (by[k] + big * nabs[k]) ** 2 for k in range(3))
     lam_big = (lam0 + big * second_big * iabs) * SAFE
     rho = cp.where((lam_big < 1) & good, r, cp.inf)
+    if parts is not None:
+        parts.update(residual=residual, host=eps, lam0=lam0, rho=rho)
     h_td = tmtd.TMT(h.c, rho, delta)
     h_dd = tm.TM(h_dd.c, (h_dd.rem + rho) * SAFE, delta)
     ys = [tm.add(sp, lin[k], tm.scale(sp, h_dd, fr.n[k])) for k in range(3)]
@@ -448,12 +453,14 @@ def _check_local(local):
 
 
 @mp.workprec(103)
-def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False):
+def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False, keep=None):
     """The model of f on a batch of boxes that share the reference center of `local`.
 
     a: the gap fraction of the Cauchy estimate, d_f = d (1 + a), d_Phi = d_f (1 + a).
     hmax: the bound of abs(h) over the cell of each box, for the check in implicit_h_td.
     grad: also bound the gradient of f on the box (`gradient_bounds`), in info.
+    keep: a dict or None. With a dict, box_f stores in it references to the intermediate
+    models and free numbers that it makes (see the keys at the end of the function).
     mpmath picks the free dd numbers at 103 bits, the precision of every run, so the bits
     of the result do not depend on the precision of the caller.
 
@@ -470,9 +477,11 @@ def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False):
     # Each form is a sum over j of Delta^j R_j, with the R_j of the local forms in td.
     _check_local(local)
     cref = [list(v) for v in cp.asnumpy(local['c'])]
-    ys, rho, lam, h_td, hm, lam_big = implicit_h_td(sp2, fr, d_phi, hmax)
+    h_parts = {}
+    ys, rho, lam, h_td, hm, lam_big = implicit_h_td(sp2, fr, d_phi, hmax, h_parts)
     base_t, v2 = offset_models_td(sp2, fr, h_td, hm, cref, d_phi)
     info['rho_h'], info['lam_h'], info['lam_big'] = rho, lam, lam_big
+    info['h_parts'] = h_parts
     yc = [conj(y) for y in ys]
     clock('h')
     mats = monomial_mats_td(sp2, sp_low, base_t, top)
@@ -530,7 +539,8 @@ def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False):
     kap_err = cp.asarray(np.array([k[1] for k in kap]) * (1 + 1e-9) + 1e-300)
     xw = tm.mul(sp4, ir2, xh)
     xi = tm.add_const(sp4, tm.scale(sp4, xw, kappa_dd), -one)
-    xi.rem = (xi.rem + kap_err * tm.bound(sp4, xw)) * SAFE
+    xi_kap = kap_err * tm.bound(sp4, xw)
+    xi.rem = (xi.rem + xi_kap) * SAFE
     bxi = tm.bound(sp4, xi)
 
     clock('base')
@@ -598,17 +608,24 @@ def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False):
     v = tm.scale(sp4, dq, fr.vol)
     # vol_err is relative to the true vol; times abs(vol in dd) it misses vol_err^2, which
     # SAFE covers.
-    v.rem = (v.rem + fr.vol_err * tm.abs_ub(fr.vol[:, None, :])[0] * tm.bound(sp4, dq)) * SAFE
+    v_vol = fr.vol_err * tm.abs_ub(fr.vol[:, None, :])[0] * tm.bound(sp4, dq)
+    v.rem = (v.rem + v_vol) * SAFE
     f = tm.add_const(sp4, v, -one)
     if grad:
-        info.update(gradient_bounds(sp4, f, g, det, d, k0))
+        info.update(gradient_bounds(sp4, f, g, det, d, k0, keep))
     clock('metric')
     info.update(rem_g=g[0, 0].rem, rem_f=f.rem, times=clock.times)
+    if keep is not None:
+        keep.update(d=d, d_f=d_f, d_phi=d_phi, h_td=h_td, h_dd=hm, ys=ys, delta=dls[n], p0=p0,
+                    r2=r2, ir2=ir2, log_r2=log_r2, pt=pt, xh=xh, log_pt=log_pt, xw=xw, xi=xi,
+                    fk=fk, psi=psi, phi=phi, g=g, det=det, q4=q4, v=v, f=f, orders=orders,
+                    s_r=s_r, s_p=s_p, zeta=zeta, kappa=kappa_dd, kap_err=kap_err,
+                    xi_kap=xi_kap, v_vol=v_vol)
     return f, (d, d_f, d_phi), info, dict(p0=p0, f0=fk[0], ys=ys, sp4=sp4, sp2=sp2,
                                           delta=dls[n])
 
 
-def gradient_bounds(sp4, f, g, det, d, k0):
+def gradient_bounds(sp4, f, g, det, d, k0, keep=None):
     """Bounds of the gradient of f on the box of radius d, for f, g and det g models on d_f > d.
 
     In the tangent coordinates tau (variables 0, 1; sigma = conj(tau) are 2, 3), f is real
@@ -618,6 +635,7 @@ def gradient_bounds(sp4, f, g, det, d, k0):
     4 (df)^H g^-1 df / c <= 4 abs(df)^2 / (c lam_min), and lam_min >= det g / tr g with
     det g >= Re det(center) - (its variation and remainder) on the box; g_00 > 0 there as
     well makes g positive definite. A box without that proof gets an infinite bound.
+    With a dict `keep`, it gets dfs, df_bounds, det_low, g00_low and tr_up.
     """
     dfs = [tm.deriv1(sp4, f, i, d) for i in range(2)]
     b = [tm.bound(sp4, x) for x in dfs]
@@ -632,6 +650,8 @@ def gradient_bounds(sp4, f, g, det, d, k0):
     c = 1.0 / (2 ** 0.5 * math.pi * k0) * (1 - 1e-12)
     grad_g = cp.where(lam_low > 0, 2 * grad_tau / cp.sqrt(c * cp.where(lam_low > 0, lam_low, 1.0)),
                       cp.inf) * SAFE
+    if keep is not None:
+        keep.update(dfs=dfs, df_bounds=b, det_low=det_low, g00_low=g00_low, tr_up=tr_up)
     return dict(grad_tau=grad_tau, grad_g=grad_g, lam_low=lam_low)
 
 

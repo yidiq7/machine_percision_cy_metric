@@ -66,6 +66,82 @@ def cell_rho(c_dd):
     return min(z) / max(z)
 
 
+class Records(list):
+    """The records of one reference center, with its number of cells and computed boxes."""
+    n_cells = 0
+    n_computed = 0
+
+
+def run_reference(cov, r, local, settings, args, on_batch=None):
+    """The records of the reference center r, from its local forms (on the GPU).
+
+    settings: the gap fraction of each order. args: the options order, order_high, rho_high,
+    target, depth, batch and verbose. If on_batch(batch, order) returns a dict, box_f gets
+    it as `keep`; after the batch it also holds batch, fr, info, sup, a, hmaxs and deltas,
+    and with stop=True in it this function returns after that batch.
+    """
+    k0 = int(local['k0'])
+    records = Records()
+    idx = np.flatnonzero(cov['ref'] == r)
+    side = mp.mpf(float(cov['side']))
+    # Queue items: (lo, side, center, delta, hmax, depth, order).
+    queue = []
+    for i in idx:
+        cen = [list(x) for x in cov['centers'][i]]
+        order = args.order_high if cell_rho(cen) >= args.rho_high else args.order
+        queue.append(([mp.mpf(int(v)) * side for v in cov['idx'][i]], side, cen,
+                      float(cov['deltas'][i]), float(cov['hmaxs'][i]), 0, order))
+    t1 = time.perf_counter()
+    n_ref = 0
+    while queue:
+        # One order for each batch.
+        order = queue[0][6]
+        batch = [q for q in queue if q[6] == order][:args.batch]
+        chosen = {id(q) for q in batch}
+        queue = [q for q in queue if id(q) not in chosen]
+        fr = tc.make_frames([b[2] for b in batch], k0)
+        deltas = [b[3] for b in batch]
+        hmaxs = cp.asarray(np.array([b[4] for b in batch]))
+        a = settings[order]
+        keep = on_batch(batch, order) if on_batch is not None else None
+        f, (d, _, _), info, parts = tc.box_f(fr, local, deltas, order, order + tc.NY_EXTRA,
+                                             a, hmaxs, grad=True, keep=keep)
+        sup, c0, pb = sup_bound(parts['sp4'], f, d)
+        if keep is not None:
+            keep.update(batch=batch, fr=fr, info=info, sup=sup, a=a, hmaxs=hmaxs, deltas=deltas)
+        sup, c0, pb, rem, lam_big = (cp.asnumpy(x) for x in (sup, c0, pb, f.rem,
+                                                              info['lam_big']))
+        gt, gg, ll = (cp.asnumpy(info[k]) for k in ('grad_tau', 'grad_g', 'lam_low'))
+        n_ref += len(batch)
+        n_split, n_retry = 0, 0
+        for j, (lo, s, cen, dl, hm, depth, od) in enumerate(batch):
+            if not sup[j] <= args.target and od < args.order_high:
+                queue.append((lo, s, cen, dl, hm, depth, args.order_high))
+                n_retry += 1
+                continue
+            if not sup[j] <= args.target and depth < args.depth:
+                for sub, h, c, rad, hmx in split(lo, s):
+                    sub_order = args.order_high if cell_rho(c) >= args.rho_high else args.order
+                    queue.append((sub, h, c, rad, hmx, depth + 1, sub_order))
+                n_split += 1
+                continue
+            records.append((r, depth, *[float(v) for v in lo], float(s), dl, sup[j], c0[j],
+                            pb[j], rem[j], hm, lam_big[j], od, a, gt[j], gg[j], ll[j]))
+        if args.verbose:
+            print(f'    batch of {len(batch)} at order {order} (depth {min(b[5] for b in batch)} '
+                  f'to {max(b[5] for b in batch)}): {n_retry} to order {args.order_high}, '
+                  f'{n_split} split; largest bound {sup.max():.2e}, largest gradient '
+                  f'{np.nanmax(gg):.2e}, largest remainder '
+                  f'{rem.max():.2e}, lam_big up to {np.nanmax(lam_big):.2f}; radius '
+                  f'{min(deltas):.4f} to {max(deltas):.4f}; queue {len(queue)}; '
+                  f'{time.perf_counter() - t1:.1f}s', flush=True)
+        if keep is not None and keep.get('stop'):
+            break
+    records.n_cells = len(idx)
+    records.n_computed = n_ref
+    return records
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -105,58 +181,12 @@ def main():
         raw = (Path(args.local) / f'center_{r}.npz').read_bytes()
         shas.append(hashlib.sha256(raw).hexdigest())
         local = tc.local_on_gpu(io.BytesIO(raw))
-        k0 = int(local['k0'])
-        idx = np.flatnonzero(cov['ref'] == r)
-        side = mp.mpf(float(cov['side']))
-        # Queue items: (lo, side, center, delta, hmax, depth, order).
-        queue = []
-        for i in idx:
-            cen = [list(x) for x in cov['centers'][i]]
-            order = args.order_high if cell_rho(cen) >= args.rho_high else args.order
-            queue.append(([mp.mpf(int(v)) * side for v in cov['idx'][i]], side, cen,
-                          float(cov['deltas'][i]), float(cov['hmaxs'][i]), 0, order))
         t1 = time.perf_counter()
-        n_ref = 0
-        while queue:
-            # One order for each batch.
-            order = queue[0][6]
-            batch = [q for q in queue if q[6] == order][:args.batch]
-            chosen = {id(q) for q in batch}
-            queue = [q for q in queue if id(q) not in chosen]
-            fr = tc.make_frames([b[2] for b in batch], k0)
-            deltas = [b[3] for b in batch]
-            hmaxs = cp.asarray(np.array([b[4] for b in batch]))
-            a = settings[order]
-            f, (d, _, _), info, parts = tc.box_f(fr, local, deltas, order, order + tc.NY_EXTRA,
-                                                 a, hmaxs, grad=True)
-            sup, c0, pb = sup_bound(parts['sp4'], f, d)
-            sup, c0, pb, rem, lam_big = (cp.asnumpy(x) for x in (sup, c0, pb, f.rem,
-                                                                  info['lam_big']))
-            gt, gg, ll = (cp.asnumpy(info[k]) for k in ('grad_tau', 'grad_g', 'lam_low'))
-            n_boxes += len(batch)
-            n_ref += len(batch)
-            n_split, n_retry = 0, 0
-            for j, (lo, s, cen, dl, hm, depth, od) in enumerate(batch):
-                if not sup[j] <= args.target and od < args.order_high:
-                    queue.append((lo, s, cen, dl, hm, depth, args.order_high))
-                    n_retry += 1
-                    continue
-                if not sup[j] <= args.target and depth < args.depth:
-                    for sub, h, c, rad, hmx in split(lo, s):
-                        sub_order = args.order_high if cell_rho(c) >= args.rho_high else args.order
-                        queue.append((sub, h, c, rad, hmx, depth + 1, sub_order))
-                    n_split += 1
-                    continue
-                records.append((r, depth, *[float(v) for v in lo], float(s), dl, sup[j], c0[j],
-                                pb[j], rem[j], hm, lam_big[j], od, a, gt[j], gg[j], ll[j]))
-            if args.verbose:
-                print(f'    batch of {len(batch)} at order {order} (depth {min(b[5] for b in batch)} '
-                      f'to {max(b[5] for b in batch)}): {n_retry} to order {args.order_high}, '
-                      f'{n_split} split; largest bound {sup.max():.2e}, largest gradient '
-                      f'{np.nanmax(gg):.2e}, largest remainder '
-                      f'{rem.max():.2e}, lam_big up to {np.nanmax(lam_big):.2f}; radius '
-                      f'{min(deltas):.4f} to {max(deltas):.4f}; queue {len(queue)}; '
-                      f'{time.perf_counter() - t1:.1f}s', flush=True)
+        recs = run_reference(cov, r, local, settings, args)
+        records.extend(recs)
+        n_boxes += recs.n_computed
+        n_ref = recs.n_computed
+        idx = range(recs.n_cells)
         done = [x for x in records if x[0] == r]
         worst = float(np.max([x[8] for x in done])) if done else float('nan')
         print(f'reference {r}: {len(idx)} cells, {n_ref} boxes computed, {len(done)} final '
