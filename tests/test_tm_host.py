@@ -193,14 +193,23 @@ def _rand_center():
                 return t
 
 
-def check_frame():
-    cov = np.load(ROOT / 'runs_tm' / 'cover_s0.03_c6_v2.npz')
-    centers = [_rand_center() for _ in range(64)]
-    centers += [[[float(x) for x in c[0]], [float(x) for x in c[1]]] for c in cov['ref_centers']]
-    k0 = 16
-    names = ['ha0', 'ha1', 'ha2', 'kappa', 'a6', 'a4', 'vol']
-    seen = {n: False for n in names}
-    worst = {n: 0.0 for n in names}
+FRAME_NAMES = ['ha0', 'ha1', 'ha2', 'kappa', 'a6', 'a4', 'vol']
+
+
+def _ratio(d, bound):
+    """The error d over its bound; inf if the bound is 0 and d is not."""
+    if bound > 0:
+        return float(d / bound)
+    return 0.0 if d == 0 else float('inf')
+
+
+def frame_errors(centers, k0):
+    """For each frame number, (largest error over its bound, count of centers with error > 0).
+
+    The errors are against mpmath at 300 digits, with the dd numbers of the frame as exact.
+    """
+    worst = {n: 0.0 for n in FRAME_NAMES}
+    count = {n: 0 for n in FRAME_NAMES}
     with mp.workdps(300):
         vbar = 512 * mp.pi ** 4 * k0 ** 2 / mp.gamma(mp.mpf(1) / 4) ** 8
         for c in centers:
@@ -211,63 +220,89 @@ def check_frame():
             n = [_dd_mp(x) for x in f['n']]
             c1inv = _dd_mp(f['c1inv'])
             grad = [4 * x ** 3 for x in p]
-            dot = lambda u, v: sum(a * b for a, b in zip(u, v))
+
+            def dot(u, v):
+                return sum(a * b for a, b in zip(u, v))
+
             ref = {'ha0': c1inv * (1 + sum(x ** 4 for x in p)),
                    'ha1': c1inv * dot(grad, e[0]), 'ha2': c1inv * dot(grad, e[1]),
                    'kappa': 1 - c1inv * dot(grad, n)}
-            err = f['h_err_td']
             got = {'ha0': f['ha_td'][0], 'ha1': f['ha_td'][1], 'ha2': f['ha_td'][2],
                    'kappa': f['kappa_td']}
-            bound = dict(zip(['ha0', 'ha1', 'ha2', 'kappa', 'a6', 'a4'], err))
+            bound = dict(zip(['ha0', 'ha1', 'ha2', 'kappa', 'a6', 'a4'], f['h_err_td']))
             pairs = [(k, _td_mp(got[k]), ref[k]) for k in got]
             pairs += [('a6', _td_mp(f['a6_td'][i]), 6 * p[i] ** 2) for i in range(3)]
             pairs += [('a4', _td_mp(f['a4_td'][i]), 4 * p[i]) for i in range(3)]
+            nz = set()
             for k, v, r in pairs:
                 d = abs(v - r)
-                assert d <= bound[k], ('frame', k, float(d), bound[k])
-                seen[k] |= d > 0
-                if bound[k] > 0:
-                    worst[k] = max(worst[k], float(d / bound[k]))
+                worst[k] = max(worst[k], _ratio(d, bound[k]))
+                if d > 0:
+                    nz.add(k)
             u = mp.matrix(3, 3)
             for i in range(3):
                 for j, col in enumerate((e[0], e[1], n)):
                     u[i, j] = col[i]
             vref = 1 / (abs(mp.det(u)) ** 2 * vbar)
             d = abs(_dd_mp(f['vol']) - vref)
-            assert d <= f['vol_err'] * vref, ('frame', 'vol', float(d / vref), f['vol_err'])
-            seen['vol'] |= d > 0
-            worst['vol'] = max(worst['vol'], float(d / vref / f['vol_err']))
+            worst['vol'] = max(worst['vol'], _ratio(d / vref, f['vol_err']))
+            if d > 0:
+                nz.add('vol')
+            for k in nz:
+                count[k] += 1
+    return {k: (worst[k], count[k]) for k in FRAME_NAMES}
+
+
+def check_frame():
+    cov = np.load(ROOT / 'runs_tm' / 'cover_s0.03_c6_v2.npz')
+    centers = [_rand_center() for _ in range(64)]
+    centers += [[[float(x) for x in c[0]], [float(x) for x in c[1]]] for c in cov['ref_centers']]
+    res = frame_errors(centers, 16)
     exempt = ['a4']
-    zero = [k for k in names if not seen[k] and k not in exempt]
-    assert not zero, f'frame: the numbers {zero} have error 0 at all {len(centers)} centers, so ' \
-                     f'the check cannot see an error there'
+    bad = [k for k, (w, _) in res.items() if not w <= 1.0]
+    assert not bad, f'frame: error above its bound for {bad}: {res}'
+    zero = [k for k, (_, c) in res.items() if c == 0 and k not in exempt]
+    assert not zero, f'frame: the numbers {zero} have error 0 at all {len(centers)} centers, ' \
+                     f'so the check cannot see an error there'
     print(f'  frame: {len(centers)} centers; largest error over its bound '
-          + ', '.join(f'{k} {worst[k]:.2f}' for k in names) + f'; exempt (exact in td): {exempt}; '
-          f'each other number has a nonzero error at some center', flush=True)
+          + ', '.join(f'{k} {w:.2f}' for k, (w, _) in res.items())
+          + f'; exempt (exact in td): {exempt}; centers with nonzero error: '
+          + ', '.join(f'{k} {c}' for k, (_, c) in res.items()), flush=True)
 
 
-def check_kappa():
-    k0 = 16
+def _rdd(x):
+    """A real dd pair: the float x and a low part of about 2^-53 of it."""
+    return [float(x), float(x * 2.0 ** -53 * RNG.uniform(-1, 1))]
 
-    def rdd(x):
-        return [float(x), float(x * 2.0 ** -53 * RNG.uniform(-1, 1))]
 
-    worst, seen = 0.0, False
+def kappa_errors(inputs, k0):
+    """(largest error over its bound, count of inputs with error > 0) of fr.kappa.
+
+    inputs is a list of (s_dd, x0_dd, zeta_dd); the reference is mpmath at 300 digits.
+    """
+    worst, count = 0.0, 0
     with mp.workdps(300):
-        for _ in range(64):
-            s = rdd(10.0 ** RNG.uniform(-10, 10)) + [0.0, 0.0]
-            x0 = rdd(RNG.uniform(0.1, 10)) + [0.0, 0.0]
-            r, a = RNG.uniform(0, 1e-3 * 0.999), RNG.uniform(0, 2 * np.pi)
-            zeta = rdd(r * np.cos(a)) + rdd(r * np.sin(a))
+        for s, x0, zeta in inputs:
             got, err = fr.kappa(s, k0, x0, zeta)
             ref = _dd_mp(s).real ** (mp.mpf(1) / k0) / (_dd_mp(x0).real * (1 + _dd_mp(zeta)))
             d = abs(_dd_mp(got) - ref)
-            assert d <= err, ('kappa', float(d), err)
-            seen |= d > 0
-            worst = max(worst, float(d / err))
-    assert seen, 'kappa: error 0 at all 64 inputs, so the check cannot see an error'
-    print(f'  kappa: 64 inputs; largest error over its bound {worst:.2f}; the error is nonzero '
-          f'at some input', flush=True)
+            worst = max(worst, _ratio(d, err))
+            count += d > 0
+    return worst, count
+
+
+def check_kappa():
+    inputs = []
+    for _ in range(64):
+        r, a = RNG.uniform(0, 1e-3 * 0.999), RNG.uniform(0, 2 * np.pi)
+        inputs.append((_rdd(10.0 ** RNG.uniform(-10, 10)) + [0.0, 0.0],
+                       _rdd(RNG.uniform(0.1, 10)) + [0.0, 0.0],
+                       _rdd(r * np.cos(a)) + _rdd(r * np.sin(a))))
+    worst, count = kappa_errors(inputs, 16)
+    assert worst <= 1.0, ('kappa', worst)
+    assert count > 0, 'kappa: error 0 at all 64 inputs, so the check cannot see an error'
+    print(f'  kappa: 64 inputs; largest error over its bound {worst:.2f}; {count} inputs have '
+          f'a nonzero error', flush=True)
 
 
 def main():
