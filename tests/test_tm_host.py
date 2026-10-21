@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 from quartic.cert import box as tc                # noqa: E402
 from tmgpu import host, tm                                       # noqa: E402
 from quartic.cert import cover as cc                                         # noqa: E402
+from quartic.cert import frame as fr                                         # noqa: E402
 
 RNG = np.random.default_rng(20261010)
 
@@ -166,12 +167,117 @@ def check_old_local_forms():
     print('  _check_local: local forms that are not in Delta and td fail', flush=True)
 
 
+def _dd_mp(d):
+    """The complex mpmath number of a dd list [re_hi, re_lo, im_hi, im_lo]."""
+    return mp.mpc(mp.mpf(d[0]) + mp.mpf(d[1]), mp.mpf(d[2]) + mp.mpf(d[3]))
+
+
+def _td_mp(t):
+    """The complex mpmath number of a td list of 6 floats."""
+    return mp.mpc(sum(mp.mpf(x) for x in t[:3]), sum(mp.mpf(x) for x in t[3:]))
+
+
+def _rand_center():
+    """A random dd center with abs(t1) <= abs(t0) <= 1 and abs(1 + t0^4 + t1^4) >= 1e-3."""
+    while True:
+        r0, r1 = RNG.uniform(0.05, 1.0), None
+        r1 = RNG.uniform(0.0, r0)
+        t = []
+        for r in (r0, r1):
+            a = float(RNG.uniform(0, 2 * np.pi))
+            c = [r * np.cos(a), r * np.sin(a)]
+            t.append([c[0], float(c[0] * 2.0 ** -53 * RNG.uniform(-1, 1)),
+                      c[1], float(c[1] * 2.0 ** -53 * RNG.uniform(-1, 1))])
+        with mp.workdps(60):
+            if abs(1 + _dd_mp(t[0]) ** 4 + _dd_mp(t[1]) ** 4) >= 1e-3:
+                return t
+
+
+def check_frame():
+    cov = np.load(ROOT / 'runs_tm' / 'cover_s0.03_c6_v2.npz')
+    centers = [_rand_center() for _ in range(64)]
+    centers += [[[float(x) for x in c[0]], [float(x) for x in c[1]]] for c in cov['ref_centers']]
+    k0 = 16
+    names = ['ha0', 'ha1', 'ha2', 'kappa', 'a6', 'a4', 'vol']
+    seen = {n: False for n in names}
+    worst = {n: 0.0 for n in names}
+    with mp.workdps(300):
+        vbar = 512 * mp.pi ** 4 * k0 ** 2 / mp.gamma(mp.mpf(1) / 4) ** 8
+        for c in centers:
+            f = fr.frame(c, k0)
+            p = [_dd_mp(x) for x in f['p']]
+            e = [[mp.mpc(1), mp.mpc(0), _dd_mp(f['e'][0][2])],
+                 [mp.mpc(0), mp.mpc(1), _dd_mp(f['e'][1][2])]]
+            n = [_dd_mp(x) for x in f['n']]
+            c1inv = _dd_mp(f['c1inv'])
+            grad = [4 * x ** 3 for x in p]
+            dot = lambda u, v: sum(a * b for a, b in zip(u, v))
+            ref = {'ha0': c1inv * (1 + sum(x ** 4 for x in p)),
+                   'ha1': c1inv * dot(grad, e[0]), 'ha2': c1inv * dot(grad, e[1]),
+                   'kappa': 1 - c1inv * dot(grad, n)}
+            err = f['h_err_td']
+            got = {'ha0': f['ha_td'][0], 'ha1': f['ha_td'][1], 'ha2': f['ha_td'][2],
+                   'kappa': f['kappa_td']}
+            bound = dict(zip(['ha0', 'ha1', 'ha2', 'kappa', 'a6', 'a4'], err))
+            pairs = [(k, _td_mp(got[k]), ref[k]) for k in got]
+            pairs += [('a6', _td_mp(f['a6_td'][i]), 6 * p[i] ** 2) for i in range(3)]
+            pairs += [('a4', _td_mp(f['a4_td'][i]), 4 * p[i]) for i in range(3)]
+            for k, v, r in pairs:
+                d = abs(v - r)
+                assert d <= bound[k], ('frame', k, float(d), bound[k])
+                seen[k] |= d > 0
+                if bound[k] > 0:
+                    worst[k] = max(worst[k], float(d / bound[k]))
+            u = mp.matrix(3, 3)
+            for i in range(3):
+                for j, col in enumerate((e[0], e[1], n)):
+                    u[i, j] = col[i]
+            vref = 1 / (abs(mp.det(u)) ** 2 * vbar)
+            d = abs(_dd_mp(f['vol']) - vref)
+            assert d <= f['vol_err'] * vref, ('frame', 'vol', float(d / vref), f['vol_err'])
+            seen['vol'] |= d > 0
+            worst['vol'] = max(worst['vol'], float(d / vref / f['vol_err']))
+    exempt = ['a4']
+    zero = [k for k in names if not seen[k] and k not in exempt]
+    assert not zero, f'frame: the numbers {zero} have error 0 at all {len(centers)} centers, so ' \
+                     f'the check cannot see an error there'
+    print(f'  frame: {len(centers)} centers; largest error over its bound '
+          + ', '.join(f'{k} {worst[k]:.2f}' for k in names) + f'; exempt (exact in td): {exempt}; '
+          f'each other number has a nonzero error at some center', flush=True)
+
+
+def check_kappa():
+    k0 = 16
+
+    def rdd(x):
+        return [float(x), float(x * 2.0 ** -53 * RNG.uniform(-1, 1))]
+
+    worst, seen = 0.0, False
+    with mp.workdps(300):
+        for _ in range(64):
+            s = rdd(10.0 ** RNG.uniform(-10, 10)) + [0.0, 0.0]
+            x0 = rdd(RNG.uniform(0.1, 10)) + [0.0, 0.0]
+            r, a = RNG.uniform(0, 1e-3 * 0.999), RNG.uniform(0, 2 * np.pi)
+            zeta = rdd(r * np.cos(a)) + rdd(r * np.sin(a))
+            got, err = fr.kappa(s, k0, x0, zeta)
+            ref = _dd_mp(s).real ** (mp.mpf(1) / k0) / (_dd_mp(x0).real * (1 + _dd_mp(zeta)))
+            d = abs(_dd_mp(got) - ref)
+            assert d <= err, ('kappa', float(d), err)
+            seen |= d > 0
+            worst = max(worst, float(d / err))
+    assert seen, 'kappa: error 0 at all 64 inputs, so the check cannot see an error'
+    print(f'  kappa: 64 inputs; largest error over its bound {worst:.2f}; the error is nonzero '
+          f'at some input', flush=True)
+
+
 def main():
     check_offsets_and_delta()
     check_weights()
     check_dropped_cells()
     check_real_low()
     check_old_local_forms()
+    check_frame()
+    check_kappa()
     print('all host tests pass', flush=True)
 
 
