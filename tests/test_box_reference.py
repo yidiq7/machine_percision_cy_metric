@@ -9,6 +9,9 @@
    scripts/cert_local_values.py at 3 points of X.
 6. Off the slice, the polarized forms are Hermitian: F(z, zb) = conj(F(conj(zb), conj(z))).
 7. Off the slice, the sum over k of F_k xi^k agrees with psi.
+8. On the slice, x_c (1 + xi) = p0^(-1/k0), psi = sum of N_L p0^(-L/k0), phi = log p0 + psi
+   + k0 log s_r + log s_p, and Delta, r2, log_r2 and log_pt agree with their definitions;
+   off the slice, xi agrees with r2^-1 s_p^(1/k0) xh / x_c - 1 with no kappa.
 
 The tests read runs_tm/f6t_data.npz, runs_tm/f6t_forms.npz and runs_tm/cover_s0.03_c6_v2.npz,
 and the box takes its frame from quartic.cert.frame.
@@ -268,9 +271,16 @@ def test_solve_h():
           f'value off by 10 rad raises ValueError', flush=True)
 
 
+def global_setup():
+    """The forms of global_values of scripts/cert_local_values.py, read one time."""
+    if 'clv' not in STATE:
+        clv.setup(str(DATA), str(FORMS))
+        STATE['clv'] = True
+
+
 def test_slice_equals_global():
     pot = potential()
-    clv.setup(str(DATA), str(FORMS))
+    global_setup()
     worst_rad, worst_gap = 0.0, 0.0
     for m0, m1 in MODULI:
         z = on_x(cis(m0, math.pi / 8), cis(m1, -math.pi / 8))
@@ -335,12 +345,74 @@ def test_identity_fk():
     print(f'  phi {complex(v["phi"]):.15f}, log_pt {complex(v["log_pt"]):.6e}', flush=True)
 
 
+def agree(name, a, b):
+    """a and b overlap, and both radii are below 1e-60 of the values."""
+    assert a.overlaps(b), (name, a, b)
+    assert rel_rad(a) < 1e-60 and rel_rad(b) < 1e-60, (name, rel_rad(a), rel_rad(b))
+    return rel_rad(a), float(abs(a - b).mid())
+
+
+def test_slice_identities():
+    """The steps 2 to 9 against the real functions of the document at a point of the slice,
+    and xi off the slice with no kappa."""
+    pot, box = potential(), make_box()
+    global_setup()
+    k0 = pot.k0
+    tau = random_tau(0.01, True)
+    h = br.solve_h(box, tau, newton_h(box, tau))
+    z, zb = br.polar_point(box, tau, [t.conjugate() for t in tau], h, h)
+    assert all(a.overlaps(b.conjugate()) for a, b in zip(z, zb)), (z, zb)
+    v = br.step_values(pot, box, z, zb)
+    # p0 and N_L from global_values, and Phi = log p0 + psi with psi = sum of N_L p0^(-L/k0).
+    g0, gnl = clv.global_values(z)
+    assert g0.imag.contains(0) and g0.real > 0, g0
+    assert all(gnl[L].imag.contains(0) for L in gnl)
+    lp = g0.real.log()
+    psi_ref = sum((gnl[L].real * (-lp * L / k0).exp() for L in sorted(gnl)), arb(0))
+    r2 = 1 + abs(z[0]) ** 2 + abs(z[1]) ** 2 + abs(z[2]) ** 2
+    s_r, s_p = box.s_r.real, box.s_p.real
+    assert box.s_r.imag == 0 and box.s_p.imag == 0 and s_p > 0, (box.s_r, box.s_p)
+    xc = box.x0 * (1 + box.zeta)
+    x = xc * (1 + v['xi'])
+    # On the slice x = p0^(-1/k0) > 0, and phi - Phi = k0 log s_r + log s_p (Lemma "the
+    # metric and f").
+    assert x.imag.contains(0) and x.real > 0, x
+    assert v['psi'].imag.contains(0), v['psi']
+    checks = [('x', x, acb((-lp / k0).exp())),
+              ('psi', v['psi'], acb(psi_ref)),
+              ('phi - Phi', v['phi'] - (lp + psi_ref), acb(k0 * s_r.log() + s_p.log())),
+              ('delta', v['delta'], acb(abs(z[2]) ** 2 - box.s2.real)),
+              ('r2', v['r2'], acb(r2)),
+              ('log_r2', v['log_r2'], acb((s_r * r2).log())),
+              ('log_pt', v['log_pt'], acb((s_p * g0.real / r2 ** k0).log()))]
+    for name, a, b in checks:
+        rr, gap = agree(name, a, b)
+        print(f'  slice: {name} {complex(a):.15e}, gap {gap:.1e}, relative radius {rr:.1e}',
+              flush=True)
+    # Off the slice: xi = r2^-1 s_p^(1/k0) xh / x_c - 1 with xh = exp(-log(s_p pt) / k0).
+    sigma = random_tau(0.01, False)
+    sc = [t.conjugate() for t in sigma]
+    z, zb = br.polar_point(box, tau, sigma, h, br.solve_h(box, sc, newton_h(box, sc)))
+    v = br.step_values(pot, box, z, zb)
+    p0, _ = br.forms_polar(pot, z, zb)
+    r2 = 1 + z[0] * zb[0] + z[1] * zb[1] + z[2] * zb[2]
+    pt = p0 / r2 ** k0
+    xh = (-(s_p * pt).log() / k0).exp()
+    xi_ref = (s_p.log() / k0).exp() * xh / (r2 * xc) - 1
+    assert not v['xi'].imag.contains(0), v['xi']
+    for name, a, b in (('xh', v['xh'], xh), ('xi', v['xi'], xi_ref)):
+        rr, gap = agree(name, a, b)
+        print(f'  off the slice: {name} {complex(a):.15e}, gap {gap:.1e}, relative radius '
+              f'{rr:.1e}', flush=True)
+
+
 def main():
     t_all = time.perf_counter()
     check_inputs()
     print('inputs: the SHA-256 of f6t_data.npz and f6t_forms.npz agree', flush=True)
     for fn in (test_exact_and_poly, test_principal_branch, test_from_npz, test_solve_h,
-               test_slice_equals_global, test_hermitian, test_identity_fk):
+               test_slice_equals_global, test_hermitian, test_identity_fk,
+               test_slice_identities):
         t0 = time.perf_counter()
         fn()
         print(f'{fn.__name__} passes ({time.perf_counter() - t0:.0f} s)', flush=True)
