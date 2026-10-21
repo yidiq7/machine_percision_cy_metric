@@ -12,9 +12,14 @@
 8. On the slice, x_c (1 + xi) = p0^(-1/k0), psi = sum of N_L p0^(-L/k0), phi = log p0 + psi
    + k0 log s_r + log s_p, and Delta, r2, log_r2 and log_pt agree with their definitions;
    off the slice, xi agrees with r2^-1 s_p^(1/k0) xh / x_c - 1 with no kappa.
+9. At a point of the box B1, tm_box.run_box at the orders 2 and 3 gives overlapping
+   coefficients of degree 0 and 1 (f, g_t, df/dt), and tm_center leaves tm_box.D as it was.
+10. metric_from_center there: g_tau is Hermitian, lam_min (tr - lam_min) = det, the volume
+   form det(g_tau) q4 / (abs(det U)^2 vbar) = v of tm_box (and not without the term n dh
+   of J), and grad_G is the same from g_t and from g_tau.
 
-The tests read runs_tm/f6t_data.npz, runs_tm/f6t_forms.npz and runs_tm/cover_s0.03_c6_v2.npz,
-and the box takes its frame from quartic.cert.frame.
+The tests read runs_tm/f6t_data.npz, runs_tm/f6t_forms.npz, runs_tm/cover_s0.03_c6_v2.npz and
+runs_tm/steps_b1/B1_x1.npz, and the box takes its frame from quartic.cert.frame.
 
 Run on a GPU node: uv run --extra gpu --locked python -u -m tests.test_box_reference
 """
@@ -25,10 +30,11 @@ import tempfile
 import time
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 import mpmath as mp
 import numpy as np
-from flint import acb, arb
+from flint import acb, acb_mat, arb
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -41,6 +47,7 @@ import cert_local_values as clv                           # noqa: E402
 DATA = ROOT / 'runs_tm' / 'f6t_data.npz'
 FORMS = ROOT / 'runs_tm' / 'f6t_forms.npz'
 COVER = ROOT / 'runs_tm' / 'cover_s0.03_c6_v2.npz'
+B1 = ROOT / 'runs_tm' / 'steps_b1' / 'B1_x1.npz'
 SHA = {DATA: '69878fbcaa3d4ea44955ef341b162788c7e34831452f13332ad6200cbbf3dbc1',
        FORMS: '2fecc9289368a192c6e4f809a61aef55291150922fd6273e14386a4704bb3cf2'}
 # The moduli of (t_0, t_1) of the test points; rho is near 0.9, 0.4 and 0.05.
@@ -406,13 +413,110 @@ def test_slice_identities():
               f'{rr:.1e}', flush=True)
 
 
+def tm_box_module():
+    """scripts/tm_box.py after tm_box.load at 320 bits, one time."""
+    if 'tb' not in STATE:
+        import tm_box
+        tm_box.load(SimpleNamespace(data=str(DATA), forms=str(FORMS), prec=320, col=3))
+        STATE['tb'] = tm_box
+    return STATE['tb']
+
+
+def b1_point():
+    """The box B1 of the export runs_tm/steps_b1/B1_x1.npz, and the point y(tau) of X at a
+    point tau of the slice in D(d_f), as (box, z, the export file)."""
+    if 'b1' not in STATE:
+        z = np.load(B1)
+        box = br.Box.from_npz(z)
+        d_f = float(z['d_f'])
+        tau = [acb(0.6 * d_f, -0.3 * d_f), acb(-0.2 * d_f, 0.5 * d_f)]
+        h = br.solve_h(box, tau, newton_h(box, tau))
+        y, _ = br.polar_point(box, tau, [t.conjugate() for t in tau], h, h)
+        STATE['b1'] = (box, y, z)
+    return STATE['b1']
+
+
+def test_tm_box_orders():
+    """run_box at the orders 2 and 3 at one point of B1: f_acb, each g_center and each
+    df_center overlap, so the coefficients of degree 0 and 1 do not depend on the order."""
+    box, y, _ = b1_point()
+    tb = tm_box_module()
+    size = len(tb.D['z'])
+    res = {}
+    for n in (2, 3):
+        t0 = time.perf_counter()
+        res[n] = br.tm_center(y, tb, n)
+        print(f'  run_box at the order {n}: {time.perf_counter() - t0:.0f} s', flush=True)
+    assert all(len(tb.D[key]) == size for key in br.TM_KEYS), 'tm_center left a slot in tb.D'
+    pairs = [('f_acb', res[2]['f_acb'], res[3]['f_acb'])]
+    pairs += [(f'g_center{key}', res[2]['g_center'][key], res[3]['g_center'][key])
+              for key in sorted(res[2]['g_center'])]
+    pairs += [(f'df_center[{a}]', res[2]['df_center'][a], res[3]['df_center'][a])
+              for a in range(2)]
+    assert len(pairs) == 7, pairs
+    for name, a, b in pairs:
+        assert a.overlaps(b), (name, a, b)
+        # f and df/dt are small differences of numbers near 1, so their radii are absolute.
+        for x in (a, b):
+            assert rad(x) < 1e-60 * max(1.0, float(abs(x).mid())), (name, rad(x))
+        print(f'  {name}: {complex(a):.15e}, radius {rad(a):.1e}', flush=True)
+    STATE['res2'] = res[2]
+
+
+def test_metric_identities():
+    """metric_from_center at the point of B1: g_tau is Hermitian, lam_min and tr - lam_min
+    multiply to det, the volume form gives det(g_tau) q4 / (abs(det U)^2 vbar) = v, and the
+    norm of the gradient in tau equals grad_G of g_t. Without the term n dh of J, the volume
+    identity fails."""
+    box, y, _ = b1_point()
+    if 'res2' not in STATE:
+        STATE['res2'] = br.tm_center(y, tm_box_module(), 2)
+    res = STATE['res2']
+    vals = br.metric_from_center(box, y, res)
+    want = sorted(['g00', 'g01', 'g10', 'g11', 'det', 'tr', 'lam_min', 'q4', 'f', 'v', 'df0',
+                   'df1', 'grad_G'])
+    assert sorted(vals) == want, sorted(vals)
+    g = [[vals[f'g{i}{j}'] for j in range(2)] for i in range(2)]
+    assert g[0][1].overlaps(g[1][0].conjugate()), (g[0][1], g[1][0])
+    for name in ('g00', 'g11', 'det', 'tr', 'q4', 'f', 'v', 'lam_min', 'grad_G'):
+        assert vals[name].imag.contains(0), (name, vals[name])
+    lam = vals['lam_min'].real
+    other = vals['tr'].real - lam
+    assert lam > 0 and lam <= other, (lam, other)
+    assert (lam * other).overlaps(vals['det'].real), (lam * other, vals['det'])
+    u = acb_mat([[box.e[0][k], box.e[1][k], box.n[k]] for k in range(3)])
+    vbar = 512 * arb.pi() ** 4 * box.k0 ** 2 / arb(0.25).gamma() ** 8
+    v_tau = vals['det'] * vals['q4'] / (abs(u.det()) ** 2 * vbar)
+    assert v_tau.overlaps(vals['v']), (v_tau, vals['v'])
+    # The identity holds to far below the size of f.
+    assert rad(v_tau) < 1e-30 * float(abs(vals['f']).mid()), (rad(v_tau), vals['f'])
+    gt = [[res['g_center'][a, b] for b in range(2)] for a in range(2)]
+    v_flat = (gt[0][0] * gt[1][1] - gt[0][1] * gt[1][0]) * vals['q4'] / (abs(u.det()) ** 2
+                                                                           * vbar)
+    assert not v_flat.overlaps(vals['v']), (v_flat, vals['v'])
+    df = [vals['df0'], vals['df1']]
+    det = vals['det']
+    inv = [[g[1][1] / det, -g[0][1] / det], [-g[1][0] / det, g[0][0] / det]]
+    quad = sum((df[j].conjugate() * inv[j][i] * df[i] for i in range(2) for j in range(2)),
+               acb(0))
+    c = 1 / (arb(2).sqrt() * arb.pi() * box.k0)
+    grad_tau = (4 * quad.real / c).sqrt()
+    assert grad_tau.overlaps(vals['grad_G'].real), (grad_tau, vals['grad_G'])
+    print(f'  det(g_tau) q4 vol - 1 = {complex(v_tau - 1).real:.15e}, f = '
+          f'{complex(vals["f"]).real:.15e}; without n dh: {complex(v_flat - 1).real:.3e}',
+          flush=True)
+    print(f'  lam_min {float(lam.mid()):.10f}, det {complex(det).real:.10f}, tr '
+          f'{complex(vals["tr"]).real:.10f}; grad_G {float(vals["grad_G"].real.mid()):.6e} '
+          f'from g_t and from g_tau', flush=True)
+
+
 def main():
     t_all = time.perf_counter()
     check_inputs()
     print('inputs: the SHA-256 of f6t_data.npz and f6t_forms.npz agree', flush=True)
     for fn in (test_exact_and_poly, test_principal_branch, test_from_npz, test_solve_h,
                test_slice_equals_global, test_hermitian, test_identity_fk,
-               test_slice_identities):
+               test_slice_identities, test_tm_box_orders, test_metric_identities):
         t0 = time.perf_counter()
         fn()
         print(f'{fn.__name__} passes ({time.perf_counter() - t0:.0f} s)', flush=True)

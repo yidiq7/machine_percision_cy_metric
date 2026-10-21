@@ -1,9 +1,11 @@
-"""An independent reference in arb for the steps 1 to 9 of the box code of the strict bound.
+"""An independent reference in arb for the steps 1 to 12 of the box code of the strict bound.
 
 The values start from the two files of the certified potential (f6t_data.npz and
 f6t_forms.npz) and from the definitions of notes/strict_bound_proof.tex. This module does
 not use the local forms, the shift, the split in Delta or the re-expansion in zeta of the
-box code. Each value is an acb ball at 320 bits.
+box code. Each value is an acb ball at 320 bits. The steps 10 to 12 (the metric, f and its
+gradient on the slice) take g_t, f and df/dt from scripts/tm_box.py, which the caller
+loads and passes in.
 
 * The chart is z_3 = 1 with t = (z_0, z_1), and z_2 is the dependent coordinate:
   P(y) = y_0^4 + y_1^4 + y_2^4 + 1. Over tau the point of X is
@@ -379,3 +381,84 @@ def step_values(pot: Potential, box: Box, z, zb) -> dict:
     out['psi'] = sum((nl[L] * x ** L for L in nl), acb(0))
     out['phi'] = k0 * out['log_r2'] + out['log_pt'] + out['psi']
     return out
+
+
+# The order and the radius of tm_box.run_box for the steps 10 to 12. The coefficients of
+# degree 0 and 1 of its models are exact Taylor coefficients for each order >= 1.
+TM_ORDER = 2
+TM_RADIUS = 1e-4
+TM_KEYS = ('z', 'patch', 'ratio', 'v1')
+
+
+def tm_center(z, tb, order=TM_ORDER) -> dict:
+    """The result of tb.run_box at the point z = (y_0, y_1, y_2, 1) of X, with tb the module
+    scripts/tm_box.py after tm_box.load at 320 bits.
+
+    The chart is that of the frame: patch [2, 0, 1], so z_3 = 1, t = (z_0, z_1) and m = 2.
+    The point takes one new slot of tb.D, and the call removes it again.
+    """
+    if ctx.prec != 320:
+        raise ValueError(f'the arb precision is {ctx.prec}, not 320')
+    if len(z) == 4 and not _as_acb(z[3]) == 1:
+        raise ValueError('the point is not in the chart z_3 = 1')
+    sizes = {len(tb.D[key]) for key in TM_KEYS}
+    if len(sizes) != 1:
+        raise ValueError(f'the lists {TM_KEYS} of tm_box.D have the sizes {sizes}')
+    k = sizes.pop()
+    tb.D['z'].append([_as_acb(v) for v in z[:3]] + [acb(1)])
+    tb.D['patch'].append([2, 0, 1])
+    tb.D['ratio'].append(0.0)
+    tb.D['v1'].append(acb(0))
+    try:
+        return tb.run_box((k, order, [TM_RADIUS]))
+    finally:
+        for key in TM_KEYS:
+            del tb.D[key][k:]
+
+
+def metric_from_center(box: Box, z, res) -> dict:
+    """The values of the steps 10 to 12 at the point z = y(tau) of the slice, from the
+    result `res` of tm_center at z.
+
+    J[a][i] = dt_a / dtau_i = E[i][a] + n_a dh/dtau_i, with dh/dtau_i = -(grad P . E_i) /
+    (grad P . n) and grad P = (4 y_k^3). The values: g<i><j> of g_tau = J^T g_t conj(J);
+    det and tr of g_tau; lam_min, the smallest eigenvalue of the Hermitian g_tau;
+    q4 = abs(grad P . n)^2; f, and v = f + 1; df<i> = sum over a of df/dt_a J[a][i];
+    grad_G = sqrt((4 / c) conj(d_t f)^T g_t^-1 d_t f) with c = 1 / (sqrt(2) pi k0).
+    """
+    y = [_as_acb(v) for v in z[:3]]
+    gt = [[res['g_center'][a, b] for b in range(2)] for a in range(2)]
+    ft = list(res['df_center'])
+    f = res['f_acb']
+    grad = [4 * v ** 3 for v in y]
+    dn = sum((g * m for g, m in zip(grad, box.n)), acb(0))
+    dh = [-sum((g * e for g, e in zip(grad, box.e[i])), acb(0)) / dn for i in range(2)]
+    jac = [[box.e[i][a] + box.n[a] * dh[i] for i in range(2)] for a in range(2)]
+    gtau = [[sum((jac[a][i] * gt[a][b] * jac[b][j].conjugate()
+                  for a in range(2) for b in range(2)), acb(0)) for j in range(2)]
+            for i in range(2)]
+    out = {f'g{i}{j}': gtau[i][j] for i in range(2) for j in range(2)}
+    out['det'] = gtau[0][0] * gtau[1][1] - gtau[0][1] * gtau[1][0]
+    out['tr'] = gtau[0][0] + gtau[1][1]
+    # The true g_tau is Hermitian, so its diagonal is real and g_10 = conj(g_01).
+    da, db = gtau[0][0].real, gtau[1][1].real
+    out['lam_min'] = acb((da + db) / 2 - (((da - db) / 2) ** 2 + abs(gtau[0][1]) ** 2).sqrt())
+    out['q4'] = acb(abs(dn) ** 2)
+    out['f'], out['v'] = f, f + 1
+    for i in range(2):
+        out[f'df{i}'] = sum((ft[a] * jac[a][i] for a in range(2)), acb(0))
+    det_t = gt[0][0] * gt[1][1] - gt[0][1] * gt[1][0]
+    inv = [[gt[1][1] / det_t, -gt[0][1] / det_t], [-gt[1][0] / det_t, gt[0][0] / det_t]]
+    quad = sum((ft[j].conjugate() * inv[j][i] * ft[i] for i in range(2) for j in range(2)),
+               acb(0))
+    c = 1 / (arb(2).sqrt() * arb.pi() * box.k0)
+    out['grad_G'] = acb((4 * quad.real / c).sqrt())
+    return out
+
+
+def metric_values(box: Box, z, tb) -> dict:
+    """The values of metric_from_center at the point z = y(tau) of the slice, with
+    tb.run_box at the order TM_ORDER and the radius TM_RADIUS."""
+    if tb.D['k0'] != box.k0:
+        raise ValueError(f'tm_box has k0 {tb.D["k0"]}, the box {box.k0}')
+    return metric_from_center(box, z, tm_center(z, tb))

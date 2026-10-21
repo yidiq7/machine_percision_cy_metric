@@ -17,14 +17,24 @@ factor above 1, a box with a sup that is not finite gives no file.
 `compare` reads every export file of a directory. At random points of the polydisc of
 each model of the steps 1 to 9, it evaluates the polynomial of the model exactly in arb and
 compares it with the independent reference of tests/box_reference.py at the same exact
-point:
+point. The steps 10 to 12 (the metric, f and the gradient) take points of the slice
+sigma = conj(tau) and the reference of tests/box_reference.metric_values, which uses
+scripts/tm_box.py: the models g<i><j>, det, q4, v and f at points of D(d_f), and df0, df1
+at points of D(d).
 
 * R1: the gap abs(P(x) - ref(x)), an upper bound in arb, is at most the remainder R;
-* R2: for each part pi of R, gap / (R - pi); the test sees pi if this exceeds 1.
+* R2: for each part pi of R, gap / (R - pi); the test sees pi if this exceeds 1;
+* R3: at the points of D(d), the arb ball of the reference proves each scalar bound of
+  gradient_bounds (abs(df_i) <= df_bound_i, det >= det_low, Re g00 >= g00_low,
+  tr <= tr_up, lam_min >= lam_low, grad_G <= grad_g);
+* R4: frame(center) and kappa of quartic.cert.frame give the frame numbers and kappa of the
+  file bit for bit, and each of them lies within its error bound of mpmath at 300 digits
+  (tests/host_reference.py).
 
 The models h and y_k take tau; the others take x = (tau_0, tau_1, sigma_0, sigma_1). The
 stage writes report.txt and compare.npz into the directory, and stops if one of them
-exists. It runs on a CPU node: only the stage export imports CuPy, tmgpu and quartic.cert.box.
+exists. The exit status is 1 if R1, R3 or R4 fails. It runs on a CPU node: only the stage
+export imports CuPy and quartic.cert.box; R4 imports quartic.cert.frame and tmgpu.host.
 
 Usage, on one GPU node:
     uv run --extra gpu --locked python -u scripts/cert_steps.py export \\
@@ -35,7 +45,7 @@ Usage, on one GPU node:
 Usage, on a CPU node with 16 cores:
     uv run --extra gpu --locked python -u scripts/cert_steps.py compare \\
         --steps runs_tm/steps_b1 --data runs_tm/f6t_data.npz --forms runs_tm/f6t_forms.npz \\
-        --points 16 --procs 16
+        --points 16 --slice-points 16 --procs 16
 """
 import argparse
 import io
@@ -324,6 +334,23 @@ PSI_PARTS = ('F_k', 'xi', 'xi_cut', 'tails', 'rounding')
 REF_RAD_MAX = 1e-3
 POINT_SEED = 20261019
 TIME_KEYS = ('solve_h', 'polar_point', 'step_values', 'models')
+# The steps 10 and 11 on the slice of D(d_f), and the step 12 on the slice of D(d).
+SLICE_MODELS = ('g00', 'g01', 'g10', 'g11', 'det', 'q4', 'v', 'f')
+GRAD_MODELS = ('df0', 'df1')
+SLICE_SEED = 12
+SLICE_TIME_KEYS = ('solve_h', 'metric_values', 'models')
+# R3: (the value of metric_values, kind, the bound of the export file, the text). An upper
+# relation is value <= bound, a lower relation is value >= bound.
+R3_RELATIONS = (('df0', 'upper', 'df_bound0', 'abs(df0) <= df_bound0'),
+                ('df1', 'upper', 'df_bound1', 'abs(df1) <= df_bound1'),
+                ('det', 'lower', 'det_low', 'Re det >= det_low'),
+                ('g00', 'lower', 'g00_low', 'Re g00 >= g00_low'),
+                ('tr', 'upper', 'tr_up', 'Re tr <= tr_up'),
+                ('lam_min', 'lower', 'lam_low', 'lam_min >= lam_low'),
+                ('grad_G', 'upper', 'grad_g', 'grad_G <= grad_g'))
+# R4: the keys of quartic.cert.frame.frame and the keys of the export file.
+R4_FRAME_KEYS = (('p', 'fr_p'), ('e', 'fr_e'), ('n', 'fr_n'), ('c1inv', 'fr_c1inv'),
+                 ('vol', 'fr_vol'), ('vol_err', 'fr_vol_err'))
 
 
 def _reference():
@@ -421,6 +448,57 @@ def check_point(model, x, ref, factor):
                 ref_rad=ref_rad, r2=r2, status=status)
 
 
+def _down(a):
+    """The largest FP64 number at or below the lower bound of the arb a; NaN or -inf if the
+    bound is not finite."""
+    low = a.lower()
+    g = float(low)
+    if math.isfinite(g) and arb(g) > low:
+        g = math.nextafter(g, -math.inf)
+    return g
+
+
+def check_relation(value, bound, kind, factor):
+    """R3 of one relation at one point: value <= bound (kind 'upper') or value >= bound
+    (kind 'lower'), for the arb ball `value` of the reference and the FP64 `bound`.
+
+    The relation passes only when the ball proves it: its upper bound is at most the bound
+    (upper), or its lower bound is at least the bound (lower). A NaN bound, or a ball that
+    is not finite, fails. A bound that claims nothing (+inf for upper, -inf for lower)
+    fails at the factor 1 and is "no claim" at another factor, as in R1; the other infinite
+    bound fails. ratio: value over bound (upper) or bound over value (lower), so that it is
+    at most 1 exactly when the value satisfies the relation; NaN if a number is NaN.
+    """
+    if kind not in ('upper', 'lower'):
+        raise ValueError(f'the kind {kind!r} is not upper or lower')
+    bound = float(bound)
+    upper = kind == 'upper'
+    val = _up(value) if upper else _down(value)
+    if math.isnan(val) or math.isnan(bound):
+        ratio = math.nan
+    elif upper:
+        ratio = val / bound if bound > 0 else (0.0 if val <= bound else math.inf)
+    else:
+        ratio = bound / val if val > 0 else (0.0 if bound <= val else math.inf)
+    empty = math.inf if upper else -math.inf
+    if math.isnan(bound) or not math.isfinite(val):
+        status = 'fail'
+    elif bound == empty:
+        status = 'fail' if factor == 1 else 'no claim'
+    elif math.isinf(bound):
+        status = 'fail'
+    else:
+        status = 'pass' if (val <= bound if upper else val >= bound) else 'fail'
+    return dict(value=val, bound=bound, ratio=ratio, status=status)
+
+
+def r3_value(name, vals):
+    """The arb of the relation `name` of R3 from the values of metric_values: abs for
+    df<i>, the real part for the others (their true values are real on the slice)."""
+    v = vals[name]
+    return abs(v) if name in GRAD_MODELS else v.real
+
+
 def make_points(name, r, count):
     """`count` points of the polydisc D_4(r) as FP64 pairs (count, 4, 2): (re, im) of tau_0,
     tau_1, sigma_0 and sigma_1. Each coordinate has a random phase. The even points have the
@@ -438,6 +516,21 @@ def make_points(name, r, count):
     return out
 
 
+def make_slice_points(name, r, count):
+    """`count` points (tau, conj(tau)) of the slice of D_4(r) as FP64 pairs (count, 4, 2).
+    Each tau_i has a random phase. The even points have the modulus 0.999 r, the odd points
+    r u with u uniform in (0, 1). The seed comes from the name."""
+    rng = np.random.default_rng([POINT_SEED, zlib.crc32(name.encode()), SLICE_SEED])
+    out = np.zeros((count, 4, 2))
+    for i in range(count):
+        for v in range(2):
+            mod = 0.999 * r if i % 2 == 0 else r * float(rng.uniform())
+            phase = float(rng.uniform(0.0, 2 * math.pi))
+            out[i, v] = mod * math.cos(phase), mod * math.sin(phase)
+        out[i, 2:, 0], out[i, 2:, 1] = out[i, :2, 0], -out[i, :2, 1]
+    return out
+
+
 _WORKER = {}
 
 
@@ -445,6 +538,26 @@ def _init_worker(data, forms):
     """Load the potential one time in each worker."""
     _WORKER['pot'] = _reference().load(data, forms)
     _WORKER['files'] = {}
+    _WORKER['bounds'] = {}
+    _WORKER['paths'] = (data, forms)
+
+
+def _tm_box():
+    """scripts/tm_box.py after tm_box.load at 320 bits, one time in each worker."""
+    if 'tb' not in _WORKER:
+        import tm_box
+        data, forms = _WORKER['paths']
+        tm_box.load(Namespace(data=data, forms=forms, prec=320, col=3))
+        _WORKER['tb'] = tm_box
+    return _WORKER['tb']
+
+
+def _file_bounds(path):
+    """The bounds of R3 of an export file, read one time."""
+    if path not in _WORKER['bounds']:
+        z = np.load(path)
+        _WORKER['bounds'][path] = {key: float(z[key]) for _, _, key, _ in R3_RELATIONS}
+    return _WORKER['bounds'][path]
 
 
 def _file_state(path):
@@ -495,13 +608,120 @@ def _check_file_point(task):
     return path, i, out, (t1 - t0, t2 - t1, t3 - t2, t4 - t3)
 
 
+def _check_slice_point(task):
+    """The reference of the steps 10 to 12 at one point (tau, conj(tau)) of one file. The
+    kind 'f' checks the models SLICE_MODELS (R1); the kind 'd' checks GRAD_MODELS (R1) and
+    the relations of R3. Returns (kind, path, i, {model: check_point result},
+    {relation: check_relation result}, times)."""
+    from flint import ctx
+    kind, path, i, pt = task
+    if ctx.prec != 320:
+        raise RuntimeError(f'the arb precision is {ctx.prec}, not 320')
+    br = _reference()
+    tb = _tm_box()
+    box, models, factor, _ = _file_state(path)
+    # The exact point, built one time: the models and the reference get the same objects.
+    x = [acb(float(a), float(b)) for a, b in pt]
+    tau = x[:2]
+    where = f'{Path(path).name}, slice point {kind} {i}'
+    if not all(s == t.conjugate() for s, t in zip(x[2:], tau)):
+        raise ValueError(f'{where}: sigma is not conj(tau)')
+    hm = models['h']
+    t0 = time.perf_counter()
+    try:
+        h = br.solve_h(box, tau, br.poly_at(hm.c, hm.mons, tau))
+        z, _ = br.polar_point(box, tau, x[2:], h, h)
+        t1 = time.perf_counter()
+        vals = br.metric_values(box, z, tb)
+        t2 = time.perf_counter()
+    except ValueError as e:
+        raise ValueError(f'{where}: the reference fails: {e}') from None
+    if ctx.prec != 320:
+        raise RuntimeError(f'{where}: the arb precision is {ctx.prec} after tm_box, not 320')
+    out = {}
+    for name in (SLICE_MODELS if kind == 'f' else GRAD_MODELS):
+        try:
+            out[name] = check_point(models[name], x, vals[name], factor)
+        except ValueError as e:
+            raise ValueError(f'{where}, model {name}: {e}') from None
+    r3 = {}
+    if kind == 'd':
+        bounds = _file_bounds(path)
+        for name, rel_kind, key, _ in R3_RELATIONS:
+            r3[name] = check_relation(r3_value(name, vals), bounds[key], rel_kind, factor)
+    t3 = time.perf_counter()
+    return kind, path, i, out, r3, (t1 - t0, t2 - t1, t3 - t2)
+
+
+def _host_modules():
+    """quartic.cert.frame (the host numbers of the box code) and tests/host_reference.py
+    (their mpmath reference). Only R4 loads them; they need no GPU."""
+    from quartic.cert import frame
+    from tests import host_reference
+    return frame, host_reference
+
+
+def _same_bits(a, b):
+    """True if the FP64 arrays a and b have the same shape and the same bytes (so -0.0 and
+    +0.0 differ)."""
+    a = np.ascontiguousarray(np.asarray(a, dtype=np.float64))
+    b = np.ascontiguousarray(np.asarray(b, dtype=np.float64))
+    return a.shape == b.shape and a.tobytes() == b.tobytes()
+
+
+def _check_host(path):
+    """R4 at the box of one export file: frame(center, k0) and kappa(s_p, k0, x0, zeta) of
+    quartic.cert.frame against the numbers of the file, bit for bit, and frame_errors and
+    kappa_errors of tests/host_reference.py. Returns (path, result dict)."""
+    from flint import ctx
+    frame, href = _host_modules()
+    z = np.load(path)
+    k0 = int(z['k0'])
+    center = [[float(v) for v in z['fr_p'][i]] for i in range(2)]
+    args = [[float(v) for v in z[key]] for key in ('s_p', 'x0', 'zeta')]
+    equal, errors, error = {}, {}, ''
+    try:
+        f = frame.frame(center, k0)
+        for key, fkey in R4_FRAME_KEYS:
+            equal[fkey] = _same_bits(f[key], z[fkey])
+        kap, kerr = frame.kappa(args[0], k0, args[1], args[2])
+        equal['kappa'] = _same_bits(kap, z['kappa'])
+        # box_f stores the error bound of kappa times (1 + 1e-9), plus 1e-300.
+        equal['kap_err'] = _same_bits(np.array([kerr]) * (1 + 1e-9) + 1e-300,
+                                      [float(z['kap_err'])])
+        errors = {f'frame {k}': v for k, v in href.frame_errors([center], k0).items()}
+        errors['kappa'] = href.kappa_errors([tuple(args)], k0)
+    except ValueError as e:
+        error = str(e)
+    prec = ctx.prec
+    if prec != 320:
+        ctx.prec = 320
+    ok = (not error and len(equal) == len(R4_FRAME_KEYS) + 2 and all(equal.values())
+          and all(w <= 1 for w, _ in errors.values()))
+    return path, dict(equal=equal, errors=errors, error=error, prec=prec,
+                      status='pass' if ok else 'fail')
+
+
+def _run_task(task):
+    """One task of the pool: ('steps', ...) for the steps 1 to 9, ('slice', ...) for the
+    steps 10 to 12, ('host', path) for R4."""
+    kind, arg = task
+    if kind == 'steps':
+        return kind, _check_file_point(arg)
+    if kind == 'slice':
+        return kind, _check_slice_point(arg)
+    if kind == 'host':
+        return kind, _check_host(arg)
+    raise ValueError(f'unknown task {kind}')
+
+
 def _largest(values):
     """The largest value; NaN if one value is NaN."""
     v = np.asarray(values, dtype=float)
     return math.nan if np.isnan(v).any() else float(v.max())
 
 
-def _plan_file(path, count):
+def _plan_file(path, count, slice_count):
     """The checks of the inputs of one export file, and its points."""
     z = np.load(path)
     for key, want in (('sha_data', SHA_DATA), ('sha_forms', SHA_FORMS)):
@@ -510,42 +730,54 @@ def _plan_file(path, count):
     models = load_models(z)
     top = int(z['top'])
     names = step_models(top)
-    missing = [n for n in names if n not in models]
+    slice_names = list(SLICE_MODELS) + list(GRAD_MODELS)
+    missing = [n for n in names + slice_names if n not in models]
+    missing += [key for _, _, key, _ in R3_RELATIONS if key not in z.files]
     if missing:
-        raise SystemExit(f'{path.name}: no model {" ".join(missing)}')
-    d_phi = float(z['d_phi'])
-    for n in names:
+        raise SystemExit(f'{path.name}: no model or key {" ".join(missing)}')
+    d_phi, d_f, d = (float(z[key]) for key in ('d_phi', 'd_f', 'd'))
+    if not 0 < d < d_f < d_phi:
+        raise SystemExit(f'{path.name}: the radii d {d!r}, d_f {d_f!r}, d_phi {d_phi!r} do '
+                         f'not increase')
+    # The steps 1 to 9 are on D(d_phi), the steps 10 and 11 on D(d_f), the step 12 on D(d).
+    radius = {**{n: ('d_phi', d_phi) for n in names},
+              **{n: ('d_f', d_f) for n in SLICE_MODELS}, **{n: ('d', d) for n in GRAD_MODELS}}
+    for n in names + slice_names:
         m, nvars = models[n], 2 if n in TAU_MODELS else 4
-        if m.delta != d_phi:
-            raise SystemExit(f'{path.name}: model {n} has the radius {m.delta!r}, d_phi is '
-                             f'{d_phi!r}')
+        if m.delta != radius[n][1]:
+            raise SystemExit(f'{path.name}: model {n} has the radius {m.delta!r}, '
+                             f'{radius[n][0]} is {radius[n][1]!r}')
         if m.mons.shape[1] != nvars:
             raise SystemExit(f'{path.name}: model {n} has {m.mons.shape[1]} variables')
-    return dict(factor=float(z['factor']), d_phi=d_phi, order=int(z['order']), names=names,
-                others=sorted(set(models) - set(names)),
-                rems={n: models[n].rem for n in names},
-                parts={n: models[n].parts for n in names},
-                points=make_points(path.name, d_phi, count))
+    return dict(factor=float(z['factor']), d_phi=d_phi, d_f=d_f, d=d, order=int(z['order']),
+                names=names, others=sorted(set(models) - set(names) - set(slice_names)),
+                rems={n: models[n].rem for n in names + slice_names},
+                parts={n: models[n].parts for n in names + slice_names},
+                bounds={key: float(z[key]) for _, _, key, _ in R3_RELATIONS},
+                points=make_points(path.name, d_phi, count),
+                slice_f=make_slice_points(f'{path.name}:d_f', d_f, slice_count),
+                slice_d=make_slice_points(f'{path.name}:d', d, slice_count))
 
 
-def _summary(plans, results, count, header):
-    """The text of the report, the arrays of compare.npz, and the counts of the status."""
+R1_HEADER = (f'  {"model":<8} {"R":>10} {"largest gap":>12} {"gap / R":>10} {"pass":>5} '
+             f'{"fail":>5} {"no claim":>9}')
+R2_HEADER = ['  R2 = gap / (R - part); the test sees a part if R2 exceeds 1 at a point',
+             f'  {"model":<8} {"part":<9} {"value":>10} {"over R":>10} {"largest R2":>11}']
+
+
+def _summary(plans, results, slices, hosts, count, slice_count, header):
+    """The text of the report, the arrays of compare.npz, and the counts of the status of
+    R1, R3 and R4."""
     lines = list(header)
     arrays = {}
     total = {'pass': 0, 'fail': 0, 'no claim': 0}
-    worst = (-math.inf, '', '')
-    for fname, plan in plans.items():
-        stem = fname[:-len('.npz')]
-        names = plan['names']
-        res = [results[(fname, i)][0] for i in range(count)]
-        times = np.array([results[(fname, i)][1] for i in range(count)])
-        arrays[f'{stem}:points'] = plan['points']
-        arrays[f'{stem}:times'] = times
-        lines.append(f'{fname}: factor {plan["factor"]:g}, d_phi {plan["d_phi"]:.6e}, order '
-                     f'{plan["order"]}, {count} points (0, 4, 8, ... on the slice)')
-        lines.append(f'  {"model":<8} {"R":>10} {"largest gap":>12} {"gap / R":>10} '
-                     f'{"pass":>5} {"fail":>5} {"no claim":>9}')
-        r2_lines = []
+    total3 = {'pass': 0, 'fail': 0, 'no claim': 0}
+    total4 = {'pass': 0, 'fail': 0}
+    worst = [-math.inf, '', '']
+
+    def model_rows(fname, stem, plan, names, res):
+        """The rows of R1 and of R2 of the models `names` over the point results res."""
+        rows, r2_rows = [], []
         for n in names:
             gaps = [r[n]['gap'] for r in res]
             ratios = [r[n]['ratio'] for r in res]
@@ -556,10 +788,10 @@ def _summary(plans, results, count, header):
             big = _largest(ratios)
             # A NaN ratio ranks above every number.
             if (math.inf if math.isnan(big) else big) > worst[0]:
-                worst = (big, fname, n)
-            lines.append(f'  {n:<8} {plan["rems"][n]:10.3e} {_largest(gaps):12.3e} '
-                         f'{big:10.3e} {counts["pass"]:5d} {counts["fail"]:5d} '
-                         f'{counts["no claim"]:9d}')
+                worst[:] = [big, fname, n]
+            rows.append(f'  {n:<8} {plan["rems"][n]:10.3e} {_largest(gaps):12.3e} '
+                        f'{big:10.3e} {counts["pass"]:5d} {counts["fail"]:5d} '
+                        f'{counts["no claim"]:9d}')
             arrays[f'{stem}:{n}:gap'] = np.array(gaps)
             arrays[f'{stem}:{n}:rem'] = np.array(plan['rems'][n])
             arrays[f'{stem}:{n}:ref_rad'] = np.array([r[n]['ref_rad'] for r in res])
@@ -572,25 +804,94 @@ def _summary(plans, results, count, header):
                 seen = 'seen' if big_r2 > 1 else 'not seen'
                 rem = plan['rems'][n]
                 over = part / rem if rem != 0 else math.inf
-                r2_lines.append(f'  {n:<8} {key:<9} {part:10.3e} {over:10.3e} '
-                                f'{big_r2:11.3e}  {seen}')
-        lines.append('  R2 = gap / (R - part); the test sees a part if R2 exceeds 1 at a '
-                     'point')
-        lines.append(f'  {"model":<8} {"part":<9} {"value":>10} {"over R":>10} '
-                     f'{"largest R2":>11}')
-        lines.extend(r2_lines)
+                r2_rows.append(f'  {n:<8} {key:<9} {part:10.3e} {over:10.3e} '
+                               f'{big_r2:11.3e}  {seen}')
+        return rows, r2_rows
+
+    for fname, plan in plans.items():
+        stem = fname[:-len('.npz')]
+        res = [results[(fname, i)][0] for i in range(count)]
+        times = np.array([results[(fname, i)][1] for i in range(count)])
+        arrays[f'{stem}:points'] = plan['points']
+        arrays[f'{stem}:times'] = times
+        lines.append(f'{fname}: factor {plan["factor"]:g}, d_phi {plan["d_phi"]:.6e}, order '
+                     f'{plan["order"]}, {count} points (0, 4, 8, ... on the slice)')
+        rows, r2_rows = model_rows(fname, stem, plan, plan['names'], res)
+        lines += [R1_HEADER] + rows + R2_HEADER + r2_rows
         lines.append('  the time of the reference for each point (s): solve_h at tau and at '
                      'conj(sigma), polar_point, step_values; and the models in arb')
         for i in range(count):
             t = times[i]
             lines.append(f'  point {i:2d}: {t[0]:8.3f} {t[1]:8.4f} {t[2]:8.3f} | {t[3]:8.2f}')
-        lines.append(f'  not compared by this stage (the steps 10 to 12): '
-                     f'{" ".join(plan["others"])}')
+
+        # The steps 10 to 12 on the slice, and R3.
+        res_f = [slices[(fname, 'f', i)] for i in range(slice_count)]
+        res_d = [slices[(fname, 'd', i)] for i in range(slice_count)]
+        for kind, rs_ in (('f', res_f), ('d', res_d)):
+            arrays[f'{stem}:slice_{kind}:points'] = plan[f'slice_{kind}']
+            arrays[f'{stem}:slice_{kind}:times'] = np.array([r[2] for r in rs_])
+        lines.append(f'  the steps 10 to 12 on the slice sigma = conj(tau): {slice_count} points '
+                     f'in D(d_f), d_f {plan["d_f"]:.6e}, for {" ".join(SLICE_MODELS)}; '
+                     f'{slice_count} points in D(d), d {plan["d"]:.6e}, for '
+                     f'{" ".join(GRAD_MODELS)} and R3')
+        rows_f, r2_f = model_rows(fname, stem, plan, SLICE_MODELS, [r[0] for r in res_f])
+        rows_d, r2_d = model_rows(fname, stem, plan, GRAD_MODELS, [r[0] for r in res_d])
+        lines += [R1_HEADER] + rows_f + rows_d + R2_HEADER + r2_f + r2_d
+        lines.append(f'  R3 at the {slice_count} points in D(d): a relation passes when the arb '
+                     f'ball of the reference proves it; ratio = value / bound (upper), bound / '
+                     f'value (lower)')
+        lines.append(f'  {"relation":<22} {"bound":>11} {"largest ratio":>14} {"pass":>5} '
+                     f'{"fail":>5} {"no claim":>9}')
+        r3 = [r[1] for r in res_d]
+        for name, _, key, text in R3_RELATIONS:
+            status = [r[name]['status'] for r in r3]
+            ratios = [r[name]['ratio'] for r in r3]
+            counts = {k: status.count(k) for k in total3}
+            for k in total3:
+                total3[k] += counts[k]
+            lines.append(f'  {text:<22} {plan["bounds"][key]:11.4e} {_largest(ratios):14.4e} '
+                         f'{counts["pass"]:5d} {counts["fail"]:5d} {counts["no claim"]:9d}')
+            arrays[f'{stem}:r3:{name}:value'] = np.array([r[name]['value'] for r in r3])
+            arrays[f'{stem}:r3:{name}:bound'] = np.array(plan['bounds'][key])
+            arrays[f'{stem}:r3:{name}:ratio'] = np.array(ratios)
+            arrays[f'{stem}:r3:{name}:status'] = np.array(status)
+        lines.append('  the time of the reference for each slice point (s): solve_h and '
+                     'polar_point, metric_values (tm_box); and the models in arb')
+        for kind, rs_ in (('f', res_f), ('d', res_d)):
+            for i, r in enumerate(rs_):
+                t = r[2]
+                lines.append(f'  point {kind}{i:<2d}: {t[0]:8.3f} {t[1]:8.1f} | {t[2]:8.2f}')
+
+        # R4: the host numbers of the box.
+        h = hosts[fname]
+        total4[h['status']] += 1
+        eq = ', '.join(f'{k} {"yes" if v else "NO"}' for k, v in h['equal'].items())
+        lines.append(f'  R4: frame(center, k0) and kappa(s_p, k0, x0, zeta) of quartic.cert.frame '
+                     f'equal the numbers of the file bit for bit: {eq or "not computed"}')
+        lines.append('  R4: error over bound against mpmath at 300 digits (count of nonzero '
+                     'errors): ' + ', '.join(f'{k} {w:.6f} ({c})'
+                                             for k, (w, c) in h['errors'].items()))
+        if h['error']:
+            lines.append(f'  R4: ValueError: {h["error"]}')
+        restored = ' (restored to 320)' if h['prec'] != 320 else ''
+        lines.append(f'  R4: the arb precision after the calls {h["prec"]}{restored}; R4 '
+                     f'{h["status"]}')
+        arrays[f'{stem}:r4:status'] = np.array(h['status'])
+        for k, v in h['equal'].items():
+            arrays[f'{stem}:r4:equal:{k}'] = np.array(v)
+        for k, (w, c) in h['errors'].items():
+            arrays[f'{stem}:r4:error:{k}'] = np.array([w, c], dtype=float)
+        lines.append(f'  models of the file that this stage does not compare: '
+                     f'{" ".join(plan["others"]) or "none"}')
     lines.append(f'largest gap / R: {worst[0]:.3e} ({worst[2]} of {worst[1]})')
-    lines.append(f'checks: {total["pass"]} pass, {total["fail"]} fail, {total["no claim"]} no '
-                 f'claim')
-    lines.append('RESULT: PASS' if total['fail'] == 0 else 'RESULT: FAIL')
-    return '\n'.join(lines) + '\n', arrays, total
+    lines.append(f'checks R1 (the steps 1 to 12): {total["pass"]} pass, {total["fail"]} fail, '
+                 f'{total["no claim"]} no claim')
+    lines.append(f'checks R3: {total3["pass"]} pass, {total3["fail"]} fail, '
+                 f'{total3["no claim"]} no claim')
+    lines.append(f'checks R4: {total4["pass"]} files pass, {total4["fail"]} fail')
+    failed = total['fail'] or total3['fail'] or total4['fail']
+    lines.append('RESULT: FAIL' if failed else 'RESULT: PASS')
+    return '\n'.join(lines) + '\n', arrays, (total, total3, total4)
 
 
 def compare(args):
@@ -605,25 +906,53 @@ def compare(args):
     files = sorted(p for p in steps.glob('*.npz') if p.name != npz_path.name)
     if not files:
         raise SystemExit(f'{steps} has no export file')
-    plans = {p.name: _plan_file(p, args.points) for p in files}
-    tasks = [(str(p), i, plans[p.name]['points'][i]) for p in files for i in range(args.points)]
+    if args.points < 1 or args.slice_points < 1:
+        raise SystemExit('--points and --slice-points must be at least 1')
+    plans = {p.name: _plan_file(p, args.points, args.slice_points) for p in files}
+    # The long tasks (tm_box) go first, so that the short ones fill the pool at the end.
+    tasks = ([('host', str(p)) for p in files]
+             + [('slice', (kind, str(p), i, plans[p.name][f'slice_{kind}'][i]))
+                for p in files for kind in ('d', 'f') for i in range(args.slice_points)]
+             + [('steps', (str(p), i, plans[p.name]['points'][i]))
+                for p in files for i in range(args.points)])
     commit = git_commit()
-    header = [f'compare: {steps}, {len(files)} files, {args.points} points each, commit '
-              f'{commit}', f'  data {sha_data}', f'  forms {sha_forms}']
+    header = [f'compare: {steps}, {len(files)} files, {args.points} points each for the steps '
+              f'1 to 9, {args.slice_points} + {args.slice_points} slice points each for the '
+              f'steps 10 to 12, commit {commit}', f'  data {sha_data}', f'  forms {sha_forms}']
     print('\n'.join(header), flush=True)
-    results = {}
+    results, slices, hosts = {}, {}, {}
     t_all = time.perf_counter()
     pool_ctx = multiprocessing.get_context('fork')
     with pool_ctx.Pool(args.procs, initializer=_init_worker,
                        initargs=(args.data, args.forms)) as pool:
-        for path, i, out, times in pool.imap_unordered(_check_file_point, tasks):
-            results[(Path(path).name, i)] = (out, times)
+        for kind, res in pool.imap_unordered(_run_task, tasks):
+            if kind == 'host':
+                path, r4 = res
+                hosts[Path(path).name] = r4
+                print(f'{Path(path).name} R4: {r4["status"]}', flush=True)
+                continue
+            if kind == 'steps':
+                path, i, out, times = res
+                results[(Path(path).name, i)] = (out, times)
+                where, keys, r3 = f'point {i}', TIME_KEYS, {}
+            else:
+                sk, path, i, out, r3, times = res
+                slices[(Path(path).name, sk, i)] = (out, r3, times)
+                where, keys = f'slice point {sk} {i}', SLICE_TIME_KEYS
             worst = max(out, key=lambda n: np.nan_to_num(out[n]['ratio'], nan=np.inf))
-            print(f'{Path(path).name} point {i}: ' +
-                  ', '.join(f'{k} {t:.2f} s' for k, t in zip(TIME_KEYS, times)) +
-                  f'; largest gap / R {out[worst]["ratio"]:.3e} ({worst})', flush=True)
+            r3_text = ''
+            if r3:
+                big = max(r3, key=lambda n: np.nan_to_num(r3[n]['ratio'], nan=np.inf))
+                bad = [n for n in r3 if r3[n]['status'] == 'fail']
+                r3_text = (f'; R3 largest ratio {r3[big]["ratio"]:.3e} ({big}), fail: '
+                           f'{" ".join(bad) or "none"}')
+            print(f'{Path(path).name} {where}: ' +
+                  ', '.join(f'{k} {t:.2f} s' for k, t in zip(keys, times)) +
+                  f'; largest gap / R {out[worst]["ratio"]:.3e} ({worst}){r3_text}',
+                  flush=True)
     header.append(f'  wall time {time.perf_counter() - t_all:.0f} s on {args.procs} processes')
-    text, arrays, total = _summary(plans, results, args.points, header)
+    text, arrays, totals = _summary(plans, results, slices, hosts, args.points,
+                                    args.slice_points, header)
     arrays.update(sha_data=sha_data, sha_forms=sha_forms, commit=commit)
     with open(npz_path, 'xb') as fh:
         np.savez(fh, **arrays)
@@ -631,7 +960,7 @@ def compare(args):
         fh.write(text)
     print(text, end='', flush=True)
     print(f'wrote {report_path} and {npz_path}', flush=True)
-    return 1 if total['fail'] else 0
+    return 1 if any(t['fail'] for t in totals) else 0
 
 
 def main():
@@ -643,10 +972,13 @@ def main():
         ex.add_argument(f'--{opt}', type=str, required=True)
     ex.add_argument('--boxes', nargs='+', required=True, help='names B1 to B8')
     ex.add_argument('--factors', nargs='+', type=float, default=[1.0])
-    co = sub.add_parser('compare', help='compare the models of the steps 1 to 9 with arb')
+    co = sub.add_parser('compare', help='compare the models of the steps 1 to 12 with arb')
     for opt in ('steps', 'data', 'forms'):
         co.add_argument(f'--{opt}', type=str, required=True)
-    co.add_argument('--points', type=int, default=16, help='points for each file')
+    co.add_argument('--points', type=int, default=16,
+                    help='points for each file for the steps 1 to 9')
+    co.add_argument('--slice-points', type=int, default=16,
+                    help='slice points in D(d_f) and again in D(d) for each file')
     co.add_argument('--procs', type=int, default=16, help='worker processes')
     args = ap.parse_args()
     if args.stage == 'export':

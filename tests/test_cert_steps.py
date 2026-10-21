@@ -9,7 +9,11 @@
 5. load_models takes the parts of R2 that the stage `compare` uses, and no other key.
 6. make_points: the even points at 0.999 r, the odd points inside the polydisc, the points
    0, 4, 8, 12 on the slice sigma = conj(tau), and the same points for the same file name.
-7. The import of scripts/cert_steps.py loads no CuPy, tmgpu or quartic.cert.box.
+7. R3 (check_relation): a relation passes only when the arb ball proves it, also for a value
+   2^-60 beyond the bound; an empty bound is "no claim" at a factor other than 1; a NaN
+   bound, a NaN ball and an infinite ball fail.
+8. make_slice_points: every point exactly on the slice; _same_bits tells -0.0 from 0.0.
+9. The import of scripts/cert_steps.py loads no CuPy, tmgpu or quartic.cert.box.
 
 Run on a GPU node: uv run --extra gpu --locked python -u -m tests.test_cert_steps
 """
@@ -169,6 +173,93 @@ def test_points():
           f'{mods[1::2].min() / r:.3f}', flush=True)
 
 
+def test_relation():
+    up = cs.check_relation(arb(0.5, 1e-30), 1.0, 'upper', 1.0)
+    assert up['status'] == 'pass' and abs(up['ratio'] - 0.5) < 1e-12, up
+    low = cs.check_relation(arb(2.0, 1e-30), 1.0, 'lower', 1.0)
+    assert low['status'] == 'pass' and abs(low['ratio'] - 0.5) < 1e-12, low
+    # A value equal to the bound satisfies the relation.
+    for kind in ('upper', 'lower'):
+        out = cs.check_relation(arb(1.0), 1.0, kind, 1.0)
+        assert out['status'] == 'pass' and out['ratio'] == 1.0, (kind, out)
+    # A ball that holds the bound does not prove the relation.
+    for kind in ('upper', 'lower'):
+        out = cs.check_relation(arb(1.0, 1e-20), 1.0, kind, 1.0)
+        assert out['status'] == 'fail' and out['ratio'] > 1, (kind, out)
+    # An exact value 2^-60 beyond the bound fails: the FP64 bound of the ball rounds outward.
+    eps = arb(2.0 ** -60)
+    out = cs.check_relation(1 + eps, 1.0, 'upper', 1.0)
+    assert out['status'] == 'fail' and out['value'] > 1.0, out
+    out = cs.check_relation(1 - eps, 1.0, 'lower', 1.0)
+    assert out['status'] == 'fail' and out['value'] < 1.0, out
+    over = cs.check_relation(arb(2.0), 1.0, 'upper', 1.0)
+    assert over['status'] == 'fail' and over['ratio'] == 2.0, over
+    # A value that is not proved positive fails a positive lower bound; a negative lower
+    # bound passes for a positive value.
+    out = cs.check_relation(arb(-1.0), 0.5, 'lower', 1.0)
+    assert out['status'] == 'fail' and out['ratio'] == math.inf, out
+    out = cs.check_relation(arb(3.0), -1.0, 'lower', 1.0)
+    assert out['status'] == 'pass' and out['ratio'] < 0, out
+    try:
+        cs.check_relation(arb(1.0), 1.0, 'equal', 1.0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('the kind "equal" passed')
+    print('  R3: pass with a ratio 0.5 (upper and lower), pass at equality, fail for a ball '
+          'that holds the bound and for 2^-60 beyond it', flush=True)
+
+
+def test_relation_no_claim():
+    v = arb(0.5)
+    for factor in (1e-3, 1.5):
+        assert cs.check_relation(v, math.inf, 'upper', factor)['status'] == 'no claim'
+        assert cs.check_relation(v, -math.inf, 'lower', factor)['status'] == 'no claim'
+    assert cs.check_relation(v, math.inf, 'upper', 1.0)['status'] == 'fail'
+    assert cs.check_relation(v, -math.inf, 'lower', 1.0)['status'] == 'fail'
+    for factor in (1.0, 1e-3, 1.5):
+        # The infinite bound on the wrong side, a NaN bound, and a ball that is not finite.
+        assert cs.check_relation(v, -math.inf, 'upper', factor)['status'] == 'fail'
+        assert cs.check_relation(v, math.inf, 'lower', factor)['status'] == 'fail'
+        for kind in ('upper', 'lower'):
+            out = cs.check_relation(v, math.nan, kind, factor)
+            assert out['status'] == 'fail' and math.isnan(out['ratio']), (kind, factor, out)
+            out = cs.check_relation(arb(math.nan), 1.0, kind, factor)
+            assert out['status'] == 'fail' and math.isnan(out['ratio']), (kind, factor, out)
+            out = cs.check_relation(arb(0.5, math.inf), 1.0, kind, factor)
+            assert out['status'] == 'fail', (kind, factor, out)
+    print('  R3: an empty bound fails at the factor 1 and is no claim at 1e-3 and 1.5; the '
+          'other infinite bound, a NaN bound, a NaN ball and an infinite ball fail',
+          flush=True)
+
+
+def test_slice_points():
+    r = 0.0213
+    pts = cs.make_slice_points('B1_x1.npz:d', r, 16)
+    assert pts.shape == (16, 4, 2) and pts.dtype == np.float64, pts.shape
+    assert np.array_equal(pts, cs.make_slice_points('B1_x1.npz:d', r, 16))
+    assert not np.array_equal(pts, cs.make_slice_points('B1_x1.npz:d_f', r, 16))
+    mods = np.hypot(pts[..., 0], pts[..., 1])
+    for i in range(16):
+        x = [acb(float(a), float(b)) for a, b in pts[i]]
+        assert all(s == t.conjugate() for s, t in zip(x[2:], x[:2])), (i, pts[i])
+        assert all(abs(v) < arb(r) for v in x), (i, pts[i])
+        if i % 2 == 0:
+            assert np.allclose(mods[i], 0.999 * r, rtol=1e-14, atol=0), (i, mods[i])
+    assert mods[1::2].min() < 0.9 * r, mods[1::2].min()
+    print(f'  make_slice_points: 16 points, each exactly on the slice, smallest odd modulus '
+          f'over r {mods[1::2].min() / r:.3f}', flush=True)
+
+
+def test_same_bits():
+    assert cs._same_bits([1.0, 2.0 ** -60], np.array([1.0, 2.0 ** -60]))
+    assert not cs._same_bits([0.0], [-0.0])
+    assert not cs._same_bits([1.0, 2.0], [[1.0, 2.0]])
+    assert not cs._same_bits([1.0], [math.nextafter(1.0, 2.0)])
+    print('  _same_bits: equal bytes pass; -0.0 against 0.0, another shape and one ulp fail',
+          flush=True)
+
+
 def test_import_no_gpu():
     code = ('import sys; sys.path.insert(0, sys.argv[1] + "/scripts"); import cert_steps; '
             "bad = sorted(m for m in sys.modules if m.split('.')[0] in ('cupy', 'tmgpu') "
@@ -185,7 +276,8 @@ def main():
     assert ctx.prec == 320, ctx.prec
     failed = []
     for fn in (test_point_moved, test_no_claim, test_wide_reference, test_part_seen,
-               test_load_models, test_points, test_import_no_gpu):
+               test_load_models, test_points, test_relation, test_relation_no_claim,
+               test_slice_points, test_same_bits, test_import_no_gpu):
         try:
             fn()
         except Exception:

@@ -740,7 +740,11 @@ def run_box(job):
     f_center = f.c[0]
     f_dd = D['v1'][k] / vbar - 1
     var = f.add_const(-f_center)
+    # The exact Taylor coefficients at the center: g[a, b] = d_a dbar_b Phi, f, and df/dt_a.
+    g_center = {key: g[key].c[0] for key in g}
+    df_center = [f.c[sp4.index[(1, 0, 0, 0)]], f.c[sp4.index[(0, 1, 0, 0)]]]
     return {'point': k, 'ratio': D['ratio'][k], 'n': n, 'deltas': deltas.tolist(),
+            'g_center': g_center, 'f_acb': f_center, 'df_center': df_center,
             'f_center': float(f_center.real), 'f_dd': float(f_dd.real),
             'center_gap': ub(f_center - f_dd), 'poly': var.poly_bound().tolist(),
             'check_p': check_p, 'check_n': check_n,
@@ -750,6 +754,14 @@ def run_box(job):
             'etas': {key: [float(x) for x in val] for key, val in etas.items()},
             'mac_forms': mac_forms, 'mac_assembly': COUNT['mac'],
             'seconds': time.perf_counter() - t0}
+
+
+def run_box_plain(job):
+    """run_box without the acb values g_center, f_acb and df_center, which do not pickle."""
+    res = run_box(job)
+    for key in ('g_center', 'f_acb', 'df_center'):
+        del res[key]
+    return res
 
 
 def main():
@@ -776,7 +788,7 @@ def main():
     jobs = [(k, n, args.deltas) for n in args.orders for k in args.points]
     with multiprocessing.get_context('fork').Pool(args.procs) as pool:
         results = []
-        for res in pool.imap_unordered(run_box, jobs):
+        for res in pool.imap_unordered(run_box_plain, jobs):
             results.append(res)
             print(f'point {res["point"]} (rho {res["ratio"]:.3f}), order {res["n"]}: '
                   f'f(c) {res["f_center"]:+.3e}, dd {res["f_dd"]:+.3e}, gap {res["center_gap"]:.1e}; '
