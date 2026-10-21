@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 from quartic.cert import box as tc                # noqa: E402
 from tmgpu import host, tm                                       # noqa: E402
 from quartic.cert import cover as cc                                         # noqa: E402
-from quartic.cert import frame as fr                                         # noqa: E402
+from tests.host_reference import _dd_mp, frame_errors, kappa_errors     # noqa: E402
 
 RNG = np.random.default_rng(20261010)
 
@@ -167,20 +167,10 @@ def check_old_local_forms():
     print('  _check_local: local forms that are not in Delta and td fail', flush=True)
 
 
-def _dd_mp(d):
-    """The complex mpmath number of a dd list [re_hi, re_lo, im_hi, im_lo]."""
-    return mp.mpc(mp.mpf(d[0]) + mp.mpf(d[1]), mp.mpf(d[2]) + mp.mpf(d[3]))
-
-
-def _td_mp(t):
-    """The complex mpmath number of a td list of 6 floats."""
-    return mp.mpc(sum(mp.mpf(x) for x in t[:3]), sum(mp.mpf(x) for x in t[3:]))
-
-
 def _rand_center():
     """A random dd center with abs(t1) <= abs(t0) <= 1 and abs(1 + t0^4 + t1^4) >= 1e-3."""
     while True:
-        r0, r1 = RNG.uniform(0.05, 1.0), None
+        r0 = RNG.uniform(0.05, 1.0)
         r1 = RNG.uniform(0.0, r0)
         t = []
         for r in (r0, r1):
@@ -265,7 +255,7 @@ def check_frame():
     assert not zero, f'frame: the numbers {zero} have error 0 at all {len(centers)} centers, ' \
                      f'so the check cannot see an error there'
     print(f'  frame: {len(centers)} centers; largest error over its bound '
-          + ', '.join(f'{k} {w:.2f}' for k, (w, _) in res.items())
+          + ', '.join(f'{k} {w:.6f}' for k, (w, _) in res.items())
           + f'; exempt (exact in td): {exempt}; centers with nonzero error: '
           + ', '.join(f'{k} {c}' for k, (_, c) in res.items()), flush=True)
 
@@ -273,22 +263,6 @@ def check_frame():
 def _rdd(x):
     """A real dd pair: the float x and a low part of about 2^-53 of it."""
     return [float(x), float(x * 2.0 ** -53 * RNG.uniform(-1, 1))]
-
-
-def kappa_errors(inputs, k0):
-    """(largest error over its bound, count of inputs with error > 0) of fr.kappa.
-
-    inputs is a list of (s_dd, x0_dd, zeta_dd); the reference is mpmath at 300 digits.
-    """
-    worst, count = 0.0, 0
-    with mp.workdps(300):
-        for s, x0, zeta in inputs:
-            got, err = fr.kappa(s, k0, x0, zeta)
-            ref = _dd_mp(s).real ** (mp.mpf(1) / k0) / (_dd_mp(x0).real * (1 + _dd_mp(zeta)))
-            d = abs(_dd_mp(got) - ref)
-            worst = max(worst, _ratio(d, err))
-            count += d > 0
-    return worst, count
 
 
 def check_kappa():
@@ -301,7 +275,7 @@ def check_kappa():
     worst, count = kappa_errors(inputs, 16)
     assert worst <= 1.0, ('kappa', worst)
     assert count > 0, 'kappa: error 0 at all 64 inputs, so the check cannot see an error'
-    print(f'  kappa: 64 inputs; largest error over its bound {worst:.2f}; {count} inputs have '
+    print(f'  kappa: 64 inputs; largest error over its bound {worst:.6f}; {count} inputs have '
           f'a nonzero error', flush=True)
 
 
