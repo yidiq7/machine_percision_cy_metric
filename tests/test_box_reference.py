@@ -2,7 +2,8 @@
 
 1. exact and poly_at give the exact sums of the limbs and the value of a polynomial.
 2. ppow and plog give the principal branches of mpmath at 300 digits, also near the cut.
-3. Box.from_npz reads the layout of the export file.
+3. Box.from_npz reads the layout of the export file; a wrong shape, an imaginary limb of s_p
+   that is not 0, and a negative x0 raise ValueError.
 4. solve_h proves the root h with a radius below 1e-80, and a start value off the root
    raises ValueError.
 5. On the slice zb = conj(z), the polarized p0 and N_L agree with global_values of
@@ -12,11 +13,15 @@
 8. On the slice, x_c (1 + xi) = p0^(-1/k0), psi = sum of N_L p0^(-L/k0), phi = log p0 + psi
    + k0 log s_r + log s_p, and Delta, r2, log_r2 and log_pt agree with their definitions;
    off the slice, xi agrees with r2^-1 s_p^(1/k0) xh / x_c - 1 with no kappa.
-9. At a point of the box B1, tm_box.run_box at the orders 2 and 3 gives overlapping
-   coefficients of degree 0 and 1 (f, g_t, df/dt), and tm_center leaves tm_box.D as it was.
+9. At a point of the box B1, tm_box.run_box at the orders 2 and 3 gives balls that overlap
+   for the coefficients of degree 0 and 1 (f, g_t, df/dt), and tm_center leaves tm_box.D as
+   it was.
 10. metric_from_center there: g_tau is Hermitian, lam_min (tr - lam_min) = det, the volume
    form det(g_tau) q4 / (abs(det U)^2 vbar) = v of tm_box (and not without the term n dh
    of J), and grad_G is the same from g_t and from g_tau.
+11. df_center of tm_box against finite differences of f: at an exact point t of the chart
+   z_3 = 1 near the center of B1, (f(t + eps e_a) - f(t)) / eps = 2 Re(df/dt_a) and
+   (f(t + i eps e_a) - f(t)) / eps = -2 Im(df/dt_a), with eps = 2^-40.
 
 The tests read runs_tm/f6t_data.npz, runs_tm/f6t_forms.npz, runs_tm/cover_s0.03_c6_v2.npz and
 runs_tm/steps_b1/B1_x1.npz, and the box takes its frame from quartic.cert.frame.
@@ -127,7 +132,10 @@ def dd_complex(x):
 
 def make_box():
     """A box of the cover at the first cell of the reference REF, with its frame from
-    quartic.cert.frame and free dd numbers near the values that box_f picks."""
+    quartic.cert.frame. The free dd numbers come from the center p of the frame, each
+    rounded to dd: s_r = 1 / r2(p), s_p = 1 / pt(p), x0 = p0(p)^(-1/k0), s2 = abs(p_2)^2,
+    zeta = 1e-3 + 1e-3 i, and kappa = s_p^(1/k0) / (x0 (1 + zeta)) of these dd numbers.
+    c_r is the reference center REF of the cover."""
     if 'box' in STATE:
         return STATE['box']
     pot = potential()
@@ -242,18 +250,23 @@ def test_from_npz():
             assert all(a == b for a, b in zip(getattr(got, key), getattr(want, key))), key
         assert all(got.e[i][k] == want.e[i][k] for i in range(2) for k in range(3))
         # e[i][k] = dy_k / dt_i: the identity in the first two columns.
-        assert got.e[0][0] == 1 and got.e[0][1] == 0 and got.e[1][1] == 1
+        assert got.e[0][0] == 1 and got.e[0][1] == 0 and got.e[1][0] == 0
+        assert got.e[1][1] == 1
         assert (got.k0, got.top) == (want.k0, want.top)
-        arrays['fr_e'] = arrays['fr_e'][:, :2]
-        np.savez(path, **arrays)
-        try:
-            br.Box.from_npz(np.load(path))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError('fr_e of shape (2, 2, 4) passed')
-    print('  Box.from_npz: every field equal to the Box of the frame; a wrong shape fails',
-          flush=True)
+        s_p_im = np.array(arrays['s_p'])
+        s_p_im[2] = 1e-30
+        x0_neg = -np.array(arrays['x0'])
+        bad = {'fr_e of shape (2, 2, 4)': dict(fr_e=arrays['fr_e'][:, :2]),
+               'an imaginary limb of s_p': dict(s_p=s_p_im), 'a negative x0': dict(x0=x0_neg)}
+        for text, change in bad.items():
+            np.savez(path, **{**arrays, **change})
+            try:
+                br.Box.from_npz(np.load(path))
+            except ValueError:
+                continue
+            raise AssertionError(f'{text} passed')
+    print('  Box.from_npz: every field equal to the Box of the frame; a wrong shape, an '
+          'imaginary limb of s_p and a negative x0 fail', flush=True)
 
 
 def test_solve_h():
@@ -320,7 +333,7 @@ def test_hermitian():
         assert not a0.imag.contains(0), a0
         for name, a, b in [('p0', a0, b0)] + [(f'N_{L}', an[L], bn[L]) for L in sorted(an)]:
             assert a.overlaps(b.conjugate()), (name, a, b)
-            assert rel_rad(a) < 1e-60, (name, rel_rad(a))
+            assert rel_rad(a) < 1e-60 and rel_rad(b) < 1e-60, (name, rel_rad(a), rel_rad(b))
             worst = max(worst, rel_rad(a), rel_rad(b))
         print(f'  off the slice: p0 {complex(a0):.10e}', flush=True)
     print(f'  Hermitian: F(z, zb) = conj(F(conj zb, conj z)) for p0 and each N_L at '
@@ -510,13 +523,66 @@ def test_metric_identities():
           f'from g_t and from g_tau', flush=True)
 
 
+# The step of the finite differences of f (an exact number), and the tolerance relative to
+# abs(df/dt_a). The one-sided error is near FD_EPS times the second derivative of f.
+FD_EPS = 2.0 ** -40
+FD_TOL = 1e-6
+
+
+def chart_point(t, near):
+    """y = (t_0, t_1, z_2, 1) on X, with z_2 the fourth root of -(1 + t_0^4 + t_1^4) nearest
+    to `near`, as the chart of tm_box picks z_m."""
+    root = (-(1 + t[0] ** 4 + t[1] ** 4)).root(4)
+    roots = [root * u for u in (acb(1), acb(0, 1), acb(-1), acb(0, -1))]
+    return [t[0], t[1], min(roots, key=lambda v: float(abs(v - near).mid())), acb(1)]
+
+
+def test_df_finite_difference():
+    """df_center of tm_box at an exact point t of the chart z_3 = 1 near the center of B1,
+    against f of tm_box at t + eps e_a and t + i eps e_a (the other coordinate fixed). f is
+    real, so the differences over eps equal 2 Re(df/dt_a) and -2 Im(df/dt_a)."""
+    box, _, _ = b1_point()
+    tb = tm_box_module()
+    # The FP64 numbers nearest to the center p of B1 give an exact point of the chart.
+    t = [acb(float(box.p[a].real.mid()), float(box.p[a].imag.mid())) for a in range(2)]
+    y = chart_point(t, box.p[2])
+    eps = arb(FD_EPS)
+    res = br.tm_center(y, tb)
+    f0, df = res['f_acb'], res['df_center']
+    assert rad(f0) < 1e-60, rad(f0)
+    errors = []
+    for a in range(2):
+        for part, step, want, text in (('Re', acb(eps), 2 * df[a].real, '2 Re'),
+                                       ('Im', acb(0, eps), -2 * df[a].imag, '-2 Im')):
+            moved = list(t)
+            moved[a] = t[a] + step
+            t0 = time.perf_counter()
+            f1 = br.tm_center(chart_point(moved, y[2]), tb)['f_acb']
+            diff = ((f1 - f0) / eps).real
+            gap = float(abs(diff.mid() - want.mid()))
+            radii = float(diff.rad()) + float(want.rad())
+            size = float(abs(df[a]).mid())
+            # The radii are far below the tolerance, so the test is not empty.
+            assert radii < 1e-3 * FD_TOL * size, (a, part, radii, size)
+            assert gap <= FD_TOL * size + radii, (a, part, gap, size, radii)
+            errors.append(gap / size)
+            print(f'  t_{a} + {"i " if part == "Im" else ""}eps: (f(t + step) - f(t)) / eps '
+                  f'{float(diff.mid()):.15e}, {text}(df/dt_{a}) '
+                  f'{float(want.mid()):.15e}, relative error {gap / size:.3e} '
+                  f'({time.perf_counter() - t0:.0f} s)', flush=True)
+    print(f'  df_center at t near the center of B1: relative errors of the 4 differences '
+          f'(Re t_0, Im t_0, Re t_1, Im t_1) {", ".join(f"{e:.3e}" for e in errors)}; '
+          f'tolerance {FD_TOL:g}', flush=True)
+
+
 def main():
     t_all = time.perf_counter()
     check_inputs()
     print('inputs: the SHA-256 of f6t_data.npz and f6t_forms.npz agree', flush=True)
     for fn in (test_exact_and_poly, test_principal_branch, test_from_npz, test_solve_h,
                test_slice_equals_global, test_hermitian, test_identity_fk,
-               test_slice_identities, test_tm_box_orders, test_metric_identities):
+               test_slice_identities, test_tm_box_orders, test_metric_identities,
+               test_df_finite_difference):
         t0 = time.perf_counter()
         fn()
         print(f'{fn.__name__} passes ({time.perf_counter() - t0:.0f} s)', flush=True)

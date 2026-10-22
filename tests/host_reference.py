@@ -1,14 +1,13 @@
 """Reference values in mpmath for the host numbers of quartic.cert.frame.
 
 The functions compare the frame numbers and kappa with mpmath at 300 digits. They need no
-GPU: the module imports only the standard library, numpy, mpmath and quartic.cert.frame.
+GPU: the module imports only the standard library, mpmath and quartic.cert.frame.
 An error, a bound or a ratio that is not finite raises ValueError.
 """
 import sys
 from pathlib import Path
 
 import mpmath as mp
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -101,5 +100,3 @@ def kappa_errors(inputs, k0):
             worst = max(worst, _ratio(d, err, f'kappa, input {i}'))
             count += d > 0
     return worst, count
-
-

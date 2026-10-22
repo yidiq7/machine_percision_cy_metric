@@ -258,7 +258,14 @@ class Box:
     @classmethod
     def from_npz(cls, z) -> Box:
         """The box from an export file (a path or the result of np.load), with each dd
-        number as 4 limbs (re_hi, re_lo, im_hi, im_lo)."""
+        number as 4 limbs (re_hi, re_lo, im_hi, im_lo).
+
+        s_p, x0 and s2 must be real (imaginary limbs 0), and s_p and x0 must be positive:
+        x = r2^-1 s_p^(1/k0) (s_p pt)^(-1/k0) = p0^(-1/k0) needs a real positive s_p. s_r
+        can be complex: box_f takes 1 / r2 of a complex dd number, and log(s_r r2) and
+        s_r (1 + yr)^-1 hold for each nonzero s_r. A wrong shape, or a number that is not
+        real or not positive, raises ValueError.
+        """
         if isinstance(z, (str, Path)):
             z = np.load(z)
         shapes = dict(fr_p=(3, 4), fr_e=(2, 3, 4), fr_n=(3, 4), fr_c1inv=(4,), fr_vol=(4,),
@@ -266,6 +273,13 @@ class Box:
         for key, shape in shapes.items():
             if np.shape(z[key]) != shape:
                 raise ValueError(f'{key}: shape {np.shape(z[key])}, not {shape}')
+        for key in ('s_p', 'x0', 's2'):
+            if np.any(np.asarray(z[key], dtype=float)[2:] != 0):
+                raise ValueError(f'{key}: the imaginary limbs {np.asarray(z[key])[2:].tolist()} '
+                                 f'are not 0')
+        for key in ('s_p', 'x0'):
+            if not exact(z[key]).real > 0:
+                raise ValueError(f'{key}: {np.asarray(z[key]).tolist()} is not positive')
         fe = np.asarray(z['fr_e'])
         return cls(p=[exact(v) for v in z['fr_p']],
                    e=[[exact(fe[i, k]) for k in range(3)] for i in range(2)],
