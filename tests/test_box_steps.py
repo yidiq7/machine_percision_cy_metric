@@ -2,11 +2,16 @@
 
 1. A call of box_f with a dict `keep` gives the same bits as a call with no dict, and the
    dict holds each key of the hooks.
+2. The box B6 of the run at the factor 1: the replay gives the sup and grad_g of its record bit
+   for bit, 4 points pass R1 for each model of the steps 1 to 9, and the test sees the part
+   `residual` of h (R2 above 1).
 
 Run on a GPU node, with the cover and the local forms of the reference center 297:
     uv run --extra gpu --locked python -u -m tests.test_box_steps
 """
+import math
 import sys
+import tempfile
 from argparse import Namespace
 from pathlib import Path
 
@@ -20,10 +25,16 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from tmgpu.tools import sup_bound                           # noqa: E402
 from quartic.cert import box as tc                          # noqa: E402
 import cert_run                                             # noqa: E402
+import cert_steps as cs                                     # noqa: E402
+from quartic.cert import records as rs                      # noqa: E402
 
 COVER = ROOT / 'runs_tm' / 'cover_s0.03_c6_v2.npz'
 LOCAL = Path('/n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td/center_297.npz')
 REF = 297
+RUN = ROOT / 'runs_tm' / 'run_f6t_v2.npz'
+DATA = ROOT / 'runs_tm' / 'f6t_data.npz'
+FORMS = ROOT / 'runs_tm' / 'f6t_forms.npz'
+POINTS = 4
 
 KEEP_KEYS = ['d', 'd_f', 'd_phi', 'h_td', 'h_dd', 'ys', 'delta', 'p0', 'r2', 'ir2', 'log_r2',
              'pt', 'xh', 'log_pt', 'xw', 'xi', 'fk', 'psi', 'phi', 'g', 'det', 'q4', 'v', 'f',
@@ -71,8 +82,45 @@ def test_keep_same_bits():
           f'equal bit for bit', flush=True)
 
 
+def test_steps_b6():
+    cs._gpu_imports()
+    rec, _, _, _ = rs.load([str(RUN)])
+    row_index = cs.select_boxes(rec)['B6']
+    row = rec[row_index]
+    assert int(row[cs.COL['ref']]) == REF
+    cover_file = np.load(COVER)
+    cov = {k: cover_file[k] for k in cover_file.files}
+    local = tc.local_on_gpu(str(LOCAL))
+    shas = dict(sha_data=cs.SHA_DATA, sha_forms=cs.SHA_FORMS, sha_run='', sha_cover='')
+    with tempfile.TemporaryDirectory() as tmp:
+        # export_box raises SystemExit if the replay differs from the record in sup or grad_g.
+        cs.export_box('B6', row, cov, float(cov['side']), local, rs.sha256(LOCAL), [1.0], tmp,
+                      shas, 'test')
+        path = Path(tmp) / 'B6_x1.npz'
+        z = np.load(path)
+        assert float(z['factor']) == 1.0 and float(z['sup']) == row[cs.COL['bound']]
+        assert float(z['grad_g']) == row[cs.COL['grad_g']]
+        d_phi = float(z['d_phi'])
+        cs._init_worker(str(DATA), str(FORMS))
+        points = cs.make_points(path.name, d_phi, POINTS)
+        worst, bad = 0.0, []
+        for i in range(POINTS):
+            _, _, out, times = cs._check_file_point((str(path), i, points[i]))
+            bad += [f'point {i} model {n}: {r["status"]}, gap/R {r["ratio"]:.3e}'
+                    for n, r in out.items() if r['status'] != 'pass']
+            worst = max(worst, out['h']['r2']['residual'])
+            print(f'  point {i}: largest gap / R {max(r["ratio"] for r in out.values()):.3e}, '
+                  f'{sum(times):.1f} s', flush=True)
+    assert not bad, 'R1 fails: ' + '; '.join(bad)
+    assert math.isfinite(worst) or worst == math.inf
+    assert worst > 1, f'the largest R2 of the part residual of h is {worst:.3e}, not above 1'
+    print(f'  B6: {len(cs.step_models(int(z["top"])))} models x {POINTS} points pass; '
+          f'largest R2 of h residual {worst:.3e}', flush=True)
+
+
 def main():
     test_keep_same_bits()
+    test_steps_b6()
     print('all box step tests pass', flush=True)
 
 
