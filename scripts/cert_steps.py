@@ -23,7 +23,8 @@ scripts/tm_box.py: the models g<i><j>, det, q4, v and f at points of D(d_f), and
 at points of D(d).
 
 * R1: the gap abs(P(x) - ref(x)), an upper bound in arb, is at most the remainder R;
-* R2: for each part pi of R, gap / (R - pi); the test sees pi if this exceeds 1;
+* R2: for each part pi of R, gap / (R - pi); the test sees pi if this exceeds 1. A model
+  with parts also gets the part rest = max(R - the sum of the parts, 0);
 * R3: at the points of D(d), the arb ball of the reference proves each scalar bound of
   gradient_bounds (abs(df_i) <= df_bound_i, det >= det_low, Re g00 >= g00_low,
   tr <= tr_up, lam_min >= lam_low, grad_G <= grad_g);
@@ -48,6 +49,7 @@ Usage, on a CPU node with 16 cores:
         --points 16 --slice-points 16 --procs 16
 """
 import argparse
+import hashlib
 import io
 import math
 import multiprocessing
@@ -209,6 +211,10 @@ def box_arrays(keep, info, sup, j, local, row, order, ny, a, hmax, factor, shas,
         return 2 * ((res + hst) * safe) / (1 - hp['lam0']) * safe
 
     if np.isfinite(hp['rho']):
+        # rho of implicit_h_td is this radius of the residual and the host errors, bit for bit.
+        if not radius(hp['residual'], hp['host']) == hp['rho']:
+            raise SystemExit(f"radius(residual, host) {radius(hp['residual'], hp['host'])!r} "
+                             f"differs from rho {hp['rho']!r}")
         out['h_parts_rho_host'] = float(hp['rho'] - radius(hp['residual'], 0.0))
         out['h_parts_rho_residual'] = float(hp['rho'] - radius(0.0, hp['host']))
     else:
@@ -303,8 +309,9 @@ def export(args):
         if r in locals_:
             continue
         path = Path(args.local) / f'center_{r}.npz'
+        # One read: the hash and the GPU take the same bytes.
         raw = path.read_bytes()
-        digest = rs.sha256(path)
+        digest = hashlib.sha256(raw).hexdigest()
         errors = rs.manifest_errors({r: digest}, [r], manifest, sha_data, sha_forms)
         if errors or run_shas.get(r, digest) != digest:
             raise SystemExit(f'the local forms of reference {r} fail the manifest: {errors}')
@@ -396,14 +403,26 @@ def _parts(z, name):
     return {}
 
 
+def with_rest(parts, rem):
+    """The parts with the part `rest` = max(R - the sum of the parts, 0) added, so that R2
+    of the rest is gap / (R - rest), gap over the sum of the parts. No parts give no rest."""
+    if not parts:
+        return {}
+    return {**parts, 'rest': max(rem - math.fsum(parts.values()), 0.0)}
+
+
 def load_models(z):
-    """{name: Model} from the keys m_<name>_c, _rem, _delta and _mons of an export file."""
+    """{name: Model} from the keys m_<name>_c, _rem, _delta and _mons of an export file. A
+    model with parts gets the part `rest` of with_rest too."""
     names = sorted(k[2:-2] for k in z.files if k.startswith('m_') and k.endswith('_c'))
-    return {name: Model(c=np.asarray(z[f'm_{name}_c'], dtype=float),
-                        rem=float(z[f'm_{name}_rem']), delta=float(z[f'm_{name}_delta']),
-                        mons=np.asarray(z[f'm_{name}_mons'], dtype=np.int64),
-                        parts=_parts(z, name))
-            for name in names}
+    out = {}
+    for name in names:
+        rem = float(z[f'm_{name}_rem'])
+        out[name] = Model(c=np.asarray(z[f'm_{name}_c'], dtype=float), rem=rem,
+                          delta=float(z[f'm_{name}_delta']),
+                          mons=np.asarray(z[f'm_{name}_mons'], dtype=np.int64),
+                          parts=with_rest(_parts(z, name), rem))
+    return out
 
 
 def _up(a):
@@ -464,7 +483,7 @@ def check_relation(value, bound, kind, factor):
 
     The relation passes only when the ball proves it: its upper bound is at most the bound
     (upper), or its lower bound is at least the bound (lower). A NaN bound, or a ball that
-    is not finite, fails. A bound that claims nothing (+inf for upper, -inf for lower)
+    is not finite, fails. A bound that makes no claim (+inf for upper, -inf for lower)
     fails at the factor 1 and is "no claim" at another factor, as in R1; the other infinite
     bound fails. ratio: value over bound (upper) or bound over value (lower), so that it is
     at most 1 exactly when the value satisfies the relation; NaN if a number is NaN.
@@ -765,6 +784,23 @@ R2_HEADER = ['  R2 = gap / (R - part); the test sees a part if R2 exceeds 1 at a
              f'  {"model":<8} {"part":<9} {"value":>10} {"over R":>10} {"largest R2":>11}']
 
 
+def r2_label(big):
+    """The label of the largest R2 of a part: seen above 1, NaN for a NaN, else not seen."""
+    if math.isnan(big):
+        return 'NaN'
+    return 'seen' if big > 1 else 'not seen'
+
+
+def no_split(plans):
+    """The models of the plans with no part of R in any file, in the order of the report."""
+    names = []
+    for plan in plans.values():
+        for n in plan['names'] + list(SLICE_MODELS) + list(GRAD_MODELS):
+            if n not in names:
+                names.append(n)
+    return [n for n in names if not any(plan['parts'].get(n) for plan in plans.values())]
+
+
 def _summary(plans, results, slices, hosts, count, slice_count, header):
     """The text of the report, the arrays of compare.npz, and the counts of the status of
     R1, R3 and R4."""
@@ -801,7 +837,8 @@ def _summary(plans, results, slices, hosts, count, slice_count, header):
                 arrays[f'{stem}:{n}:part:{key}'] = np.array(part)
                 arrays[f'{stem}:{n}:r2:{key}'] = np.array(vals)
                 big_r2 = _largest(vals)
-                seen = 'seen' if big_r2 > 1 else 'not seen'
+                seen = r2_label(big_r2)
+                arrays[f'{stem}:{n}:r2_label:{key}'] = np.array(seen)
                 rem = plan['rems'][n]
                 over = part / rem if rem != 0 else math.inf
                 r2_rows.append(f'  {n:<8} {key:<9} {part:10.3e} {over:10.3e} '
@@ -883,6 +920,8 @@ def _summary(plans, results, slices, hosts, count, slice_count, header):
             arrays[f'{stem}:r4:error:{k}'] = np.array([w, c], dtype=float)
         lines.append(f'  models of the file that this stage does not compare: '
                      f'{" ".join(plan["others"]) or "none"}')
+    lines.append(f'models with no split of R (no rows of R2): '
+                 f'{" ".join(no_split(plans)) or "none"}')
     lines.append(f'largest gap / R: {worst[0]:.3e} ({worst[2]} of {worst[1]})')
     lines.append(f'checks R1 (the steps 1 to 12): {total["pass"]} pass, {total["fail"]} fail, '
                  f'{total["no claim"]} no claim')
@@ -890,7 +929,8 @@ def _summary(plans, results, slices, hosts, count, slice_count, header):
                  f'{total3["no claim"]} no claim')
     lines.append(f'checks R4: {total4["pass"]} files pass, {total4["fail"]} fail')
     failed = total['fail'] or total3['fail'] or total4['fail']
-    lines.append('RESULT: FAIL' if failed else 'RESULT: PASS')
+    lines.append(f'RESULT: {"FAIL" if failed else "PASS"} (no claim: {total["no claim"]} checks '
+                 f'of R1, {total3["no claim"]} checks of R3)')
     return '\n'.join(lines) + '\n', arrays, (total, total3, total4)
 
 

@@ -6,7 +6,8 @@
    NaN remainder fails at each factor.
 3. A reference ball with a radius of 1e-2 of the remainder raises ValueError.
 4. R2 is gap / (R - part): 1.25 for R = 1, a part 0.6 and a gap 0.5; inf when R - part <= 0.
-5. load_models takes the parts of R2 that the stage `compare` uses, and no other key.
+5. load_models takes the parts of R2 that the stage `compare` uses, and no other key, and
+   adds the part rest to each model with parts.
 6. make_points: the even points at 0.999 r, the odd points inside the polydisc, the points
    0, 4, 8, 12 on the slice sigma = conj(tau), and the same points for the same file name.
 7. R3 (check_relation): a relation passes only when the arb ball proves it, also for a value
@@ -14,6 +15,8 @@
    bound, a NaN ball and an infinite ball fail.
 8. make_slice_points: every point exactly on the slice; _same_bits tells -0.0 from 0.0.
 9. The import of scripts/cert_steps.py loads no CuPy, tmgpu or quartic.cert.box.
+10. The part rest is R - the sum of the parts and never negative, and its R2 is gap over the
+   sum of the parts; a NaN R2 has the label NaN; no_split names the models with no parts.
 
 Run on a GPU node: uv run --extra gpu --locked python -u -m tests.test_cert_steps
 """
@@ -132,21 +135,54 @@ def test_load_models():
         models = cs.load_models(np.load(path))
     assert sorted(models) == sorted(['h', 'p0', 'fk3', 'fk12', 'pt', 'log_r2', 'psi', 'xi',
                                      'v', 'g01']), sorted(models)
+
+    def rest(parts):
+        return {**parts, 'rest': max(1e-20 - math.fsum(parts.values()), 0.0)}
+
     # The keys abs and sums of a composition, and bx and by of a product, are not parts.
-    want = {'round': vals[4], 'high': vals[1], 'models': vals[2], 'radius': vals[3]}
+    want = rest({'round': vals[4], 'high': vals[1], 'models': vals[2], 'radius': vals[3]})
     for name in ('p0', 'fk3', 'fk12'):
         assert models[name].parts == want, (name, models[name].parts)
-    assert models['pt'].parts == {'round': vals[2], 'tail': vals[3]}, models['pt'].parts
-    assert models['psi'].parts == psi, models['psi'].parts
-    assert models['h'].parts == {'host': 1e-31, 'residual': 2e-31}, models['h'].parts
-    assert models['xi'].parts == {'kap': 4e-31}, models['xi'].parts
-    assert models['v'].parts == {'vol': 5e-31}, models['v'].parts
+    assert models['pt'].parts == rest({'round': vals[2], 'tail': vals[3]}), models['pt'].parts
+    assert models['psi'].parts == rest(psi), models['psi'].parts
+    assert models['h'].parts == rest({'host': 1e-31, 'residual': 2e-31}), models['h'].parts
+    assert models['xi'].parts == rest({'kap': 4e-31}), models['xi'].parts
+    assert models['v'].parts == rest({'vol': 5e-31}), models['v'].parts
     assert models['log_r2'].parts == {} and models['g01'].parts == {}
+    assert 0 < models['p0'].parts['rest'] < 1e-20, models['p0'].parts
     h = models['h']
     assert h.c.shape == (6, 3) and h.mons.shape == (3, 2) and h.rem == 1e-20
     assert h.delta == 0.04 and isinstance(h.rem, float)
     print('  load_models: 10 models; p0 and fk: round, high, models, radius; pt: tail, '
-          'round; psi: 5 parts; h: host, residual; xi: kap; v: vol', flush=True)
+          'round; psi: 5 parts; h: host, residual; xi: kap; v: vol; each with rest',
+          flush=True)
+
+
+def test_rest():
+    parts = cs.with_rest({'a': 0.25, 'b': 0.5}, 1.0)
+    assert parts == {'a': 0.25, 'b': 0.5, 'rest': 0.25}, parts
+    # Parts with a sum above R give the rest 0, not a negative rest.
+    over = cs.with_rest({'a': 0.75, 'b': 0.5}, 1.0)
+    assert over['rest'] == 0.0, over
+    assert cs.with_rest({}, 1.0) == {}
+    zero = np.zeros((4, 1))
+    # The gap is 0.5 at each point: P = 0 and the reference 0.5.
+    m = cs.Model(c=zero, rem=1.0, delta=0.01, mons=np.array([[0, 0]]), parts=parts)
+    out = cs.check_point(m, X, acb(0.5), 1.0)
+    r2 = out['r2']['rest']
+    assert out['gap'] == 0.5 and r2 == 0.5 / (0.25 + 0.5), out
+    m.parts = over
+    out = cs.check_point(m, X, acb(0.5), 1.0)
+    assert out['r2']['rest'] == 0.5, out
+    labels = [cs.r2_label(v) for v in (math.nan, 1.5, 1.0, 0.5)]
+    assert labels == ['NaN', 'seen', 'not seen', 'not seen'], labels
+    parts = {'h': {'host': 1.0, 'rest': 0.0}, 'delta': {}, 'p0': {'round': 1.0, 'rest': 0.0},
+             'f': {}, 'v': {'vol': 1.0, 'rest': 0.0}}
+    plans = {'B0_x1.npz': dict(names=['h', 'delta', 'p0'], parts=parts)}
+    want = ['delta'] + [n for n in cs.SLICE_MODELS + cs.GRAD_MODELS if n != 'v']
+    assert cs.no_split(plans) == want, cs.no_split(plans)
+    print(f'  rest: 0.25 for R = 1 and the parts 0.25, 0.5, with R2 {r2:.4f} = gap / 0.75; 0 '
+          f'for parts above R; label NaN for a NaN R2; no_split {" ".join(want)}', flush=True)
 
 
 def test_points():
@@ -277,7 +313,7 @@ def main():
     failed = []
     for fn in (test_point_moved, test_no_claim, test_wide_reference, test_part_seen,
                test_load_models, test_points, test_relation, test_relation_no_claim,
-               test_slice_points, test_same_bits, test_import_no_gpu):
+               test_slice_points, test_same_bits, test_import_no_gpu, test_rest):
         try:
             fn()
         except Exception:

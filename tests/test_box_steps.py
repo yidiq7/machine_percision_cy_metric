@@ -4,7 +4,7 @@
    dict holds each key of the hooks.
 2. The box B6 of the run at the factor 1: the replay gives the sup and grad_g of its record bit
    for bit, 4 points pass R1 for each model of the steps 1 to 9, and the test sees the part
-   `residual` of h (R2 above 1).
+   `residual` of h (R2 above 1 at a point, and no R2 of it NaN).
 
 Run on a GPU node, with the cover and the local forms of the reference center 297:
     uv run --extra gpu --locked python -u -m tests.test_box_steps
@@ -97,24 +97,26 @@ def test_steps_b6():
         cs.export_box('B6', row, cov, float(cov['side']), local, rs.sha256(LOCAL), [1.0], tmp,
                       shas, 'test')
         path = Path(tmp) / 'B6_x1.npz'
-        z = np.load(path)
-        assert float(z['factor']) == 1.0 and float(z['sup']) == row[cs.COL['bound']]
-        assert float(z['grad_g']) == row[cs.COL['grad_g']]
-        d_phi = float(z['d_phi'])
+        with np.load(path) as z:
+            assert float(z['factor']) == 1.0 and float(z['sup']) == row[cs.COL['bound']]
+            assert float(z['grad_g']) == row[cs.COL['grad_g']]
+            d_phi, top = float(z['d_phi']), int(z['top'])
         cs._init_worker(str(DATA), str(FORMS))
         points = cs.make_points(path.name, d_phi, POINTS)
-        worst, bad = 0.0, []
+        r2s, bad = [], []
         for i in range(POINTS):
             _, _, out, times = cs._check_file_point((str(path), i, points[i]))
             bad += [f'point {i} model {n}: {r["status"]}, gap/R {r["ratio"]:.3e}'
                     for n, r in out.items() if r['status'] != 'pass']
-            worst = max(worst, out['h']['r2']['residual'])
+            r2s.append(out['h']['r2']['residual'])
             print(f'  point {i}: largest gap / R {max(r["ratio"] for r in out.values()):.3e}, '
                   f'{sum(times):.1f} s', flush=True)
     assert not bad, 'R1 fails: ' + '; '.join(bad)
-    assert math.isfinite(worst) or worst == math.inf
+    # _largest gives NaN if one R2 is NaN, and a NaN R2 fails.
+    worst = cs._largest(r2s)
+    assert not math.isnan(worst), f'an R2 of the part residual of h is NaN: {r2s}'
     assert worst > 1, f'the largest R2 of the part residual of h is {worst:.3e}, not above 1'
-    print(f'  B6: {len(cs.step_models(int(z["top"])))} models x {POINTS} points pass; '
+    print(f'  B6: {len(cs.step_models(top))} models x {POINTS} points pass; '
           f'largest R2 of h residual {worst:.3e}', flush=True)
 
 

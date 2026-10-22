@@ -1,6 +1,7 @@
 """The certificate code loads no JAX, quartic comes from this repository, and tmgpu from the environment.
 
-The arb reference tests/box_reference.py loads no module of quartic.cert, tmgpu or cupy."""
+The arb reference tests/box_reference.py and scripts/tm_box.py load no module of quartic.cert,
+tmgpu or cupy."""
 import sys
 from pathlib import Path
 
@@ -27,13 +28,15 @@ def test_paths():
 
 def test_reference_independent():
     import subprocess
-    code = ('import sys; sys.path.insert(0, sys.argv[1]); import tests.box_reference; '
+    code = ('import sys; sys.path.insert(0, sys.argv[1]); '
+            'sys.path.append(sys.argv[1] + "/scripts"); import tests.box_reference; import tm_box; '
             "bad = sorted(m for m in sys.modules if m.split('.')[0] in ('tmgpu', 'cupy') "
             "or m == 'quartic.cert' or m.startswith('quartic.cert.')); "
+            "bad += [] if tm_box.__file__.endswith('/scripts/tm_box.py') else [tm_box.__file__]; "
             "print(' '.join(bad)); sys.exit(1 if bad else 0)")
     out = subprocess.run([sys.executable, '-c', code, str(ROOT)], cwd=ROOT,
                          capture_output=True, text=True)
-    assert out.returncode == 0, ('tests.box_reference loads', out.stdout, out.stderr)
+    assert out.returncode == 0, ('tests.box_reference and tm_box load', out.stdout, out.stderr)
 
 
 if __name__ == '__main__':
