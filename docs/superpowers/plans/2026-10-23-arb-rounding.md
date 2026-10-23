@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**A change after the plan ran (the user, 2026-10-24):** the dd GEMM `gemm.zgemm` with its kernel and
+`tests/test_gemm.py`, `mag.powi_down`, `host.up_sum`, the direction tests at the call sites, and the
+switch checks beyond one of u and one of η for each kernel family were removed again (tmgpu 32863d7,
+this repository 1f738d7). The tasks below keep their text as they ran.
+
 **Goal:** Every round-off bound of the strict bound follows the rule of Arb (u·abs(result) + η for
 each rounded operation, every bound operation rounded up or down), with no SAFE, ERR_SAFE, TINY,
 a priori constant or host factor.

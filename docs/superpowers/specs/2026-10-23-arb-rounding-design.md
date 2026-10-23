@@ -113,21 +113,23 @@ or condition can fail. This is the safer method; it is not a fix of a known erro
   `tmt_scale` sum upward and add η for each rounded product and each FMA pair. `ERR_SAFE` goes
   away. `to_dd` keeps its 6 midpoint operations and bounds u·abs(lo) upward. `abs_ub`,
   `graded`, `bound`, `err_bound` use `mag`.
-* **`tmgpu.gemm`.** `zgemm_tt` returns its kernel bound with no factor. `zgemm` (dd, not in
-  the run) gets a running bound with `dd_mul_e` and `dd_add_e` and returns (C, Err); `gamma`
-  goes away. This is a change of the API, so the version is 0.2.0.
+* **`tmgpu.gemm`.** `zgemm_tt` returns its kernel bound with no factor. `zgemm` (dd), its
+  kernel and `gamma` go away, because the run does not use them (the user, 2026-10-24). This is
+  a change of the API, so the version is 0.2.0.
 * **`tmgpu.tools`.** `sup_bound` sums upward with `mag`. `series_order` does not change.
 * **`tmgpu.host`.** `upper`, `lower`, `to_dd`, `to_td` and `frac_dd` follow rule 4: the
   endpoint of the ball (or the exact Fraction residual) is converted with an exact comparison.
   The sum of the real and the imaginary residual is formed in arb (or as Fractions) and
-  converted once. `lower` gives 0 only when the lower endpoint is ≤ 0. New helpers: `up(x)`,
-  `down(x)` for arb and Fraction values, and `up_sum(values)` for a sum of floats.
+  converted once. `lower` gives 0 only when the lower endpoint is ≤ 0. New helpers: `up(x)`
+  and `down(x)` for arb and Fraction values.
 * **Tests (written now, run later).** A new `tests/test_mag.py`: each function against exact
   Fractions; a planted sum where round to nearest falls below the exact sum, which `mag.sum`
   must not do; the lower forms below the exact value. `test_tm.py` and `test_tmtd.py`: the Err
   of each kernel bounds the error against mpmath, also with inputs that are not normalized and
   with results near underflow (abs about 1e-310); with u set to 0 in the error helpers (a test
-  switch of the module source), the tests of the round-off must fail.
+  switch of the module source), the tests of the round-off must fail. One switch check of u and
+  one of η for each kernel family is enough (the user, 2026-10-24); a test that only checks that
+  a call site uses the right `mag` function is not necessary.
   `test_rounding_bounds` changes from the a priori constants to the Err outputs. `test_host.py`:
   the directed conversions on values where `float()` rounds the wrong way.
 * `pyproject.toml` of `tmgpu`: version 0.2.0. The tag `v0.2.0` waits until its tests pass.
