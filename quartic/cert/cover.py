@@ -8,11 +8,12 @@ proves, in ball arithmetic, the radius delta and the bound hmax of the box at th
 of a cell in the frame of `quartic.cert.frame`.
 """
 import math
+from fractions import Fraction
 
 import mpmath as mp
 from mpmath import iv
 
-from tmgpu.host import lower, mp_dd, precision, upper
+from tmgpu.host import lower, mp_dd, precision, up, upper
 
 from .frame import frame
 
@@ -76,7 +77,9 @@ def box_radius(lo, s, c_dd):
     with tau_i = (t_i - c_i) - h n_i and h = (z2(t) - p_2 - d . (t - c)) / den, d = E_2 and
     den = n_2 - d_0 n_0 - d_1 n_1. The numerator is at most half the bound of the second
     derivatives of z2 over the cell times r^2, plus abs(z2(c) - p_2) and
-    abs(d(c) - d_i) r, with d(c) the exact derivative. All bounds come from arb balls.
+    abs(d(c) - d_i) r, with d(c) the exact derivative. Each input bound is the directed
+    float of an endpoint of an arb ball; the sums and products are exact rationals, and
+    delta and hmax each take one upward step to a float.
     """
     from flint import acb, arb
     _exact_corners()
@@ -86,7 +89,8 @@ def box_radius(lo, s, c_dd):
         p, n, y2 = A['p'], A['n'], A['y2']
         d = [A['e'][0][2], A['e'][1][2]]
         den = lower(n[2] - d[0] * n[0] - d[1] * n[1])
-        if den <= 0:
+        # lower gives NaN for a NaN ball, and NaN also takes the infinite radius.
+        if not den > 0:
             return float('inf'), float('inf')
         t = [acb(_ball(lo[0], s), _ball(lo[1], s)), acb(_ball(lo[2], s), _ball(lo[3], s))]
         # abs(t_i - c_i) <= r on the cell; abs(z2) >= zmin and abs(t_i) <= tmax_i there.
@@ -100,21 +104,33 @@ def box_radius(lo, s, c_dd):
         if not w2.a > 0:
             return float('inf'), float('inf')
         zmin = lower((_to_arb(w2.a).log() / 8).exp())
+        if not zmin > 0:
+            return float('inf'), float('inf')
         tmax = [upper(t[i]) for i in range(2)]
-        # Second derivatives of z2: -3 t_i^2 delta_ij / z2^3 - 3 t_i^3 t_j^3 / z2^7.
-        hs = 0.0
-        for i in range(2):
-            for j in range(2):
-                v = 3 * tmax[i] ** 3 * tmax[j] ** 3 / zmin ** 7
-                if i == j:
-                    v += 3 * tmax[i] ** 2 / zmin ** 3
-                hs += v
         exact_d = [-p[i] ** 3 / y2 ** 3 for i in range(2)]
-        num = (hs * (1 + 1e-12) * r * r / 2 + upper(y2 - p[2])
-               + sum(upper(exact_d[i] - d[i]) for i in range(2)) * r) * (1 + 1e-12)
-        hmax = num / den * (1 + 1e-12)
-        delta = max(r + hmax * upper(n[0]), r + hmax * upper(n[1])) * (1 + 1e-12)
-    # Python max drops a NaN in its second argument, so test both numbers here.
+        e_z = upper(y2 - p[2])
+        e_d = [upper(exact_d[i] - d[i]) for i in range(2)]
+        nmax = [upper(n[0]), upper(n[1])]
+    ins = [r, *tmax, e_z, *e_d, *nmax, zmin, den]
+    if not all(math.isfinite(x) for x in ins):
+        return float('inf'), float('inf')
+    # Exact rationals from here on: the bounds increase with r, tmax, e_z, e_d, nmax and
+    # decrease with zmin > 0 and den > 0.
+    rq, zq, dq = Fraction(r), Fraction(zmin), Fraction(den)
+    tq = [Fraction(x) for x in tmax]
+    # Second derivatives of z2: -3 t_i^2 delta_ij / z2^3 - 3 t_i^3 t_j^3 / z2^7.
+    hs = Fraction(0)
+    for i in range(2):
+        for j in range(2):
+            v = 3 * tq[i] ** 3 * tq[j] ** 3 / zq ** 7
+            if i == j:
+                v += 3 * tq[i] ** 2 / zq ** 3
+            hs += v
+    num = hs * rq * rq / 2 + Fraction(e_z) + sum(Fraction(x) for x in e_d) * rq
+    hq = num / dq
+    hmax = up(hq)
+    delta = up(max(rq + hq * Fraction(nmax[0]), rq + hq * Fraction(nmax[1])))
+    # up gives inf for a value above the largest float.
     if not (math.isfinite(delta) and math.isfinite(hmax)):
         return float('inf'), float('inf')
     return delta, hmax

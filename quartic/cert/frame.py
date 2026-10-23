@@ -1,9 +1,10 @@
 """The frame of a box of the strict bound, in ball arithmetic (python-flint), on the host.
 
 A box has its center p on X in the chart z_3 = 1: t = (p_0, p_1) is the dd center of a
-cell, and p_2 is the dd rounding of the principal fourth root of -(1 + t_0^4 + t_1^4).
-Each frame number is the dd rounding of an arb ball, and from then on that dd number is
-the exact definition of the frame. The error of each rounding is bounded from the ball:
+cell, and p_2 is the dd value of the principal fourth root of -(1 + t_0^4 + t_1^4).
+Each frame number is the dd value of the midpoint of an arb ball, and from then on that dd
+number is the exact definition of the frame. tmgpu.host converts each error from the exact
+endpoints of the ball, with one upward step to a float:
 
 * the tangent frame E (dy/dt at p, with E_2 = -p_i^3 / p_2^3) and the unit normal n;
 * c1inv = 1 / (grad P . n) and the td constants of `quartic.cert.box.implicit_h_td` with their errors;
@@ -16,13 +17,25 @@ they work with the same numbers.
 """
 from __future__ import annotations
 
+import math
+from fractions import Fraction
+
 from flint import acb, acb_mat, arb
 
-from tmgpu.host import exact, lower, precision, to_dd, to_td
+from tmgpu.host import exact, lower, precision, to_dd, to_td, up
 
 # t^4 of a dd center needs 424 bits, so at PREC = 512 bits the center values are exact
 # balls; a center with -(1 + t_0^4 + t_1^4) on the negative real axis keeps a narrow root.
 
+
+def _quotient_up(num, den):
+    """The smallest float not below num / den for floats num >= 0 and den, from the exact
+    quotient. A NaN gives NaN; den <= 0 or an infinite num gives inf."""
+    if math.isnan(num) or math.isnan(den):
+        return math.nan
+    if not den > 0 or math.isinf(num):
+        return math.inf
+    return up(Fraction(num) / Fraction(den))
 
 
 def frame(c_dd, k0):
@@ -33,7 +46,7 @@ def frame(c_dd, k0):
     Returns a dict of dd lists (p, e, n, c1inv, vol); the td constants of the map for h
     (ha_td, a6_td, a4_td, kappa_td) with h_err_td = [errors of the three ha_td, of kappa_td,
     largest error of a6_td, of a4_td]; the exact acb values of the frame (key 'acb'); and
-    the relative error bound vol_err of vol.
+    vol_err, an upper bound of abs(vol - true vol) / true vol.
     """
     with precision():
         t0, t1 = exact(c_dd[0]), exact(c_dd[1])
@@ -60,7 +73,8 @@ def frame(c_dd, k0):
             vbar = 512 * arb.pi() ** 4 * k0 ** 2 / arb(0.25).gamma() ** 8
             w = 1 / (abs(u.det()) ** 2 * vbar)
             vol_dd, vol_abs_err = to_dd(acb(w))
-            vol_err = vol_abs_err / lower(w) * (1 + 1e-9) + 1e-60
+            # lower(w) <= true vol, so the quotient bounds the error relative to the true vol.
+            vol_err = _quotient_up(vol_abs_err, lower(w))
         ha = [c1inv * (sum(c ** 4 for c in p) + 1),
               c1inv * sum(g * x for g, x in zip(grad, e[0])),
               c1inv * sum(g * x for g, x in zip(grad, e[1]))]

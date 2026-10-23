@@ -25,6 +25,7 @@ import math
 
 import numpy as np
 from flint import acb, arb, arb_mat, ctx
+from tmgpu.host import to_td, up
 
 from .. import blocks
 
@@ -187,8 +188,11 @@ def conj_transpose(m):
 
 
 def to_td_complex(q):
-    """An acb_mat as (6, n, m) td parts (three limbs of re, then of im), an upper bound of
-    the distance to it, and abs bounds."""
+    """An acb_mat as (6, n, m) td parts (three limbs of the midpoint of re, then of im), the
+    radii and the abs bounds of the entries.
+
+    For the td entry e and any point v of the ball q[i, j], rad bounds
+    abs(Re(e - v)) + abs(Im(e - v)), and abs bounds both abs(v) and abs(e)."""
     n, m = q.nrows(), q.ncols()
     parts = np.zeros((6, n, m))
     rad = np.zeros((n, m))
@@ -196,18 +200,12 @@ def to_td_complex(q):
     for i in range(n):
         for j in range(m):
             x = q[i, j]
-            err = 0.0
-            for k, part in enumerate((x.real, x.imag)):
-                mid = part.mid()
-                h = float(mid)
-                md = float(mid - arb(h))
-                lo = float(mid - arb(h) - arb(md))
-                rest = abs(mid - arb(h) - arb(md) - arb(lo))
-                parts[3 * k, i, j], parts[3 * k + 1, i, j], parts[3 * k + 2, i, j] = h, md, lo
-                err += float(part.rad()) + float(rest.mid()) + float(rest.rad())
-            rad[i, j] = err * (1 + 1e-12) + 1e-300
-            a = abs(x)
-            absb[i, j] = (float(a.mid()) + float(a.rad())) * (1 + 1e-12)
+            # tmgpu.host.to_td: the exact residual of the limbs plus the radius, up once.
+            limbs, err = to_td(x)
+            parts[:, i, j] = limbs
+            rad[i, j] = err
+            # abs(td entry) <= abs(midpoint) + err; the ball abs(x) contains abs(midpoint).
+            absb[i, j] = up(abs(x) + arb(err)) if math.isfinite(err) else math.inf
     return parts, rad, absb
 
 

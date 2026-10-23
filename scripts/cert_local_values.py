@@ -44,6 +44,7 @@ from flint import acb, acb_mat, arb, arb_mat, ctx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from quartic.cert import records as rs                      # noqa: E402
+from tmgpu.host import upper                                # noqa: E402
 
 S4 = list(itertools.permutations(range(4)))
 G = {}
@@ -60,12 +61,6 @@ def sha256(path):
 def monomials2(d):
     """The exponents (a, b) of t_0^a t_1^b of degree <= d, in the order of the stored forms."""
     return [(a, s - a) for s in range(d + 1) for a in range(s, -1, -1)]
-
-
-def upper(x):
-    """An upper bound of abs(x) for an arb or acb ball, as a float."""
-    a = abs(x)
-    return (abs(float(a.mid())) + float(a.rad())) * (1 + 1e-12) + 1e-300
 
 
 def setup(data_path, forms_path):
@@ -224,8 +219,15 @@ def one(r):
         vals, tols = stored_values(z, name, pts)
         for i, (v, tol) in enumerate(zip(vals, tols)):
             gap = upper(v - exact[i][k])
-            # A NaN gap or a bound that is not finite counts as a failure.
-            worst = max(worst, gap / tol if gap == gap and math.isfinite(tol) else math.inf)
+            # A NaN gap or a bound that is not finite counts as a failure; a bound of 0
+            # passes only a gap of 0.
+            if not (gap == gap and math.isfinite(tol)):
+                ratio = math.inf
+            elif tol > 0:
+                ratio = gap / tol
+            else:
+                ratio = 0.0 if gap == 0 else math.inf
+            worst = max(worst, ratio)
             worst_rel = max(worst_rel, gap / max(abs(float(exact[i][k].real.mid())), 1e-300))
     return r, worst, worst_rel, digest, time.perf_counter() - t0, ''
 

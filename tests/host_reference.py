@@ -2,8 +2,10 @@
 
 The functions compare the frame numbers and kappa with mpmath at 300 digits. They need no
 GPU: the module imports only the standard library, mpmath and quartic.cert.frame.
-An error, a bound or a ratio that is not finite raises ValueError.
+An error, a bound or a ratio that is not finite raises ValueError. The bounds of the frame
+are tight, so a ratio of exactly 1 is correct; an error above its bound gives a ratio above 1.
 """
+import math
 import sys
 from pathlib import Path
 
@@ -28,11 +30,14 @@ FRAME_NAMES = ['ha0', 'ha1', 'ha2', 'kappa', 'a6', 'a4', 'vol']
 
 
 def _ratio(d, bound, where):
-    """The error d over its bound; inf if the bound is 0 and d is not."""
+    """The error d over its bound; inf if the bound is 0 and d is not. The comparison of the
+    mpf d with the float bound is exact, so a d above the bound gives a ratio above 1, also
+    where the float of d / bound is 1.0."""
     if not (mp.isfinite(d) and mp.isfinite(bound)):
         raise ValueError(f'{where}: error {d} or bound {bound} is not finite')
     if bound > 0:
-        return float(d / bound)
+        r = float(d / bound)
+        return math.nextafter(1.0, math.inf) if d > bound and r <= 1.0 else r
     return 0.0 if d == 0 else float('inf')
 
 
