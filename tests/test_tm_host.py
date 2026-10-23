@@ -107,7 +107,9 @@ def check_weights():
                     gap = abs(v.real - gr) + abs(v.imag - gi)
                     assert gap <= werr[i, k, m], (limbs, k, m, float(gap), werr[i, k, m])
                     assert abs(v) <= wabs[i, k, m], (limbs, k, m)
-                    worst = max(worst, float(gap / werr[i, k, m]))
+                    # An exact weight has the bound 0, and then gap <= werr above means gap == 0.
+                    if werr[i, k, m] > 0:
+                        worst = max(worst, float(gap / werr[i, k, m]))
                     worst_rel = max(worst_rel, werr[i, k, m] / float(abs(v)))
         print(f'  weights (td): largest error over its bound {worst:.2f}; largest bound over '
               f'abs(weight) {worst_rel:.1e}', flush=True)
