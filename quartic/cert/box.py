@@ -392,10 +392,11 @@ def reexpand_td(local, zeta_dd, top):
 
     For each j this is one product of the td weights of `reexpand_weights` with the stacked
     td local forms. The error of the product has the bound that the kernel of
-    `gemm.zgemm_tt` sums as it runs. With w the weights and M the
-    stored forms, w M - w_true M_true = (w - w_true) M + w_true (M - M_true), and the
-    modulus bound of M_true also bounds the stored M (its td rounding of the midpoint),
-    so rad = wa mr + we ma + qerr needs no term we mr."""
+    `gemm.zgemm_tt` sums as it runs. With w the weights and M the stored forms,
+    w M - w_true M_true = (w - w_true) M + w_true (M - M_true). The modulus bound ma of M_true
+    also bounds the stored M, by the construction of `forms.to_td_complex`: ma is up of
+    abs(M_true) plus the radius, and abs(M) <= abs(midpoint) + radius. So
+    rad = wa mr + we ma + qerr needs no term we mr."""
     b = len(zeta_dd)
     nm = top + 1
     wd, we, wa = (cp.asarray(x) for x in reexpand_weights(zeta_dd, top))
@@ -424,11 +425,17 @@ def compose_td(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     degree above sp_low.n of the monomial models, by their remainders, by the radii of Q,
     and by the round-off of the two products.
 
-    The rounding is the running bound of the two products: that of T enters W through
-    abs(Y), that of W directly, each weighted by delta^deg. The factor 2 of the cross
-    terms needs q_abs[b, a] >= abs(Q[a, b]) as well: each true form is Hermitian, or (F_k)
-    a combination of Hermitian M~_m, and q_abs is a sum of their modulus bounds, so it
-    bounds abs(Q[a, b]) and abs(Q[b, a]) both.
+    The part round is the bound that the kernels of the two products sum as they run: that of
+    T enters W through abs(Y), that of W directly, each weighted by delta^deg.
+
+    The cross terms act on the true Q. Each monomial is Y_low + Y_high + E: the low part, the
+    high part and the remainder of its model. The true form minus Y_low Q_stored Y_low^H then
+    has two kinds of terms. The terms with Y_high or E act on Q_true, and the parts high and
+    models bound them with q_abs. The other term is Y_low (Q_true - Q_stored) Y_low^H, and the
+    part radius covers it, with full in place of b_low on both sides. So q_abs must bound
+    abs(Q_true) only. The factor 2 of the cross terms needs q_abs[b, a] >= abs(Q_true[a, b])
+    as well: each true form is Hermitian, or (F_k) a combination of Hermitian M~_m, and q_abs
+    is a sum of their modulus bounds, so it bounds abs(Q_true[a, b]) and abs(Q_true[b, a]).
     """
     n = q.shape[-1]
     b = delta.shape[0]

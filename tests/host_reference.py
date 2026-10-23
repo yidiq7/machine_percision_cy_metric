@@ -30,9 +30,10 @@ FRAME_NAMES = ['ha0', 'ha1', 'ha2', 'kappa', 'a6', 'a4', 'vol']
 
 
 def _ratio(d, bound, where):
-    """The error d over its bound; inf if the bound is 0 and d is not. The comparison of the
-    mpf d with the float bound is exact, so a d above the bound gives a ratio above 1, also
-    where the float of d / bound is 1.0."""
+    """The error d over its bound; inf if the bound is 0 and d is not.
+
+    The comparison of the mpf d with the float bound is exact. So a d above the bound gives a
+    ratio above 1, also where the float of d / bound is 1.0."""
     if not (mp.isfinite(d) and mp.isfinite(bound)):
         raise ValueError(f'{where}: error {d} or bound {bound} is not finite')
     if bound > 0:

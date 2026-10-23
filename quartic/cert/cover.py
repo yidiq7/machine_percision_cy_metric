@@ -73,13 +73,21 @@ def _ball(lo, s):
 def box_radius(lo, s, c_dd):
     """(delta, hmax) for the cell [lo, lo + s]^4 (exact mpmath numbers) and the box at c_dd.
 
-    In the frame of `quartic.cert.frame.frame` a point of X over the cell is p + E tau + h n
-    with tau_i = (t_i - c_i) - h n_i and h = (z2(t) - p_2 - d . (t - c)) / den, d = E_2 and
-    den = n_2 - d_0 n_0 - d_1 n_1. The numerator is at most half the bound of the second
-    derivatives of z2 over the cell times r^2, plus abs(z2(c) - p_2) and
-    abs(d(c) - d_i) r, with d(c) the exact derivative. Each input bound is the directed
-    float of an endpoint of an arb ball; the sums and products are exact rationals, and
-    delta and hmax each take one upward step to a float.
+    In the frame of `quartic.cert.frame.frame`, a point of X over the cell is p + E tau + h n.
+    Here tau_i = (t_i - c_i) - h n_i and h = (z2(t) - p_2 - d . (t - c)) / den, with d = E_2
+    and den = n_2 - d_0 n_0 - d_1 n_1. The numerator is at most hs r^2 / 2 + abs(z2(c) - p_2) +
+    sum over i of abs(d(c)_i - d_i) r. Here hs bounds the second derivatives of z2 over the
+    cell, and d(c) is the exact derivative. `_radius_inputs` gives the directed inputs, and
+    `_radius_from` forms the two results.
+    """
+    return _radius_from(*_radius_inputs(lo, s, c_dd))
+
+
+def _radius_inputs(lo, s, c_dd):
+    """The inputs (den, r, zmin, tmax, e_z, e_d, nmax) of `_radius_from` as floats.
+
+    Each one is the directed float of an endpoint of an arb ball. den and zmin are lower
+    bounds, and the others are upper bounds. zmin is 0 if abs(z2) can be 0 on the cell.
     """
     from flint import acb, arb
     _exact_corners()
@@ -89,9 +97,6 @@ def box_radius(lo, s, c_dd):
         p, n, y2 = A['p'], A['n'], A['y2']
         d = [A['e'][0][2], A['e'][1][2]]
         den = lower(n[2] - d[0] * n[0] - d[1] * n[1])
-        # lower gives NaN for a NaN ball, and NaN also takes the infinite radius.
-        if not den > 0:
-            return float('inf'), float('inf')
         t = [acb(_ball(lo[0], s), _ball(lo[1], s)), acb(_ball(lo[2], s), _ball(lo[3], s))]
         # abs(t_i - c_i) <= r on the cell; abs(z2) >= zmin and abs(t_i) <= tmax_i there.
         r = upper(_to_arb(s) * arb(2).sqrt() / 2)
@@ -101,21 +106,26 @@ def box_radius(lo, s, c_dd):
         p0, q0 = cpow4(a0, b0)
         p1, q1 = cpow4(a1, b1)
         w2 = (1 + p0 + p1) ** 2 + (q0 + q1) ** 2
-        if not w2.a > 0:
-            return float('inf'), float('inf')
-        zmin = lower((_to_arb(w2.a).log() / 8).exp())
-        if not zmin > 0:
-            return float('inf'), float('inf')
+        zmin = lower((_to_arb(w2.a).log() / 8).exp()) if w2.a > 0 else 0.0
         tmax = [upper(t[i]) for i in range(2)]
         exact_d = [-p[i] ** 3 / y2 ** 3 for i in range(2)]
         e_z = upper(y2 - p[2])
         e_d = [upper(exact_d[i] - d[i]) for i in range(2)]
         nmax = [upper(n[0]), upper(n[1])]
-    ins = [r, *tmax, e_z, *e_d, *nmax, zmin, den]
-    if not all(math.isfinite(x) for x in ins):
+    return den, r, zmin, tmax, e_z, e_d, nmax
+
+
+def _radius_from(den, r, zmin, tmax, e_z, e_d, nmax):
+    """(delta, hmax) from the directed inputs of `_radius_inputs`, in exact rationals.
+
+    hmax and delta each take one upward step to a float. The result is (inf, inf) if den or
+    zmin is not above 0 (NaN included), or if an input or a result is not finite.
+    """
+    if not (den > 0 and zmin > 0):
         return float('inf'), float('inf')
-    # Exact rationals from here on: the bounds increase with r, tmax, e_z, e_d, nmax and
-    # decrease with zmin > 0 and den > 0.
+    if not all(math.isfinite(x) for x in [den, r, zmin, *tmax, e_z, *e_d, *nmax]):
+        return float('inf'), float('inf')
+    # The bounds increase with r, tmax, e_z, e_d and nmax, and decrease with zmin and den.
     rq, zq, dq = Fraction(r), Fraction(zmin), Fraction(den)
     tq = [Fraction(x) for x in tmax]
     # Second derivatives of z2: -3 t_i^2 delta_ij / z2^3 - 3 t_i^3 t_j^3 / z2^7.

@@ -12,6 +12,10 @@
 6. The other directed steps of box.py lie on the correct side of their exact values:
    metric_c_low, _lam_low, _grad_g, _vol_factor and the checks _h_checks of implicit_h_td.
    Each test also has inputs where round to nearest gives the wrong side.
+7. quartic.cert.cover.box_radius gives the smallest floats at or above the exact hmax and
+   delta of its directed inputs, and (inf, inf) for a den or zmin of 0 or NaN.
+8. quartic.cert.forms.to_td_complex gives radii and abs bounds that hold at the corners of
+   each ball and at the td entry, in exact rationals.
 
 The tests of frac_dd and lower are in tests/test_host.py of the repository yidiq7/tmgpu.
 
@@ -26,7 +30,7 @@ from pathlib import Path
 import mpmath as mp
 import numpy as np
 import cupy as cp
-from flint import arb
+from flint import acb, acb_mat, arb
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -34,6 +38,7 @@ sys.path.insert(0, str(ROOT))
 from quartic.cert import box as tc                # noqa: E402
 from tmgpu import host, tm                                       # noqa: E402
 from quartic.cert import cover as cc                                         # noqa: E402
+from quartic.cert import forms                                              # noqa: E402
 from tests.host_reference import _dd_mp, frame_errors, kappa_errors     # noqa: E402
 
 RNG = np.random.default_rng(20261010)
@@ -301,14 +306,16 @@ def check_metric_c():
             # The midpoint of low and nxt is exact; c above it makes nxt the nearest float.
             if host.down(c - (arb(low) + arb(nxt)) / 2) > 0:
                 above.append(k0)
-    assert above, 'the float nearest to c is below c for each k0, so no k0 sees the direction'
+    assert above, 'the float nearest to c is below c for each k0, so round to nearest passes too'
     print(f'  metric_c_low: below c for k0 = 1 to 64; round to nearest lies above c for '
           f'{len(above)} of them, for example k0 = {above[0]}', flush=True)
 
 
 def check_lam_low():
-    """_lam_low is the largest float at or below det_low / tr_up, 0 without the proof, and the
-    quotient in round to nearest lies above the exact one for 1 / 10 and other pairs."""
+    """_lam_low is the largest float at or below det_low / tr_up for 64 pairs, and 0 without
+    the proof. For the pair (1, 10) the quotient in round to nearest lies above the exact one,
+    so a _lam_low in round to nearest fails this test. The output gives the count of such
+    pairs."""
     pairs = [(1.0, 10.0)] + [(float(DRNG.uniform(0.1, 5.0)), float(DRNG.uniform(1.0, 20.0)))
                              for _ in range(63)]
     det = cp.asarray([p[0] for p in pairs])
@@ -376,14 +383,24 @@ def _second_exact(x, nabs, by):
     return sum(12 * n * n * (b + x * n) ** 2 for n, b in zip(nabs, by))
 
 
+def _big_rn(r, lam0, iabs, na, bb, hmax, bh):
+    """big = hmax + bh + r and lam_big of _h_checks in Python floats (round to nearest)."""
+    big = hmax + bh + r
+    return big, lam0 + big * sum(12 * n ** 2 * (b + big * n) ** 2 for n, b in zip(na, bb)) * iabs
+
+
 def check_h_checks():
     """_h_checks forms lam and lam_big at or above their exact values, its mask good implies
     the exact checks, and good fails a planted box where bd + lam r <= r holds only in round to
-    nearest. On the random boxes round to nearest puts lam below its exact value."""
+    nearest. In the planted box 2, round to nearest puts big = hmax + bh + r and lam_big below
+    their exact values. On the random boxes round to nearest puts lam and lam_big below their
+    exact values."""
     t = 2.0 ** -60
-    # (r, bd, lam0, iabs, nabs, by, hmax, bh): box 0 must fail, box 1 must pass.
+    # (r, bd, lam0, iabs, nabs, by, hmax, bh): box 0 must fail, box 1 must pass. In box 2,
+    # RN(1 + t + t) = 1, and lam_big = 12 big^3 increases with big.
     boxes = [(1.0, 2.0 ** -53 + t, 1.0 - 2.0 ** -53, 1.0, (0.0,) * 3, (0.5,) * 3, 0.0, 0.0),
-             (1.0, 0.25, 0.5, 1.0, (0.0,) * 3, (0.5,) * 3, 0.0, 0.0)]
+             (1.0, 0.25, 0.5, 1.0, (0.0,) * 3, (0.5,) * 3, 0.0, 0.0),
+             (t, 0.0, 0.0, 1.0, (1.0, 0.0, 0.0), (0.0,) * 3, 1.0, t)]
     for _ in range(62):
         r = float(10.0 ** DRNG.uniform(-32, -28))
         boxes.append((r, r * float(DRNG.uniform(0.1, 0.4)), float(DRNG.uniform(0.01, 0.5)),
@@ -396,7 +413,7 @@ def check_h_checks():
     by = [cp.asarray([x[5][k] for x in boxes]) for k in range(3)]
     lam, good, lam_big = (cp.asnumpy(v) for v in
                           tc._h_checks(col(0), col(1), col(2), col(3), nabs, by, col(6), col(7)))
-    below = 0
+    below, below_big, lam_big_xs = 0, 0, []
     for i, (r, bd, lam0, iabs, na, bb, hmax, bh) in enumerate(boxes):
         q = [Fraction(v) for v in (r, bd, lam0, iabs, hmax, bh)]
         nq, bq = [Fraction(v) for v in na], [Fraction(v) for v in bb]
@@ -409,14 +426,118 @@ def check_h_checks():
             assert q[2] < 1 and lam_x < 1 and q[1] + lam_x * q[0] <= q[0], ('good, not exact', i)
         rn = lam0 + r * sum(12 * n ** 2 * (b + r * n) ** 2 for n, b in zip(na, bb)) * iabs
         below += Fraction(rn) < lam_x
+        lam_big_xs.append(lam_big_x)
+        if i > 2:
+            below_big += Fraction(_big_rn(r, lam0, iabs, na, bb, hmax, bh)[1]) < lam_big_x
     r, bd, lam0 = boxes[0][:3]
     assert bd + lam0 * r <= r and Fraction(bd) + Fraction(lam0) * Fraction(r) > Fraction(r), \
         'box 0 does not separate round to nearest from the exact check'
     assert not good[0] and good[1], ('the planted boxes', good[:2])
+    r, bd, lam0, iabs, na, bb, hmax, bh = boxes[2]
+    big_rn, lam_big_rn = _big_rn(r, lam0, iabs, na, bb, hmax, bh)
+    assert Fraction(big_rn) < Fraction(hmax) + Fraction(bh) + Fraction(r), 'box 2: RN of big'
+    assert Fraction(lam_big_rn) < lam_big_xs[2], 'box 2: round to nearest of lam_big'
     assert below > 0, 'round to nearest is not below the exact lam for any box'
-    print(f'  _h_checks: lam and lam_big at or above their exact values for 64 boxes; good '
-          f'implies the exact checks ({int(good.sum())} good); the planted box fails, where '
-          f'round to nearest passes; round to nearest lies below lam for {below} boxes',
+    assert below_big > 0, 'round to nearest is not below the exact lam_big for any random box'
+    print(f'  _h_checks: lam and lam_big at or above their exact values for {len(boxes)} boxes; '
+          f'good implies the exact checks ({int(good.sum())} good); the planted box 0 fails, '
+          f'where round to nearest passes; in box 2 and in {below_big} random boxes round to '
+          f'nearest lies below lam_big; round to nearest lies below lam for {below} boxes',
+          flush=True)
+
+
+# The tests of the cover radii and of the local forms take their own generator, so the inputs
+# of the other tests stay the same.
+RRNG = np.random.default_rng(20261024)
+
+
+def _smallest_above(g, x):
+    """True if the float g is the smallest float at or above the exact Fraction x."""
+    g = float(g)
+    return Fraction(g) >= x and Fraction(math.nextafter(g, -math.inf)) < x
+
+
+def _radius_exact(den, r, zmin, tmax, e_z, e_d, nmax):
+    """hmax and delta of box_radius as exact Fractions, with the sums in another order."""
+    rq, zq, dq = Fraction(r), Fraction(zmin), Fraction(den)
+    t0, t1 = Fraction(tmax[0]), Fraction(tmax[1])
+    # The sum over i and j of t_i^3 t_j^3 is (t_0^3 + t_1^3)^2.
+    hs = 3 * (t0 ** 3 + t1 ** 3) ** 2 / zq ** 7 + 3 * (t0 ** 2 + t1 ** 2) / zq ** 3
+    h = (hs * rq ** 2 / 2 + Fraction(e_z) + (Fraction(e_d[0]) + Fraction(e_d[1])) * rq) / dq
+    return h, rq + h * max(Fraction(nmax[0]), Fraction(nmax[1]))
+
+
+def check_box_radius():
+    """box_radius at 16 cells of the cover: hmax and delta are the smallest floats at or above
+    their exact values. This test forms them again, in another order, from the same directed
+    inputs. Round to nearest of an exact value lies below it for some of them. A den or a zmin
+    of 0 or NaN gives (inf, inf)."""
+    cov = np.load(ROOT / 'runs_tm' / 'cover_s0.03_c6_v2.npz')
+    below = 0
+    with mp.workdps(30):
+        s = mp.mpf(float(cov['side']))
+        for i in RRNG.choice(len(cov['idx']), 16, replace=False):
+            lo, c = cc.cell(cov['idx'][i], s)
+            ins = cc._radius_inputs(lo, s, c)
+            delta, hmax = cc.box_radius(lo, s, c)
+            assert math.isfinite(delta) and math.isfinite(hmax), ('radius', i, delta, hmax)
+            h_x, d_x = _radius_exact(*ins)
+            assert _smallest_above(hmax, h_x), ('hmax is not up of its exact value', i, hmax)
+            assert _smallest_above(delta, d_x), ('delta is not up of its exact value', i, delta)
+            below += (Fraction(float(h_x)) < h_x) + (Fraction(float(d_x)) < d_x)
+    assert below > 0, 'round to nearest is not below the exact value for any cell'
+    den, r, zmin, tmax, e_z, e_d, nmax = ins
+    for bad in (0.0, math.nan):
+        for args in ((bad, r, zmin, tmax, e_z, e_d, nmax), (den, r, bad, tmax, e_z, e_d, nmax)):
+            assert cc._radius_from(*args) == (math.inf, math.inf), ('a planted den or zmin', bad)
+    print(f'  box_radius: hmax and delta are up of their exact values at 16 cells; round to '
+          f'nearest lies below for {below} of the 32 values; a den or zmin of 0 or NaN gives '
+          f'(inf, inf)', flush=True)
+
+
+def _arb_exact(a):
+    """The exact value of a finite arb of radius 0 (a midpoint or a radius) as a Fraction."""
+    man, exp = a.man_exp()
+    return Fraction(int(man)) * Fraction(2) ** int(exp)
+
+
+def check_to_td_complex():
+    """forms.to_td_complex on 6 balls, with e the td entry and v a corner of a finite ball.
+    In exact rationals, rad >= abs(Re(e - v)) + abs(Im(e - v)) and abs >= abs(e), abs(v) at
+    each corner, and rad is the smallest float at or above the largest of these distances. An
+    entry that td holds exactly has rad 0, and a NaN entry has rad and abs inf."""
+    with host.precision(256):
+        third, root = arb(1) / 3, arb(2).sqrt()
+        vals = [acb(third, -root / 7),                                   # inexact midpoints
+                acb(arb(1.0, 2.0 ** -90), arb(0.5, 2.0 ** -91)),         # radius, no residual
+                acb(arb(0, 2.0 ** -40), arb(0, 2.0 ** -41)),             # a ball around 0
+                acb(third * 2.0 ** 60, root * 2.0 ** -70),               # large and small parts
+                acb(arb(1) + arb(2.0 ** -60) + arb(2.0 ** -130), arb(-3)),   # exact in td
+                acb(arb(0) / arb(0), arb(1))]                            # NaN
+        q = acb_mat(2, 3, vals)
+        parts, rad, absb = forms.to_td_complex(q)
+        for k in range(5):
+            i, j = divmod(k, 3)
+            x = q[i, j]
+            er = sum(Fraction(float(v)) for v in parts[0:3, i, j])
+            ei = sum(Fraction(float(v)) for v in parts[3:6, i, j])
+            mr, rr = _arb_exact(x.real.mid()), _arb_exact(x.real.rad())
+            mi, ri = _arb_exact(x.imag.mid()), _arb_exact(x.imag.rad())
+            rq, aq = Fraction(float(rad[i, j])), Fraction(float(absb[i, j]))
+            far = Fraction(0)
+            for vr in (mr - rr, mr + rr):
+                for vi in (mi - ri, mi + ri):
+                    dist = abs(er - vr) + abs(ei - vi)
+                    far = max(far, dist)
+                    assert rq >= dist, ('rad below the distance to a corner', k)
+                    assert aq ** 2 >= vr ** 2 + vi ** 2, ('abs below a corner', k)
+            assert aq ** 2 >= er ** 2 + ei ** 2, ('abs below the td entry', k)
+            assert _smallest_above(rad[i, j], far), ('rad is not up of the largest distance', k)
+        assert rad[1, 1] == 0.0, ('an exact entry has rad 0', rad[1, 1])
+        assert np.isposinf(rad[1, 2]) and np.isposinf(absb[1, 2]), ('a NaN entry',
+                                                                     rad[1, 2], absb[1, 2])
+    print('  to_td_complex: rad and abs hold at the corners of 5 balls and at the td entries, '
+          'rad is up of the largest distance, 0 for an exact entry, inf for a NaN entry',
           flush=True)
 
 
@@ -434,6 +555,8 @@ def main():
     check_grad_g()
     check_vol_factor()
     check_h_checks()
+    check_box_radius()
+    check_to_td_complex()
     print('all host tests pass', flush=True)
 
 

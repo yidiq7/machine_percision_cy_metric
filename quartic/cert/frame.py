@@ -2,14 +2,20 @@
 
 A box has its center p on X in the chart z_3 = 1: t = (p_0, p_1) is the dd center of a
 cell, and p_2 is the dd value of the principal fourth root of -(1 + t_0^4 + t_1^4).
-Each frame number is the dd value of the midpoint of an arb ball, and from then on that dd
-number is the exact definition of the frame. tmgpu.host converts each error from the exact
-endpoints of the ball, with one upward step to a float:
+Each frame number is the dd value of the midpoint of an arb ball. From then on, that dd
+number is the exact definition of the frame:
 
-* the tangent frame E (dy/dt at p, with E_2 = -p_i^3 / p_2^3) and the unit normal n;
-* c1inv = 1 / (grad P . n) and the td constants of `quartic.cert.box.implicit_h_td` with their errors;
-* vol = 1 / (abs(det U)^2 vbar), U = [E, n], with vbar = 512 pi^4 k0^2 / Gamma(1/4)^8,
-  and a bound of its relative error.
+* p_2, the tangent frame E (dy/dt at p, with E_2 = -p_i^3 / p_2^3) and the unit normal n;
+* c1inv = 1 / (grad P . n).
+
+These dd values are definitions, so no bound uses the errors of their conversions. The
+other numbers have an error bound. tmgpu.host forms each one from the exact endpoints of the
+ball, with one upward step to a float:
+
+* the td constants of `quartic.cert.box.implicit_h_td` (h_err_td, absolute errors);
+* vol = 1 / (abs(det U)^2 vbar), U = [E, n], with vbar = 512 pi^4 k0^2 / Gamma(1/4)^8
+  (vol_err, an error relative to the true vol);
+* the result of `kappa` (an absolute error).
 
 Both `quartic.cert.box.make_frames` (the boxes on the GPU) and
 `quartic.cert.cover.box_radius` (the radius of each cell) take the frame from `frame`, so
