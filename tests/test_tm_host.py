@@ -5,7 +5,9 @@
 2. The weights of the re-expansion in zeta (reexpand_weights), in td, lie within their
    bounds of the values in mpmath at 150 digits, and the moduli bound the values.
 3. A cell that quartic.cert.cover.may_meet_f drops holds no point of F.
-4. quartic.cert.box._real_low is a lower bound of the real part of a model on its polydisc.
+4. quartic.cert.box._real_low is a lower bound of the real part of a model on its polydisc,
+   and its last step is at most the exact value. On planted constants where round to nearest
+   exceeds the exact value, _real_low stays at or below it.
 5. box_f stops on local forms that are not in Delta and td (_check_local).
 
 The tests of frac_dd and lower are in tests/test_host.py of the repository yidiq7/tmgpu.
@@ -131,6 +133,21 @@ def check_dropped_cells():
           f'({kept} kept cells on the way)', flush=True)
 
 
+def _real_low_exact(c, rem, pb, bi):
+    """Re c0 - abs(Im c0) - pb - rem of box bi as an exact Fraction, for dd coefficients c
+    (4, S, B) and the floats rem and pb."""
+    re = Fraction(float(c[0, 0, bi])) + Fraction(float(c[1, 0, bi]))
+    im = Fraction(float(c[2, 0, bi])) + Fraction(float(c[3, 0, bi]))
+    return re - abs(im) - Fraction(float(pb)) - Fraction(float(rem))
+
+
+def _poly_part_bound(sp, x, delta):
+    """B(x - c0) on delta, the same call as in _real_low."""
+    var = x.c.copy()
+    var[:, 0, :] = 0
+    return cp.asnumpy(tm.poly_bound(sp, tm.TM(var, x.rem, delta), delta))
+
+
 def check_real_low():
     sp = tm.Space(4, 6)
     b = 4
@@ -142,7 +159,10 @@ def check_real_low():
     x = tm.TM(c, cp.full(b, 1e-6), delta)
     low = cp.asnumpy(tc._real_low(sp, x, delta))
     cn = cp.asnumpy(c)
+    pb = _poly_part_bound(sp, x, delta)
     for bi in range(b):
+        # The last step in exact arithmetic: low <= Re c0 - abs(Im c0) - B(x - c0) - rem.
+        assert Fraction(float(low[bi])) <= _real_low_exact(cn, 1e-6, pb[bi], bi), (bi, low[bi])
         d = float(delta[bi])
         for _ in range(200):
             pt = [d * complex(*RNG.uniform(-0.7, 0.7, 2)) for _ in range(4)]
@@ -154,6 +174,44 @@ def check_real_low():
                 val += v
             assert val.real - 1e-6 >= low[bi], (bi, val.real, low[bi])
     print(f'  _real_low: below Re(model) - rem at 800 points; bounds {low.round(4)}', flush=True)
+
+
+# Constant models (a0, a1, b0, b1, rem) with Re c0 = a0 + a1 and Im c0 = b0 + b1, t = 2^-60.
+# Each one fails a _real_low with round to nearest (RN) in place of the directed step named.
+_T = 2.0 ** -60
+REAL_LOW_PLANTED = (
+    (1.0, -_T, 0.0, 0.0, 0.0),    # a0 + a1 must round down: RN(1 - t) = 1 > 1 - t
+    (1.0, 0.0, 0.0, 0.0, _T),     # the last difference must round down: RN(1 - t) = 1
+    (2.0, 0.0, -1.0, -_T, 0.0),   # abs(b0 + b1) needs the downward sum: abs(RU(-1 - t)) = 1
+    (2.0, 0.0, 1.0, _T, 0.0),     # abs(b0 + b1) needs the upward sum: abs(RD(1 + t)) = 1
+    (2.0, 0.0, 1.0, 0.0, _T),     # the subtracted sum must round up: RN(1 + 0 + t) = 1
+)
+
+
+def check_real_low_planted():
+    """_real_low on the planted constant models is at most the exact value, and the same
+    formula in round to nearest exceeds the exact value on each of them."""
+    sp = tm.Space(4, 6)
+    b = len(REAL_LOW_PLANTED)
+    delta = cp.full(b, 0.1)
+    c = np.zeros((4, sp.size, b))
+    rem = np.zeros(b)
+    for bi, (a0, a1, b0, b1, r) in enumerate(REAL_LOW_PLANTED):
+        c[:, 0, bi] = a0, a1, b0, b1
+        rem[bi] = r
+    x = tm.TM(cp.asarray(c), cp.asarray(rem), delta)
+    low = cp.asnumpy(tc._real_low(sp, x, delta))
+    pb = _poly_part_bound(sp, x, delta)
+    assert np.all(pb == 0.0), ('a constant model has B(x - c0) = 0', pb)
+    for bi, (a0, a1, b0, b1, r) in enumerate(REAL_LOW_PLANTED):
+        exact = _real_low_exact(c, r, pb[bi], bi)
+        # Python floats round to nearest: this is _real_low with no directed step.
+        nearest = (a0 + a1) - abs(b0 + b1) - float(pb[bi]) - r
+        assert Fraction(nearest) > exact, ('the planted case does not see the direction', bi)
+        assert Fraction(float(low[bi])) <= exact, ('_real_low is above the exact value', bi,
+                                                   low[bi], float(exact))
+    print(f'  _real_low: {b} planted constants where round to nearest exceeds the exact value; '
+          f'_real_low stays at or below it', flush=True)
 
 
 def check_old_local_forms():
@@ -224,6 +282,7 @@ def main():
     check_weights()
     check_dropped_cells()
     check_real_low()
+    check_real_low_planted()
     check_old_local_forms()
     check_frame()
     check_kappa()

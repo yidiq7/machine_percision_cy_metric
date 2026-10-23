@@ -72,7 +72,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from quartic.cert import records as rs                      # noqa: E402
 
 # The GPU modules of the stage export; _gpu_imports sets them.
-cp = space = sup_bound = tc = cert_run = exact_cell = None
+cp = mag = space = sup_bound = tc = cert_run = exact_cell = None
 
 SHA_DATA = '69878fbcaa3d4ea44955ef341b162788c7e34831452f13332ad6200cbbf3dbc1'
 SHA_FORMS = '2fecc9289368a192c6e4f809a61aef55291150922fd6273e14386a4704bb3cf2'
@@ -84,8 +84,9 @@ SETTINGS = {28: 0.35, 32: 0.12}
 
 def _gpu_imports():
     """Import CuPy, tmgpu, quartic.cert.box, cert_run and cert_check for the stage export."""
-    global cp, space, sup_bound, tc, cert_run, exact_cell
+    global cp, mag, space, sup_bound, tc, cert_run, exact_cell
     import cupy as cp
+    from tmgpu import mag
     from tmgpu.tools import space, sup_bound
     from quartic.cert import box as tc
     import cert_run
@@ -205,10 +206,10 @@ def box_arrays(keep, info, sup, j, local, row, order, ny, a, hmax, factor, shas,
     hp = {k: host(info['h_parts'][k])[j] for k in ('residual', 'host', 'lam0', 'rho')}
     for key, val in hp.items():
         out[f'h_parts_{key}'] = float(val)
-    safe = tc.SAFE
 
     def radius(res, hst):
-        return 2 * ((res + hst) * safe) / (1 - hp['lam0']) * safe
+        # The same operations as implicit_h_td: bd = mag.add(residual, eps), r = 2 bd / (1 - lam0).
+        return 2 * float(mag.add(res, hst)) / (1 - hp['lam0'])
 
     if np.isfinite(hp['rho']):
         # rho of implicit_h_td is this radius of the residual and the host errors, bit for bit.
@@ -705,9 +706,8 @@ def _check_host(path):
             equal[fkey] = _same_bits(f[key], z[fkey])
         kap, kerr = frame.kappa(args[0], k0, args[1], args[2])
         equal['kappa'] = _same_bits(kap, z['kappa'])
-        # box_f stores the error bound of kappa times (1 + 1e-9), plus 1e-300.
-        equal['kap_err'] = _same_bits(np.array([kerr]) * (1 + 1e-9) + 1e-300,
-                                      [float(z['kap_err'])])
+        # box_f stores the error bound of kappa as frame.kappa gives it.
+        equal['kap_err'] = _same_bits(np.array([kerr], dtype=np.float64), [float(z['kap_err'])])
         errors = {f'frame {k}': v for k, v in href.frame_errors([center], k0).items()}
         errors['kappa'] = href.kappa_errors([tuple(args)], k0)
     except ValueError as e:
