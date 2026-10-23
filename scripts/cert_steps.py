@@ -706,8 +706,11 @@ def _check_host(path):
             equal[fkey] = _same_bits(f[key], z[fkey])
         kap, kerr = frame.kappa(args[0], k0, args[1], args[2])
         equal['kappa'] = _same_bits(kap, z['kappa'])
-        # box_f stores the error bound of kappa as frame.kappa gives it.
-        equal['kap_err'] = _same_bits(np.array([kerr], dtype=np.float64), [float(z['kap_err'])])
+        # box_f stores the error bound of kappa as frame.kappa gives it, a float with no
+        # conversion; an error of another type is a failure of R4.
+        if not isinstance(kerr, float):
+            raise ValueError(f'the error bound of kappa is a {type(kerr).__name__}, not a float')
+        equal['kap_err'] = _same_bits(np.array([kerr]), [float(z['kap_err'])])
         errors = {f'frame {k}': v for k, v in href.frame_errors([center], k0).items()}
         errors['kappa'] = href.kappa_errors([tuple(args)], k0)
     except ValueError as e:
