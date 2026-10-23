@@ -290,7 +290,16 @@ def implicit_h_td(sp, fr, delta, hmax, parts=None):
     ok = lam0 < 1
     # A free trial radius in round to nearest; scripts/cert_steps.py copies this formula.
     r = cp.where(ok, 2 * bd / cp.where(ok, 1 - lam0, 1.0), cp.inf)
-    lam, good, lam_big = _h_checks(r, bd, lam0, iabs, nabs, by, hmax, tm.bound(sp, h_dd))
+
+    def second(rad):
+        """An upper bound of the sum over k of 12 abs(n_k)^2 (B(y_k) + rad abs(n_k))^2."""
+        return mag.add(*[mag.mul(mag.mul(12.0, mag.powi(nabs[k], 2)),
+                                 mag.powi(mag.fma(rad, nabs[k], by[k]), 2)) for k in range(3)])
+
+    lam = mag.add(lam0, mag.mul(mag.mul(r, second(r)), iabs))
+    good = ok & (lam < 1) & (mag.fma(lam, r, bd) <= r)
+    big = mag.add(cp.asarray(hmax), tm.bound(sp, h_dd), r)
+    lam_big = mag.add(lam0, mag.mul(mag.mul(big, second(big)), iabs))
     rho = cp.where((lam_big < 1) & good, r, cp.inf)
     if parts is not None:
         parts.update(residual=residual, host=eps, lam0=lam0, rho=rho)
@@ -298,26 +307,6 @@ def implicit_h_td(sp, fr, delta, hmax, parts=None):
     h_dd = tm.TM(h_dd.c, mag.add(h_dd.rem, rho), delta)
     ys = [tm.add(sp, lin[k], tm.scale(sp, h_dd, fr.n[k])) for k in range(3)]
     return ys, rho, lam, h_td, h_dd, lam_big
-
-
-def _h_checks(r, bd, lam0, iabs, nabs, by, hmax, bh):
-    """The checks of implicit_h_td for the trial radius r (B,), each left side upward.
-
-    lam bounds T' on the ball of radius r, and lam_big on the ball of radius hmax + bh + r,
-    with lam0 >= abs(T') at the model, iabs >= abs(c1inv), nabs[k] >= abs(n_k) and
-    by[k] >= B(y_k). Returns lam, the mask good of lam0 < 1, lam < 1 and bd + lam r <= r,
-    and lam_big.
-    """
-    def second(rad):
-        """An upper bound of the sum over k of 12 abs(n_k)^2 (B(y_k) + rad abs(n_k))^2."""
-        return mag.add(*[mag.mul(mag.mul(12.0, mag.powi(nabs[k], 2)),
-                                 mag.powi(mag.fma(rad, nabs[k], by[k]), 2)) for k in range(3)])
-
-    lam = mag.add(lam0, mag.mul(mag.mul(r, second(r)), iabs))
-    good = (lam0 < 1) & (lam < 1) & (mag.fma(lam, r, bd) <= r)
-    big = mag.add(cp.asarray(hmax), bh, r)
-    lam_big = mag.add(lam0, mag.mul(mag.mul(big, second(big)), iabs))
-    return lam, good, lam_big
 
 
 def offset_models_td(sp, fr, h_td, h_dd, ref, delta):
@@ -659,8 +648,10 @@ def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False, keep=None):
     q4 = tm.tensor(sp4, sp2, dp, conj(dp))
     dq = tm.mul(sp4, det, q4)
     v = tm.scale(sp4, dq, fr.vol)
-    v_vol = mag.mul(mag.mul(_vol_factor(fr.vol_err), tm.abs_ub(fr.vol[:, None, :])[0]),
-                    tm.bound(sp4, dq))
+    # vol_err is relative to the true vol, so abs(vol) <= abs(vol in dd) / (1 - vol_err), and
+    # vol_err / (1 - vol_err) times abs(vol in dd) bounds the error of vol in dd.
+    vol_fac = mag.div(fr.vol_err, mag.sub_down(1.0, fr.vol_err))
+    v_vol = mag.mul(mag.mul(vol_fac, tm.abs_ub(fr.vol[:, None, :])[0]), tm.bound(sp4, dq))
     v.rem = mag.add(v.rem, v_vol)
     f = tm.add_const(sp4, v, -one)
     if grad:
@@ -697,35 +688,17 @@ def gradient_bounds(sp4, f, g, det, d, k0, keep=None):
     det_low = _real_low(sp4, det, d)
     tr_up = mag.add(tm.poly_bound(sp4, g[0, 0], d), g[0, 0].rem,
                     tm.poly_bound(sp4, g[1, 1], d), g[1, 1].rem)
+    # g is positive definite on the box when det g > 0 and g_00 > 0 there.
     g00_low = _real_low(sp4, g[0, 0], d)
-    lam_low = _lam_low(det_low, g00_low, tr_up)
-    grad_g = _grad_g(grad_tau, metric_c_low(k0), lam_low)
+    ok = (det_low > 0) & (g00_low > 0)
+    lam_low = cp.where(ok, mag.div_down(det_low, tr_up), 0.0)
+    c = metric_c_low(k0)
+    pos = lam_low > 0
+    root = mag.sqrt_down(mag.mul_down(c, cp.where(pos, lam_low, 1.0)))
+    grad_g = cp.where(pos, mag.div(mag.mul(2.0, grad_tau), root), cp.inf)
     if keep is not None:
         keep.update(dfs=dfs, df_bounds=b, det_low=det_low, g00_low=g00_low, tr_up=tr_up)
     return dict(grad_tau=grad_tau, grad_g=grad_g, lam_low=lam_low)
-
-
-def _vol_factor(vol_err):
-    """vol_err / (1 - vol_err) with a downward denominator and an upward quotient; +inf for
-    vol_err >= 1. vol_err is relative to the true vol, so abs(vol) <= abs(vol in dd) /
-    (1 - vol_err), and this factor times abs(vol in dd) bounds the error of vol in dd."""
-    return mag.div(vol_err, mag.sub_down(1.0, vol_err))
-
-
-def _lam_low(det_low, g00_low, tr_up):
-    """A lower bound of lam_min(g): RD(det_low / tr_up) where det_low > 0 and g00_low > 0
-    (then g is positive definite on the box and lam_min >= det g / tr g), else 0."""
-    ok = (det_low > 0) & (g00_low > 0)
-    return cp.where(ok, mag.div_down(det_low, tr_up), 0.0)
-
-
-def _grad_g(grad_tau, c, lam_low):
-    """The bound 2 grad_tau / sqrt(c lam_low) of abs(grad f) in G: the divisor rounds down and
-    the quotient rounds up, for a lower bound c of the factor of G; +inf where lam_low is not
-    above 0."""
-    pos = lam_low > 0
-    root = mag.sqrt_down(mag.mul_down(c, cp.where(pos, lam_low, 1.0)))
-    return cp.where(pos, mag.div(mag.mul(2.0, grad_tau), root), cp.inf)
 
 
 def metric_c_low(k0):
