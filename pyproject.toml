@@ -49,4 +49,4 @@ managed = true
 package = false
 
 [tool.uv.sources]
-tmgpu = { git = "ssh://git@github.com/yidiq7/tmgpu.git", tag = "v0.1.0" }
+tmgpu = { git = "ssh://git@github.com/yidiq7/tmgpu.git", tag = "v0.2.0" }
