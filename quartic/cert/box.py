@@ -394,7 +394,7 @@ def reexpand_td(local, zeta_dd, top):
     td local forms. The error of the product has the bound that the kernel of
     `gemm.zgemm_tt` sums as it runs. With w the weights and M the stored forms,
     w M - w_true M_true = (w - w_true) M + w_true (M - M_true). The modulus bound ma of M_true
-    also bounds the stored M, by the construction of `forms.to_td_complex`: ma is up of
+    also bounds the stored M. This follows from `forms.to_td_complex`. There ma is up of
     abs(M_true) plus the radius, and abs(M) <= abs(midpoint) + radius. So
     rad = wa mr + we ma + qerr needs no term we mr."""
     b = len(zeta_dd)
@@ -431,11 +431,12 @@ def compose_td(sp4, sp_low, mats, q, q_rad, q_abs, delta):
     The cross terms act on the true Q. Each monomial is Y_low + Y_high + E: the low part, the
     high part and the remainder of its model. The true form minus Y_low Q_stored Y_low^H then
     has two kinds of terms. The terms with Y_high or E act on Q_true, and the parts high and
-    models bound them with q_abs. The other term is Y_low (Q_true - Q_stored) Y_low^H, and the
+    models bound them with q_abs. The other term is Y_low (Q_true - Q_stored) Y_low^H. The
     part radius covers it, with full in place of b_low on both sides. So q_abs must bound
     abs(Q_true) only. The factor 2 of the cross terms needs q_abs[b, a] >= abs(Q_true[a, b])
-    as well: each true form is Hermitian, or (F_k) a combination of Hermitian M~_m, and q_abs
-    is a sum of their modulus bounds, so it bounds abs(Q_true[a, b]) and abs(Q_true[b, a]).
+    as well. Each true form is Hermitian, or (F_k) a combination of Hermitian M~_m. The array
+    q_abs is a sum of their modulus bounds. So it bounds abs(Q_true[a, b]) and
+    abs(Q_true[b, a]).
     """
     n = q.shape[-1]
     b = delta.shape[0]

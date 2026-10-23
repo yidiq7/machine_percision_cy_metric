@@ -217,7 +217,7 @@ def check_real_low_planted():
         exact = _real_low_exact(c, r, pb[bi], bi)
         # Python floats round to nearest: this is _real_low with no directed step.
         nearest = (a0 + a1) - abs(b0 + b1) - float(pb[bi]) - r
-        assert Fraction(nearest) > exact, ('the planted case does not see the direction', bi)
+        assert Fraction(nearest) > exact, ('the planted case does not detect the direction', bi)
         assert Fraction(float(low[bi])) <= exact, ('_real_low is above the exact value', bi,
                                                    low[bi], float(exact))
     print(f'  _real_low: {b} planted constants where round to nearest exceeds the exact value; '
@@ -261,7 +261,7 @@ def check_frame():
     assert not bad, f'frame: error above its bound for {bad}: {res}'
     zero = [k for k, (_, c) in res.items() if c == 0 and k not in exempt]
     assert not zero, f'frame: the numbers {zero} have error 0 at all {len(centers)} centers, ' \
-                     f'so the check cannot see an error there'
+                     f'so the check cannot detect an error there'
     print(f'  frame: {len(centers)} centers; largest error over its bound '
           + ', '.join(f'{k} {w:.6f}' for k, (w, _) in res.items())
           + f'; exempt (exact in td): {exempt}; centers with nonzero error: '
@@ -282,7 +282,7 @@ def check_kappa():
                        _rdd(r * np.cos(a)) + _rdd(r * np.sin(a))))
     worst, count = kappa_errors(inputs, 16)
     assert worst <= 1.0, ('kappa', worst)
-    assert count > 0, 'kappa: error 0 at all 64 inputs, so the check cannot see an error'
+    assert count > 0, 'kappa: error 0 at all 64 inputs, so the check cannot detect an error'
     print(f'  kappa: 64 inputs; largest error over its bound {worst:.6f}; {count} inputs have '
           f'a nonzero error', flush=True)
 
@@ -390,11 +390,11 @@ def _big_rn(r, lam0, iabs, na, bb, hmax, bh):
 
 
 def check_h_checks():
-    """_h_checks forms lam and lam_big at or above their exact values, its mask good implies
-    the exact checks, and good fails a planted box where bd + lam r <= r holds only in round to
-    nearest. In the planted box 2, round to nearest puts big = hmax + bh + r and lam_big below
-    their exact values. On the random boxes round to nearest puts lam and lam_big below their
-    exact values."""
+    """_h_checks forms lam and lam_big at or above their exact values. Its mask good implies
+    the exact checks. The mask good fails a planted box where bd + lam r <= r holds only in
+    round to nearest. In the planted box 2, round to nearest puts big = hmax + bh + r and
+    lam_big below their exact values. On some of the random boxes round to nearest puts lam
+    and lam_big below their exact values."""
     t = 2.0 ** -60
     # (r, bd, lam0, iabs, nabs, by, hmax, bh): box 0 must fail, box 1 must pass. In box 2,
     # RN(1 + t + t) = 1, and lam_big = 12 big^3 increases with big.

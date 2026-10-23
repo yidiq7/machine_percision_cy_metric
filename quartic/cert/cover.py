@@ -87,7 +87,7 @@ def _radius_inputs(lo, s, c_dd):
     """The inputs (den, r, zmin, tmax, e_z, e_d, nmax) of `_radius_from` as floats.
 
     Each one is the directed float of an endpoint of an arb ball. den and zmin are lower
-    bounds, and the others are upper bounds. zmin is 0 if abs(z2) can be 0 on the cell.
+    bounds, and the others are upper bounds. zmin is 0 when the interval lower bound of abs(z2)^8 on the cell is not above 0.
     """
     from flint import acb, arb
     _exact_corners()

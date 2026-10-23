@@ -10,7 +10,7 @@ number is the exact definition of the frame:
 
 These dd values are definitions, so no bound uses the errors of their conversions. The
 other numbers have an error bound. tmgpu.host forms each one from the exact endpoints of the
-ball, with one upward step to a float:
+ball. Each step to a float rounds in a known direction, and the last step rounds up:
 
 * the td constants of `quartic.cert.box.implicit_h_td` (h_err_td, absolute errors);
 * vol = 1 / (abs(det U)^2 vbar), U = [E, n], with vbar = 512 pi^4 k0^2 / Gamma(1/4)^8
