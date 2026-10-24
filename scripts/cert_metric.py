@@ -130,6 +130,10 @@ def main():
             np.savez(args.trace, records=np.array(trace).reshape(-1, len(rs.METRIC_COLUMNS)),
                      columns=np.array(rs.METRIC_COLUMNS), commit=commit)
     rec = np.array(records).reshape(-1, len(rs.METRIC_COLUMNS))
+    if len(rec) == 0:
+        # Every cell split into cells that miss F.
+        print(f'done: 0 boxes, {n_boxes} computed; {time.perf_counter() - t0:.0f}s', flush=True)
+        return
     m = lambda k: rec[:, col[k]]
     # np.max and np.min give NaN if one record has NaN, so no NaN can hide here.
     print(f'done: {len(rec)} boxes, {n_boxes} computed, depth up to {int(np.max(m("depth")))}; '
