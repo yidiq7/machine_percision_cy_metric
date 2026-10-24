@@ -3,11 +3,12 @@
 1. Polynomial models: a potential Phi of degree 4 in (tau, sigma) with Hermitian
    coefficients, g = d_tau d_sigma Phi, f = kap det g - 1 (so Ric = -ddbar log(1 + f)), a
    second potential for g_FS and a shift h(tau). At random points of the slice sigma =
-   conj(tau) of two boxes, mpmath at 40 digits gives from the real 4 x 4 matrices: the
+   conj(tau) of three boxes, mpmath at 40 digits gives from the real 4 x 4 matrices: the
    eigenvalues of G_0^-1 G; the eigenvalues of G^-1 Ric with Ric from the Christoffel
    symbols of G; the real norm of DG with each argument normalized by G^(-1/2); and the
    same norm in the chart t = tau + n_01 h(tau), from central differences of G_t. Each
-   bound must hold at each point, and lie within a factor of the largest value. The test
+   bound must hold at each point, and lie within a factor of the largest value; on the third
+   box (radius 1e-6) each bound of k lies within 1e-3 of the largest value. The test
    also checks the two identities of the design: the eigenvalues of G^-1 Ric are 2 / c
    times those of g^-1 R, R = -ddbar log det g, and the real norm of DG is sqrt(8) times
    the complex norm of c dg in the coordinates of c g = I. The atlas bounds take the point
@@ -43,10 +44,12 @@ LOCAL = Path('/n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td_v3/center_297.n
 RNG = np.random.default_rng(20261024)
 K0 = 2
 N_ORDER, NY = 12, 14
-DELTAS = [0.02, 0.04]
+# The third box is so small that each bound of k must equal the value at its center.
+DELTAS = [0.02, 0.04, 1e-6]
 A = 0.35
 POINTS = 24
-# The largest allowed bound over the largest value at the points.
+# The largest allowed bound over the largest value at the points; TINY for k on the third box.
+TINY = 1.001
 FACTOR = {'mu_up': 2.0, 'mu_low': 2.0, 'ric': 20.0, 'k_tau': 20.0, 'k_t': 20.0, 'k_a': 20.0,
           'lam_a': 3.0, 'Lam_a': 2.0}
 # The point y = P + E tau + N h(tau) of the synthetic test; rows 0 and 1 give the chart t.
@@ -54,7 +57,7 @@ P = (0j, 0j, 0.9 + 0.2j)
 E = ((1 + 0j, 0j), (0j, 1 + 0j), (-0.4 + 0.1j, 0.3 - 0.2j))
 N2 = 0.5 - 0.1j
 # The charts of the synthetic test in each of its two boxes.
-MASK = [[(3, 2), (2, 3), (3, 0)], [(3, 2), (3, 0)]]
+MASK = [[(3, 2), (2, 3), (3, 0)], [(3, 2), (3, 0)], [(3, 2), (2, 3), (3, 0)]]
 mp.mp.dps = 40
 
 
@@ -417,12 +420,15 @@ def test_synthetic():
         assert bound['mu_low'] * FACTOR['mu_low'] >= top['mu_low']
         for k in ('ric', 'k_tau', 'k_t'):
             assert bound[k] <= FACTOR[k] * top[k], (k, bound[k], top[k])
+        if delta < 1e-3:
+            for k in ('k_tau', 'k_t'):
+                assert bound[k] <= TINY * top[k], (k, bound[k], top[k])
         for ch in MASK[bx]:
             col = cc.CHARTS.index(ch)
             cv = [ref.chart_values(tau, ch) for tau in points(delta, RNG)]
             k_a, lam_a, big_a = (out[key][bx, col] for key in ('atlas_k', 'atlas_lam', 'atlas_Lam'))
             top_k, low, high = max(v[0] for v in cv), min(v[1] for v in cv), max(v[2] for v in cv)
-            assert top_k <= k_a <= FACTOR['k_a'] * top_k, (ch, k_a, top_k)
+            assert top_k <= k_a <= (TINY if delta < 1e-3 else FACTOR['k_a']) * top_k, (ch, k_a, top_k)
             assert low / FACTOR['lam_a'] <= lam_a <= low, (ch, lam_a, low)
             assert high <= big_a <= FACTOR['Lam_a'] * high, (ch, big_a, high)
             print(f'  box {bx}, chart {ch}: k {k_a:.6g} over the points {float(top_k):.6g}, '

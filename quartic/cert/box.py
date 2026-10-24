@@ -27,6 +27,7 @@ constant factor covers a round-off.
 """
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
 from fractions import Fraction
@@ -886,11 +887,14 @@ def _eig_g(sp, gm, d):
 
 
 def _k_bound(sp, gm, chart, d, c):
-    """sqrt(8) abs(Gamma_P)_F / (sqrt(c) lam_min(g_P)^(3/2)) on the polydisc d, for the 2x2
+    """A bound of the real norm of DG normalized at each point, on the polydisc d, for the 2x2
     models gm of g (on a larger polydisc) in the chart of the derivative: None for tau, or
-    (sp2, J^-1, tau_side) for t, so that d_t_k = sum_a (J^-1)_ak d_tau_a. P = conj(U) W^(-1/2)
-    with g(center) = U W U^H (FP64 on the host; any P gives a bound). inf where lam_min(g_P)
-    has no proof above 0."""
+    (sp2, J^-1, tau_side) for t, so that d_t_k = sum_a (J^-1)_ak d_tau_a. With a constant
+    P = conj(U) W^(-1/2), g(center) = U W U^H (FP64 on the host; any P gives a bound), g_P =
+    P^T g conj(P) and Gamma_P[c] = sum_k P_kc d_k g_P, it is the smaller of
+    sqrt(8) abs(Gamma_P)_F / (sqrt(c) lam_min(g_P)^(3/2)), with the sup and the inf on d, and
+    sqrt(8 B(S) / c), with S the square of the norm normalized by g_P at each point
+    (`_k_square`). inf where neither has a proof."""
     p = _near_inv_sqrt(gm)
     gp = _congruent(sp, gm, p)
     dgp = [{k: tm.deriv1(sp, v, a, d) for k, v in gp.items()} for a in range(2)]
@@ -901,19 +905,47 @@ def _k_bound(sp, gm, chart, d, c):
         w = [[tau_side(tm.restrict(tm.add(sp2, tm.scale(sp2, jinv[a, 0], p[0][cc]),
                                           tm.scale(sp2, jinv[a, 1], p[1][cc])), d))
               for cc in range(2)] for a in range(2)]
-    gam = []
+    gam = {}
     for cc in range(2):
         for k in gp:
             if chart is None:
                 x = tm.add(sp, tm.scale(sp, dgp[0][k], p[0][cc]), tm.scale(sp, dgp[1][k], p[1][cc]))
             else:
                 x = tm.add(sp, tm.mul(sp, w[0][cc], dgp[0][k]), tm.mul(sp, w[1][cc], dgp[1][k]))
-            gam.append(tm.bound(sp, x))
-    lam, _ = _eig_bounds(sp, {k: tm.restrict(v, d) for k, v in gp.items()})
+            gam[cc, k] = x
+    gd = {k: tm.restrict(v, d) for k, v in gp.items()}
+    lam, _ = _eig_bounds(sp, gd)
     ok = lam > 0
     lam = cp.where(ok, lam, 1.0)
     den = mag.mul_down(mag.sqrt_down(c), mag.mul_down(lam, mag.sqrt_down(lam)))
-    return cp.where(ok, mag.div(mag.mul(mag.sqrt(8.0), _norm(gam)), den), cp.inf)
+    split = cp.where(ok, mag.div(mag.mul(mag.sqrt(8.0), _norm([tm.bound(sp, x) for x in gam.values()])),
+                                 den), cp.inf)
+    one = _k_square(sp, gam, gd, c)
+    # A NaN of the one-model bound (inf times 0 after a series with no proof) gives no bound.
+    return cp.minimum(split, cp.where(one >= 0, one, cp.inf))
+
+
+def _k_square(sp, gam, gd, c):
+    """sqrt(8 B(S) / c) for the models gam[c, (i, j)] of Gamma_P and gd of g_P on one polydisc:
+    S = sum Gamma[c', (i', j')] conj(Gamma[c'', (i'', j'')]) M[c'', c'] M[i'', i'] M[j', j''] with
+    M = g_P^-1 (the adjugate and `_recip` of det g_P), the square of the complex norm of
+    Gamma_P with each slot normalized by g_P at the point. inf where the series of 1 / det has
+    no proof."""
+    b = gd[0, 0].delta.shape[0]
+    det = tm.sub(sp, tm.mul(sp, gd[0, 0], gd[1, 1]), tm.mul(sp, gd[0, 1], gd[1, 0]))
+    idet = _recip(sp, det)
+    minus = tm.cconst(-1, b)
+    m = {(0, 0): tm.mul(sp, gd[1, 1], idet), (1, 1): tm.mul(sp, gd[0, 0], idet),
+         (0, 1): tm.scale(sp, tm.mul(sp, gd[0, 1], idet), minus),
+         (1, 0): tm.scale(sp, tm.mul(sp, gd[1, 0], idet), minus)}
+    gc = {key: conj(v) for key, v in gam.items()}
+    s = None
+    for c1, c2, i1, i2 in itertools.product(range(2), repeat=4):
+        mm = tm.mul(sp, m[c2, c1], m[i2, i1])
+        for j1, j2 in itertools.product(range(2), repeat=2):
+            t = tm.mul(sp, tm.mul(sp, gam[c1, (i1, j1)], gc[c2, (i2, j2)]), tm.mul(sp, mm, m[j1, j2]))
+            s = t if s is None else tm.add(sp, s, t)
+    return mag.sqrt(mag.div(mag.mul(8.0, tm.bound(sp, s)), c))
 
 
 def _congruent(sp, m, p):

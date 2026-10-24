@@ -4,13 +4,15 @@ combine --metric).
 
 Input: a cover of scripts/cert_cover.py and the directory of the local forms of its reference
 centers, as for scripts/cert_run.py. For each reference center of the cover (or of --refs), the
-cells run in batches at one --order, each box with the charts of quartic.cert.cover.chart_mask.
+cells run in batches of one order, the cells of the cover at --order and the smaller cells at
+--order-split, each box with the charts of quartic.cert.cover.chart_mask.
 A box whose bound k_atlas exceeds --k-target, or with a bound that is not finite, below 0, or
 with mu_low or lam_atlas not above 0, splits into the cells of half the side that may meet F
 (quartic.cert.cover.halves), at most --depth times. Each final box gives one record of
 quartic.cert.records.METRIC_COLUMNS; a box that misses the target at the last depth keeps its
 bounds, which then enter the maxima. These boxes do not bound abs(f): the metric bounds take g
-at quartic.cert.box.METRIC_ORDER, so a low order is enough. The file also holds the git commit
+at quartic.cert.box.METRIC_ORDER, so a low order is enough (order 20 on the cells of the cover,
+12 on their halves). The file also holds the git commit
 and the SHA-256 of each file of local forms (quartic.cert.records), and
 scripts/cert_partition.py --metric checks it.
 
@@ -52,29 +54,32 @@ def run_reference(cov, r, local, args, trace=None):
     k0 = int(local['k0'])
     idx = np.flatnonzero(cov['ref'] == r)
     side = mp.mpf(float(cov['side']))
-    # Queue items: (lo, side, center, delta, hmax, depth).
+    # Queue items: (lo, side, center, delta, hmax, depth, order).
     queue = [([mp.mpf(int(v)) * side for v in cov['idx'][i]], side,
               [list(x) for x in cov['centers'][i]], float(cov['deltas'][i]),
-              float(cov['hmaxs'][i]), 0) for i in idx]
+              float(cov['hmaxs'][i]), 0, args.order) for i in idx]
     records, n_computed = [], 0
     while queue:
-        batch, queue = queue[:args.batch], queue[args.batch:]
+        # One order for each batch.
+        order = queue[0][6]
+        batch = [q for q in queue if q[6] == order][:args.batch]
+        chosen = {id(q) for q in batch}
+        queue = [q for q in queue if id(q) not in chosen]
         fr = tc.make_frames([b[2] for b in batch], k0)
         charts = np.array([cc.chart_mask(b[0], b[1]) for b in batch])
-        _, _, info, _ = tc.box_f(fr, local, [b[3] for b in batch], args.order,
-                                 args.order + tc.NY_EXTRA, args.a,
-                                 cp.asarray(np.array([b[4] for b in batch])), grad=True,
+        _, _, info, _ = tc.box_f(fr, local, [b[3] for b in batch], order, order + tc.NY_EXTRA,
+                                 args.a, cp.asarray(np.array([b[4] for b in batch])), grad=True,
                                  charts=charts)
         info = {k: cp.asnumpy(info[k]) for k in ('lam_big',) + BOUNDS}
         n_computed += len(batch)
-        for j, (lo, s, cen, dl, hm, depth) in enumerate(batch):
+        for j, (lo, s, cen, dl, hm, depth, _) in enumerate(batch):
             vals = {k: float(info[k][j]) for k in BOUNDS}
             row = (r, depth, *[float(v) for v in lo], float(s), dl, hm, float(info['lam_big'][j]),
-                   args.order, args.a, *[vals[k] for k in BOUNDS])
+                   order, args.a, *[vals[k] for k in BOUNDS])
             if trace is not None:
                 trace.append(row)
             if not final(vals, args.k_target) and depth < args.depth:
-                queue.extend((sub, h, c, rad, hmx, depth + 1)
+                queue.extend((sub, h, c, rad, hmx, depth + 1, args.order_split)
                              for sub, h, c, rad, hmx in cc.halves(lo, s))
                 continue
             records.append(row)
@@ -86,7 +91,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--cover', type=str, required=True)
     ap.add_argument('--local', type=str, required=True)
-    ap.add_argument('--order', type=int, default=12)
+    ap.add_argument('--order', type=int, default=20, help='the order of the cells of the cover')
+    ap.add_argument('--order-split', type=int, default=12, help='the order of the smaller cells')
     ap.add_argument('--a', type=float, default=0.12, help='the gap fraction of the Cauchy estimate')
     ap.add_argument('--k-target', type=float, default=80.0,
                     help='a box whose bound k_atlas exceeds this splits')
