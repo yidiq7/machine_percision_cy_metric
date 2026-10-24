@@ -17,12 +17,18 @@ Stages:
 * combine: the constants of the draft from the records of a run (all parts) and the results
   of fs and transitions.
 
-The bound of a box is the better of two arb enclosures over the box: the ball value, and the
-centered form q(c) -+ L s, with L a bound of the rate of change on the box from dual numbers
-(Weyl's inequality for the eigenvalues) and s the side of the box. A
-branch-and-bound halves a box in each coordinate until its bound is within --tol of the best
-value at a point of the domain, or its side is at most R / 2^--min-depth. The result is the
-largest (or smallest) bound of a box.
+The bound of a box of side s and center c comes from Taylor jets at c (exact) and on the box
+(arb balls), so that the growth of the balls enters only the term of s^2:
+* D^k F (k = 2, 3), holomorphic in t: abs(D^k F(x)) <= abs(D^k F(c)) + abs(D^(k+1) F(c)) s
+  + sup abs(D^(k+2) F) s^2 / 2 on the box, since abs(x - c)_2 <= s; jets of degree 5.
+* the FS eigenvalues: the potential log(1 + t.sigma + w(t) w~(sigma)) in the four variables
+  (t, sigma), sigma = conj(t) on the slice, as jets of degree 4. g(x) - g(c) is at most the
+  linear terms at c plus the terms of degree 2 on the box, each with abs(x_i - c_i) <= s /
+  sqrt 2, and Weyl's inequality moves each eigenvalue by at most abs(g(x) - g(c))_F.
+The bound is the better of this form and the ball value on the box. A branch-and-bound halves
+a box in each coordinate until its bound is within --tol of the best value at a point of the
+domain, or its side is at most R / 2^--min-depth. The result is the largest (or smallest)
+bound of a box.
 
 Usage, on CPU cores:
     uv run --extra gpu --locked python -u scripts/cert_atlas.py fs --procs 48 --out A.npz
@@ -52,131 +58,118 @@ R = 33 / 32
 F99, F98 = Fraction(99, 100), Fraction(49, 50)
 CHART_B = (3, 2)
 CHARTS = [(i, j) for i in range(4) for j in range(4) if i != j and (i, j) != CHART_B]
-# The Taylor coefficients of a jet of degree 3 in (t_0, t_1), in this order.
-MONS = [(0, 0), (1, 0), (0, 1), (2, 0), (1, 1), (0, 2), (3, 0), (2, 1), (1, 2), (0, 3)]
-IDX = {m: k for k, m in enumerate(MONS)}
-PAIRS = [(a, b, IDX[(ma[0] + mb[0], ma[1] + mb[1])]) for a, ma in enumerate(MONS)
-         for b, mb in enumerate(MONS) if sum(ma) + sum(mb) <= 3]
+
+
+# ---------------------------------------------------------------- Taylor jets
+
+
+def compositions(total, k):
+    if k == 1:
+        yield (total,)
+        return
+    for first in range(total, -1, -1):
+        for rest in compositions(total - first, k - 1):
+            yield (first,) + rest
+
+
+class Space:
+    """The monomials of degree <= order in n variables, and the pairs of a product."""
+
+    def __init__(self, n, order):
+        self.n, self.order = n, order
+        self.mons = [m for d in range(order + 1) for m in compositions(d, n)]
+        self.idx = {m: i for i, m in enumerate(self.mons)}
+        self.pairs = [(a, b, self.idx[tuple(x + y for x, y in zip(ma, mb))])
+                      for a, ma in enumerate(self.mons) for b, mb in enumerate(self.mons)
+                      if sum(ma) + sum(mb) <= order]
+
+
+SP2, SP4 = Space(2, 5), Space(4, 4)
 
 
 class Jet:
-    """A holomorphic function of (t_0, t_1) to degree 3 about a point: the Taylor coefficients
-    of MONS as acb balls (or Duals)."""
+    """A holomorphic function about a point, to the order of its Space: the Taylor coefficients
+    as acb balls."""
 
-    def __init__(self, c):
-        self.c = c
-
-    @staticmethod
-    def const(z):
-        return Jet([z if isinstance(z, Dual) else acb(z)] + [acb(0)] * 9)
+    def __init__(self, sp, c):
+        self.sp, self.c = sp, c
 
     @staticmethod
-    def var(k, z):
-        c = [z if isinstance(z, Dual) else acb(z)] + [acb(0)] * 9
-        c[1 + k] = acb(1)
-        return Jet(c)
+    def const(sp, z):
+        return Jet(sp, [acb(z)] + [acb(0)] * (len(sp.mons) - 1))
+
+    @staticmethod
+    def var(sp, k, z):
+        j = Jet.const(sp, z)
+        j.c[1 + k] = acb(1)
+        return j
 
     def __add__(self, o):
-        return Jet([a + b for a, b in zip(self.c, o.c)])
-
-    def __sub__(self, o):
-        return Jet([a - b for a, b in zip(self.c, o.c)])
-
-    def __mul__(self, o):
         if not isinstance(o, Jet):
-            return Jet([a * o for a in self.c])
-        out = [acb(0)] * 10
-        for a, b, k in PAIRS:
-            out[k] += self.c[a] * o.c[b]
-        return Jet(out)
-
-    def rel(self):
-        """y = x / x(0) - 1, the jet with no constant term."""
-        x0 = self.c[0]
-        return Jet([acb(0)] + [v / x0 for v in self.c[1:]])
-
-
-def series(x, value, coeffs):
-    """value times the sum of coeffs[k] y^k with y = x / x(0) - 1, to degree 3."""
-    y = x.rel()
-    y2 = y * y
-    s = Jet.const(coeffs[0]) + y * coeffs[1] + y2 * coeffs[2] + y2 * y * coeffs[3]
-    return s * value
-
-
-def inv(x):
-    return series(x, 1 / x.c[0], [acb(1), acb(-1), acb(1), acb(-1)])
-
-
-class Dual:
-    """A value and its partial derivatives in the real coordinates (Re t_0, Im t_0, Re t_1,
-    Im t_1), as acb balls. With the balls of a box as the input, each partial encloses its
-    values on the whole box. d is None once a partial has no finite enclosure."""
-    __slots__ = ('v', 'd')
-
-    def __init__(self, v, d):
-        self.v, self.d = v, d
-
-    @staticmethod
-    def lift(x):
-        return x if isinstance(x, Dual) else Dual(acb(x), [acb(0)] * 4)
-
-    def _join(self, o, f):
-        return None if self.d is None or o.d is None else [f(p, q) for p, q in zip(self.d, o.d)]
-
-    def __add__(self, o):
-        o = Dual.lift(o)
-        return Dual(self.v + o.v, self._join(o, lambda p, q: p + q))
+            o = Jet.const(self.sp, o)
+        return Jet(self.sp, [a + b for a, b in zip(self.c, o.c)])
 
     __radd__ = __add__
 
     def __neg__(self):
-        return Dual(-self.v, None if self.d is None else [-p for p in self.d])
+        return Jet(self.sp, [-a for a in self.c])
 
     def __sub__(self, o):
-        return self + (-Dual.lift(o))
-
-    def __rsub__(self, o):
-        return Dual.lift(o) + (-self)
+        return self + (-o if isinstance(o, Jet) else acb(-o))
 
     def __mul__(self, o):
-        o = Dual.lift(o)
-        return Dual(self.v * o.v, self._join(o, lambda p, q: self.v * q + o.v * p))
+        if not isinstance(o, Jet):
+            return Jet(self.sp, [a * o for a in self.c])
+        out = [acb(0)] * len(self.c)
+        for a, b, k in self.sp.pairs:
+            out[k] += self.c[a] * o.c[b]
+        return Jet(self.sp, out)
 
-    __rmul__ = __mul__
+    def rel(self):
+        """y = x / x(0) - 1, the jet with no constant term."""
+        x0 = self.c[0]
+        return Jet(self.sp, [acb(0)] + [v / x0 for v in self.c[1:]])
 
-    def inv(self):
-        r = 1 / self.v
-        return Dual(r, None if self.d is None else [-r * r * p for p in self.d])
 
-    def __truediv__(self, o):
-        return self * Dual.lift(o).inv()
+def series(x, value, coeffs):
+    """value times the sum of coeffs[k] y^k (k to the order) with y = x / x(0) - 1, by Horner's
+    rule."""
+    y = x.rel()
+    s = Jet.const(x.sp, coeffs[-1])
+    for c in reversed(coeffs[:-1]):
+        s = s * y + c
+    return s * value
 
-    def __rtruediv__(self, o):
-        return Dual.lift(o) * self.inv()
 
-    def conjugate(self):
-        return Dual(self.v.conjugate(), None if self.d is None else [p.conjugate() for p in self.d])
+def _binomial(a, n):
+    """The coefficients C(a, k), k = 0..n, of (1 + y)^a for a Fraction a, as acb."""
+    out, c = [], Fraction(1)
+    for k in range(n + 1):
+        out.append(acb(arb(c.numerator) / c.denominator))
+        c = c * (a - k) / (k + 1)
+    return out
 
-    @property
-    def real(self):
-        return Dual(acb(self.v.real), None if self.d is None else [acb(p.real) for p in self.d])
+
+def inv(x):
+    return series(x, 1 / x.c[0], [acb((-1) ** k) for k in range(x.sp.order + 1)])
+
+
+def log_jet(x):
+    return series(x, acb(1), [acb(0)] + [acb((-1) ** (k + 1)) / k
+                                         for k in range(1, x.sp.order + 1)]) + x.c[0].log()
 
 
 def root4(v):
     """A fourth root of the ball v, continuous on it: the principal root of v, or
     e^(i pi/4) times the principal root of -v when v is nearer the negative real axis."""
-    if isinstance(v, Dual):
-        r = root4(v.v)
-        return Dual(r, None if v.d is None else [r / (4 * v.v) * p for p in v.d])
     if float(v.real.mid()) >= 0:
         return v.root(4)
     return acb(arb(1) / 4).exp_pi_i() * (-v).root(4)
 
 
-def root4_jet(v):
-    """A fourth root of the jet v, with the branch of root4 at its constant term."""
-    return series(v, root4(v.c[0]), [acb(1), acb(1) / 4, acb(-3) / 32, acb(7) / 128])
+def root4_jet(v, root):
+    """The fourth root of the jet v with the value root at its base point."""
+    return series(v, root, _binomial(Fraction(1, 4), v.sp.order))
 
 
 # ---------------------------------------------------------------- the boxes
@@ -188,7 +181,7 @@ def sq(x):
 
 
 def abs2(x):
-    """abs(x)^2 as the real part of x conj(x), for an acb or a Dual."""
+    """abs(x)^2 as the real part of x conj(x)."""
     return (x * x.conjugate()).real
 
 
@@ -199,7 +192,7 @@ def root_up(x):
 
 
 def wof(t0, t1):
-    """w with w^4 = -(1 + t_0^4 + t_1^4), for acb balls or Duals."""
+    """w with w^4 = -(1 + t_0^4 + t_1^4), for acb balls."""
     q0, q1 = t0 * t0, t1 * t1
     return root4(-(1 + q0 * q0 + q1 * q1))
 
@@ -258,8 +251,7 @@ def in_wedge(lo, s):
 
 
 def fs_matrix(t0, t1, w):
-    """The Hermitian matrix of the FS metric in the chart b (before the division by pi sqrt 2),
-    for acb balls or Duals."""
+    """The Hermitian matrix of the FS metric in the chart b (before the division by pi sqrt 2)."""
     y = [t0, t1, w]
     r0, r1 = t0 / w, t1 / w
     jac = [[acb(1), acb(0)], [acb(0), acb(1)], [-r0 * r0 * r0, -r1 * r1 * r1]]
@@ -287,70 +279,66 @@ def fs_eigs(t0, t1, w):
     return eigs(fs_matrix(t0, t1, w))
 
 
+def fs_jets(t0, t1):
+    """The jets of degree 2 of the matrix g_ij = d_t_i d_sigma_j phi about (t, conj t), with
+    phi = log(1 + t.sigma + w(t) w~(sigma)) and w~(sigma) = conj(w(conj sigma))."""
+    T = [Jet.var(SP4, k, z) for k, z in enumerate((t0, t1, t0.conjugate(), t1.conjugate()))]
+    q = [x * x for x in T]
+    u = 1 + q[0] * q[0] + q[1] * q[1]
+    us = 1 + q[2] * q[2] + q[3] * q[3]
+    w0 = root4(-u.c[0])
+    w = root4_jet(-u, w0)
+    ws = root4_jet(-us, w0.conjugate())
+    phi = log_jet(1 + T[0] * T[2] + T[1] * T[3] + w * ws)
+    sp2 = Space(4, 2)
+    out = [[None, None], [None, None]]
+    for i in range(2):
+        for j in range(2):
+            c = []
+            for m in sp2.mons:
+                e = list(m)
+                e[i] += 1
+                e[2 + j] += 1
+                c.append(phi.c[SP4.idx[tuple(e)]] * ((m[i] + 1) * (m[2 + j] + 1)))
+            out[i][j] = c
+    return sp2, out
+
+
 def chart_jets(t0, t1, chart):
-    """The two coordinates of chart a = (i, j) as jets about the point t of the chart b."""
-    z = [Jet.var(0, t0), Jet.var(1, t1), None, Jet.const(1)]
-    u = Jet.const(1) + z[0] * z[0] * z[0] * z[0] + z[1] * z[1] * z[1] * z[1]
-    z[2] = root4_jet(Jet.const(0) - u)
+    """The two coordinates of chart a = (i, j) as jets of degree 5 about the point t of b."""
+    z = [Jet.var(SP2, 0, t0), Jet.var(SP2, 1, t1), None, Jet.const(SP2, 1)]
+    u = 1 + z[0] * z[0] * z[0] * z[0] + z[1] * z[1] * z[1] * z[1]
+    z[2] = root4_jet(-u, root4(-u.c[0]))
     i, j = chart
     k, l = (x for x in range(4) if x not in chart)
     zi = inv(z[i])
     return [z[k] * zi, z[l] * zi]
 
 
-def square_norms(comps, part=lambda x: x):
-    """The squares of the complex norms of D^2 F and D^3 F, from part(c) of each Taylor
-    coefficient c of the jets (the coefficient, or one of its partials)."""
-    a2 = lambda f, m: abs2(part(f.c[IDX[m]]))
-    d2 = sum((4 * a2(f, (2, 0)) + 2 * a2(f, (1, 1)) + 4 * a2(f, (0, 2)) for f in comps), arb(0))
-    d3 = sum((36 * a2(f, (3, 0)) + 12 * a2(f, (2, 1)) + 12 * a2(f, (1, 2)) + 36 * a2(f, (0, 3))
-              for f in comps), arb(0))
-    return d2, d3
+def square_norm(comps, n):
+    """The square of the complex norm of D^n F from the jets: the sum over the components and
+    the monomials m of degree n of n! m! abs(c_m)^2."""
+    sp = comps[0].sp
+    out = arb(0)
+    for f in comps:
+        for k, m in enumerate(sp.mons):
+            if sum(m) == n:
+                out += math.factorial(n) * math.prod(math.factorial(x) for x in m) * abs2(f.c[k])
+    return out
 
 
-def deriv_norms(comps):
-    """The real norms of D^2 F and D^3 F (2 and 2 sqrt 2 times the complex norms), with upper
-    ends that bound them (root_up)."""
-    d2, d3 = square_norms(comps)
-    return 2 * root_up(d2), 2 * root_up(2 * d3)
+def real_factor(n):
+    """2^(n/2) as an arb: the real norm of a complex n-linear map over its complex norm."""
+    return arb(2) if n == 2 else 2 * arb(2).sqrt()
 
 
 def value(kind, t0, t1):
     """The value of the quantity `kind` at the acb balls t: ('fs', 0 or 1) or ('d2' or 'd3',
-    chart)."""
+    chart); a ball whose lower end (fs, 0) or upper end (else) is a bound."""
     if kind[0] == 'fs':
         return fs_eigs(t0, t1, wof(t0, t1))[kind[1]]
-    d2, d3 = deriv_norms(chart_jets(t0, t1, kind[1]))
-    return d2 if kind[0] == 'd2' else d3
-
-
-def _partial(k):
-    """part(c) = the partial k of a coefficient c (0 for a constant); NaN if it has none."""
-    def part(x):
-        if not isinstance(x, Dual):
-            return acb(0)
-        return x.d[k] if x.d is not None else acb(math.nan)
-    return part
-
-
-def box_values(kind, t0, t1):
-    """For the balls t of a box: (the ball value, L), with L a bound of the rate of change of
-    the quantity in the real coordinates, abs(q(x) - q(c)) <= L abs(x - c)_2 on the box. For
-    fs, L = sqrt(sum of abs(d_k g)_F^2) / (pi sqrt 2) bounds the change of each eigenvalue
-    (Weyl's inequality); for D^2 F and D^3 F, L is the real norm of the tensor of the partials
-    d_k D^m F."""
-    T0, T1 = Dual(t0, D_T0), Dual(t1, D_T1)
-    if kind[0] == 'fs':
-        g = fs_matrix(T0, T1, wof(T0, T1))
-        v = eigs([[Dual.lift(x).v for x in row] for row in g])[kind[1]]
-        rate = sum((abs2(_partial(k)(x)) for row in g for x in row for k in range(4)), arb(0))
-        return v, root_up(rate) / FS_SCALE
-    comps = chart_jets(T0, T1, kind[1])
-    n2, n3 = square_norms(comps, lambda x: Dual.lift(x).v)
-    r2, r3 = (sum(z, arb(0)) for z in zip(*[square_norms(comps, _partial(k)) for k in range(4)]))
-    if kind[0] == 'd2':
-        return 2 * root_up(n2), 2 * root_up(r2)
-    return 2 * root_up(2 * n3), 2 * root_up(2 * r3)
+    n = 2 if kind[0] == 'd2' else 3
+    return real_factor(n) * root_up(square_norm(chart_jets(t0, t1, kind[1]), n))
 
 
 def domains(kind):
@@ -359,6 +347,31 @@ def domains(kind):
 
 def is_min(kind):
     return kind == ('fs', 0)
+
+
+def taylor_bound(kind, t0, t1, c0, c1, s):
+    """The second-order bound of the quantity on the box (balls t) of side s and center c: an
+    arb whose lower end (fs, 0) or upper end (else) bounds the quantity on the box."""
+    if kind[0] == 'fs':
+        sp2, gc = fs_jets(c0, c1)
+        _, gb = fs_jets(t0, t1)
+        h = arb(s) / arb(2).sqrt()
+        err = arb(0)
+        for i in range(2):
+            for j in range(2):
+                lin = sum((abs(gc[i][j][k]) for k, m in enumerate(sp2.mons) if sum(m) == 1), arb(0))
+                rem = sum((abs(gb[i][j][k]) for k, m in enumerate(sp2.mons) if sum(m) == 2), arb(0))
+                err += sq(lin * h + rem * h * h)
+        g0 = [[gc[i][j][0] for j in range(2)] for i in range(2)]
+        lam = eigs(g0)[kind[1]]
+        shift = root_up(err) / FS_SCALE
+        return lam - shift if kind[1] == 0 else lam + shift
+    n = 2 if kind[0] == 'd2' else 3
+    jc = chart_jets(c0, c1, kind[1])
+    jb = chart_jets(t0, t1, kind[1])
+    norm = lambda js, k: root_up(square_norm(js, k))
+    bound = norm(jc, n) + norm(jc, n + 1) * s + norm(jb, n + 2) * (arb(s) * s / 2)
+    return real_factor(n) * bound
 
 
 # ---------------------------------------------------------------- the search
@@ -380,34 +393,26 @@ def first_boxes():
     return out
 
 
-# The partials of t_0 and t_1 in (Re t_0, Im t_0, Re t_1, Im t_1).
-D_T0 = [acb(1), acb(0, 1), acb(0), acb(0)]
-D_T1 = [acb(0), acb(0), acb(1), acb(0, 1)]
-
-
 def step(job):
     """None if the box cannot meet the domain, else (its bound, the value at its center if the
-    center is in the domain, else None). The bound is the better of the ball value on the box
-    and the centered form q(c) -+ L s, with abs(x - c)_2 <= s on the box of side s; a NaN bound
-    counts as no bound."""
+    center is in the domain, else None). The bound is the better of the ball value and
+    taylor_bound; a NaN bound counts as no bound."""
     kind, lo, s = job
     t0, t1 = ball(lo, s)
     if not all(may_meet(moduli(t0, t1), ch) for ch in domains(kind)):
         return None
     small = is_min(kind)
     pick = down if small else up
-    v, rate = box_values(kind, t0, t1)
     c = [lo[k] + s / 2 for k in range(4)]
     c0, c1 = acb(c[0], c[1]), acb(c[2], c[3])
-    qc = value(kind, c0, c1)
-    bc = pick(qc - rate * s) if small else pick(qc + rate * s)
-    b = pick(v)
-    if not math.isnan(bc):
-        b = bc if math.isnan(b) else (max(b, bc) if small else min(b, bc))
+    b, bt = pick(value(kind, t0, t1)), pick(taylor_bound(kind, t0, t1, c0, c1, s))
+    if not math.isnan(bt):
+        b = bt if math.isnan(b) else (max(b, bt) if small else min(b, bt))
     if math.isnan(b):
         b = -math.inf if small else math.inf
     point = None
     if c[1] <= c[0] and all(inside(moduli(c0, c1), ch) for ch in domains(kind)):
+        qc = value(kind, c0, c1)
         point = up(qc) if small else down(qc)
     return b, point
 

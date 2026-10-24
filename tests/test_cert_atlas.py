@@ -3,12 +3,15 @@
 1. At t = 0 the FS metric of volume 1 is I / (2 pi sqrt 2), and at random points of D(3, 2)
    fs_eigs agrees with the eigenvalues of ddbar log(1 + abs(y)^2) from mpmath differences in
    real coordinates, divided by pi sqrt 2.
-2. At random points, the real norms of D^2 F_a and D^3 F_a of deriv_norms agree with the
+2. At random points, the real norms of D^2 F_a and D^3 F_a of `value` agree with the
    Frobenius norms of the second and third partial derivatives of F_a as a map R^4 -> R^4,
    from mpmath differences, for 4 charts.
 3. The branch-and-bound with coarse settings gives bounds at or beyond the values at random
    points of the domain, for lam0, Lam0 and two norms.
 4. combine on a synthetic run gives the formulas of the design.
+5. The jets: the constant terms of fs_jets equal fs_matrix, and the Taylor coefficients of
+   chart_jets (degree 5) and of fs_jets (the terms of g to degree 2, phi to degree 4) equal the
+   derivatives from mpmath.
 
 Run on CPU cores: uv run --extra gpu --locked python -u -m tests.test_cert_atlas
 """
@@ -108,10 +111,67 @@ def test_norms():
             n3 = mp.sqrt(mp.fsum(v ** 2 for a in idx for b in idx for c in idx
                                  for v in part(tuple(int(q == a) + int(q == b) + int(q == c)
                                                      for q in idx))))
-            d2, d3 = ca.deriv_norms(ca.chart_jets(acb(t0), acb(t1), chart))
+            d2, d3 = (ca.value((k, chart), acb(t0), acb(t1)) for k in ('d2', 'd3'))
             worst = max(worst, abs(float(d2.mid()) - n2) / n2, abs(float(d3.mid()) - n3) / n3)
     assert worst < 1e-10, worst
     print(f'test_norms: PASS (largest relative difference {float(worst):.1e})', flush=True)
+
+
+def to_mp(z):
+    """An acb ball as the mpmath complex number of its midpoint."""
+    return mp.mpc(mp.mpf(z.real.mid().str(50, radius=False)), mp.mpf(z.imag.mid().str(50, radius=False)))
+
+
+def branch_w(base):
+    """w(t) with the branch of cert_atlas.root4 at the base point t."""
+    b0, b1 = base
+    v0 = -(1 + b0 ** 4 + b1 ** 4)
+
+    def w(t0, t1):
+        v = -(1 + t0 ** 4 + t1 ** 4)
+        if mp.re(v0) >= 0:
+            return v ** mp.mpf(0.25)
+        return mp.exp(1j * mp.pi / 4) * (-v) ** mp.mpf(0.25)
+    return w
+
+
+def test_jets():
+    worst_c, worst_t, worst_f = 0, 0, 0
+    for t0, t1 in random_points(2, [ca.CHART_B]):
+        a0, a1 = acb(t0), acb(t1)
+        sp2, g = ca.fs_jets(a0, a1)
+        fm = ca.fs_matrix(a0, a1, ca.wof(a0, a1))
+        for i in range(2):
+            for j in range(2):
+                worst_c = max(worst_c, float(abs(g[i][j][0] - fm[i][j]).mid()) /
+                              float(abs(fm[0][0]).mid()))
+        base = (mp.mpc(t0), mp.mpc(t1))
+        w = branch_w(base)
+        for chart in [(0, 1), (2, 3)]:
+            i, j = chart
+            k, l = (x for x in range(4) if x not in chart)
+            jets = ca.chart_jets(a0, a1, chart)
+            for comp, jet in zip((k, l), jets):
+                def f(x0, x1, comp=comp):
+                    z = [x0, x1, w(x0, x1), mp.mpc(1)]
+                    return z[comp] / z[i]
+                for n, m in enumerate(ca.SP2.mons):
+                    want = mp.diff(f, base, m) / (math.factorial(m[0]) * math.factorial(m[1]))
+                    worst_t = max(worst_t, abs(to_mp(jet.c[n]) - want) / max(1, abs(want)))
+        wt = lambda s0, s1: mp.conj(w(mp.conj(s0), mp.conj(s1)))
+        phi = lambda x0, x1, y0, y1: mp.log(1 + x0 * y0 + x1 * y1 + w(x0, x1) * wt(y0, y1))
+        x = [base[0], base[1], mp.conj(base[0]), mp.conj(base[1])]
+        for i in range(2):
+            for j in range(2):
+                for n, m in enumerate(sp2.mons):
+                    e = list(m)
+                    e[i] += 1
+                    e[2 + j] += 1
+                    want = mp.diff(phi, x, tuple(e)) / math.prod(math.factorial(v) for v in m)
+                    worst_f = max(worst_f, abs(to_mp(g[i][j][n]) - want) / max(1, abs(want)))
+    assert worst_c < 1e-25 and worst_t < 1e-20 and worst_f < 1e-20, (worst_c, worst_t, worst_f)
+    print(f'test_jets: PASS (constant terms {worst_c:.1e}, chart jets {float(worst_t):.1e}, '
+          f'FS jets {float(worst_f):.1e})', flush=True)
 
 
 def test_search():
@@ -172,6 +232,7 @@ def test_combine():
 
 if __name__ == '__main__':
     test_fs()
+    test_jets()
     test_norms()
     test_combine()
     test_search()
