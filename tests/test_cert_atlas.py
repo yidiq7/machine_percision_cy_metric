@@ -7,7 +7,9 @@
    Frobenius norms of the second and third partial derivatives of F_a as a map R^4 -> R^4,
    from mpmath differences, for 4 charts.
 3. The branch-and-bound with coarse settings gives bounds at or beyond the values at random
-   points of the domain, for lam0, Lam0 and two norms.
+   points of the domain, for lam0, Lam0, c~1_0 of one chart and c~2_0 of another.
+6. The FS normalization of the transitions: the norm of Q0_a D^n F [Q0_b^-1 .] from the FS
+   matrices of both charts equals that from Q0_b DF^-1 (one metric), and value bounds it.
 4. combine on a synthetic run gives the formulas of the design.
 5. The jets: the constant terms of fs_jets equal fs_matrix, and the Taylor coefficients of
    chart_jets (degree 5) and of fs_jets (the terms of g to degree 2, phi to degree 4) equal the
@@ -15,6 +17,7 @@
 
 Run on CPU cores: uv run --extra gpu --locked python -u -m tests.test_cert_atlas
 """
+import itertools
 import math
 import multiprocessing
 import os
@@ -174,12 +177,68 @@ def test_jets():
           f'FS jets {float(worst_f):.1e})', flush=True)
 
 
+def conj_mat(m):
+    """The conjugate of a 2 x 2 acb matrix as an mpmath matrix."""
+    return mp.matrix([[mp.conj(to_mp(m[i][j])) for j in range(2)] for i in range(2)])
+
+
+def test_fs_normalized():
+    """At points of D(3, 2) and D(a), the real norm of Q0_a D^n F [Q0_b^-1 .] from the FS
+    matrices of both charts equals that from Q0_b DF^-1 in chart b, and value(c1 or c2) bounds
+    it within a factor of 20."""
+    worst_id, worst_ratio, count = 0, 0, 0
+    scale = mp.pi * mp.sqrt(2)
+    for chart in [(2, 3), (3, 0), (0, 2)]:
+        i, j = chart
+        k, l = (x for x in range(4) if x not in chart)
+        for t0, t1 in random_points(2, [ca.CHART_B, chart]):
+            a0, a1 = acb(t0), acb(t1)
+            w = ca.wof(a0, a1)
+            z = [a0, a1, w, acb(1)]
+            hb = conj_mat(ca.fs_matrix(a0, a1, w)) / scale
+            ha = conj_mat(ca.fs_matrix(z[k] / z[i], z[l] / z[i], z[j] / z[i])) / scale
+            jets = ca.chart_jets(a0, a1, chart)
+            df = mp.matrix([[to_mp(f.c[1 + q]) for q in range(2)] for f in jets])
+            qa, qb = mp.sqrtm(ha), mp.sqrtm(hb)
+            qbi = qb ** -1
+            for n, kind in ((2, 'c1'), (3, 'c2')):
+                ks = list(itertools.product(range(2), repeat=n))
+
+                def entry(f, idx):
+                    e = tuple(idx.count(q) for q in range(2))
+                    return to_mp(f.c[ca.SP2.idx[e]]) * math.prod(math.factorial(v) for v in e)
+                tens = {(m,) + idx: entry(jets[m], idx) for m in range(2) for idx in ks}
+
+                def norm(left):
+                    tot = 0
+                    for m in range(2):
+                        for idx in ks:
+                            v = 0
+                            for m2 in range(2):
+                                for src in ks:
+                                    c = left[m, m2] * tens[(m2,) + src]
+                                    for p, q in zip(idx, src):
+                                        c *= qbi[q, p]
+                                    v += c
+                            tot += abs(v) ** 2
+                    return mp.sqrt(tot) * (2 if n == 2 else 2 * mp.sqrt(2))
+                direct, via = norm(qa), norm(qb * df ** -1)
+                worst_id = max(worst_id, abs(direct - via) / direct)
+                val = float(ca.value((kind, chart), a0, a1).mid())
+                assert val >= direct, (chart, kind, val, direct)
+                worst_ratio = max(worst_ratio, val / direct)
+                count += 1
+    assert worst_id < 1e-20 and worst_ratio < 20, (worst_id, worst_ratio)
+    print(f'test_fs_normalized: PASS ({count} values; the two forms agree to {float(worst_id):.1e}; '
+          f'value over the norm at most {float(worst_ratio):.3f})', flush=True)
+
+
 def test_search():
     t0 = time.perf_counter()
-    kinds = [('fs', 0), ('fs', 1), ('d2', (2, 3)), ('d3', (0, 1))]
+    kinds = [('fs', 0), ('fs', 1), ('c1', (2, 3)), ('c2', (3, 0))]
     with multiprocessing.Pool(PROCS) as pool:
         for kind in kinds:
-            r = ca.run_kind(kind, pool, 0.2, ca.R / 2 ** 5)
+            r = ca.run_kind(kind, pool, 0.1, ca.R / 2 ** 7)
             vals = []
             for p0, p1 in random_points(40, ca.domains(kind)):
                 vals.append(float(ca.value(kind, acb(p0), acb(p1)).mid()))
@@ -211,19 +270,19 @@ def test_combine():
         tr = Path(d) / 'tr.npz'
         vals = {}
         for n, (i, j) in enumerate(ca.CHARTS):
-            vals[f'd2_{i}{j}_bound'] = 3.0 if n == 4 else 1.0
-            vals[f'd3_{i}{j}_bound'] = 5.0 if n == 7 else -math.inf
+            vals[f'c1_{i}{j}_bound'] = 3.0 if n == 4 else 1.0
+            vals[f'c2_{i}{j}_bound'] = 5.0 if n == 7 else -math.inf
         np.savez(tr, **vals)
         out = Path(d) / 'out.npz'
         ca.combine(Namespace(runs=[str(run)], fs=str(fs), transitions=str(tr), out=str(out)))
         z = np.load(out)
         got = dict(zip([str(s) for s in z['names']], z['values']))
     lam, big = 0.5 * 0.1, 2.0 * 1.0
-    c1 = math.sqrt(big) / lam * 3.0
+    c1 = math.sqrt(2.0) / 0.5 * 3.0
     want = {'C: omega <= C omega_0': 2.0, 'mu: omega >= mu omega_0': 0.5,
             'kappa: Ric >= -3 kappa g': 2e-14, 'lambda: lambda I <= G_a': lam,
             'Lambda: G_a <= Lambda I': big, 'c~1': c1,
-            'c~2': math.sqrt(big) / lam ** 1.5 * 5.0, 'K~ (K in the chart of F + 2 c~1)': 30 + 2 * c1,
+            'c~2': math.sqrt(2.0) / 0.5 ** 1.5 * 5.0, 'K~ (K in the chart of F + 2 c~1)': 30 + 2 * c1,
             '[f o psi_a^-1]_{1,0;V_a} <= sqrt(Lambda) sup abs(grad f)_G': math.sqrt(big) * 3e-16}
     for k, v in want.items():
         assert abs(got[k] - v) <= 1e-12 * abs(v), (k, got[k], v)
@@ -234,6 +293,7 @@ if __name__ == '__main__':
     test_fs()
     test_jets()
     test_norms()
+    test_fs_normalized()
     test_combine()
     test_search()
     print('RESULT: PASS', flush=True)

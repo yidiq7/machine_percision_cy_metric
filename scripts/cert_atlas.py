@@ -12,15 +12,18 @@ arg t_0 in [0, pi/4] and arg t_1 in [0, pi/2]. No value depends on the branch of
 Stages:
 * fs: lam0 and Lam0, the smallest and the largest eigenvalue of the FS metric of volume 1
   (FS / (pi sqrt 2)) in the chart b, on D(3, 2).
-* transitions: for each chart a != (3, 2), the sups on D(3, 2) and D(a) of the real norms of
-  D^2 F_a and D^3 F_a, with F_a the coordinates of a as functions of t.
+* transitions: for each chart a != (3, 2), the sups c~1_0 and c~2_0 on D(3, 2) and D(a) of the
+  real norms of Q0_a D^n F_a [Q0_b^-1 .] (n = 2, 3) with the FS forms Q0 at the same point, F_a
+  the coordinates of a as functions of t. Since FS is one metric, abs(Q0_a w) = abs(Q0_b DF_a^-1
+  w), so each is at most sqrt(lam_max) lam_min^(-n/2) abs(DF_a^-1 D^n F_a) with the FS
+  eigenvalues of chart b at t.
 * combine: the constants of the draft from the records of a run (all parts) and the results
   of fs and transitions.
 
 The bound of a box of side s and center c comes from Taylor jets at c (exact) and on the box
 (arb balls), so that the growth of the balls enters only the term of s^2:
-* D^k F (k = 2, 3), holomorphic in t: abs(D^k F(x)) <= abs(D^k F(c)) + abs(D^(k+1) F(c)) s
-  + sup abs(D^(k+2) F) s^2 / 2 on the box, since abs(x - c)_2 <= s; jets of degree 5.
+* E_n = DF^-1 D^n F (n = 2, 3), holomorphic in t: abs(E(x)) <= abs(E(c)) + abs(DE(c)) s
+  + sup abs(D^2 E) s^2 / 2 on the box, since abs(x - c)_2 <= s; jets of F of degree 5.
 * the FS eigenvalues: the potential log(1 + t.sigma + w(t) w~(sigma)) in the four variables
   (t, sigma), sigma = conj(t) on the slice, as jets of degree 4. g(x) - g(c) is at most the
   linear terms at c plus the terms of degree 2 on the box, each with abs(x_i - c_i) <= s /
@@ -37,6 +40,7 @@ Usage, on CPU cores:
         --fs A.npz --transitions T.npz
 """
 import argparse
+import itertools
 import math
 import multiprocessing
 import sys
@@ -85,6 +89,8 @@ class Space:
 
 
 SP2, SP4 = Space(2, 5), Space(4, 4)
+SPACES2 = {k: Space(2, k) for k in range(5)}
+SPACES2[5] = SP2
 
 
 class Jet:
@@ -129,6 +135,23 @@ class Jet:
         """y = x / x(0) - 1, the jet with no constant term."""
         x0 = self.c[0]
         return Jet(self.sp, [acb(0)] + [v / x0 for v in self.c[1:]])
+
+
+def trunc(x, order):
+    """The jet to a lower order (the monomials come in the order of the degree)."""
+    sp = SPACES2[order]
+    return Jet(sp, x.c[:len(sp.mons)])
+
+
+def deriv(x, k):
+    """d/dt_k of a jet of two variables, as a jet of one order less."""
+    sp = SPACES2[x.sp.order - 1]
+    out = []
+    for m in sp.mons:
+        e = list(m)
+        e[k] += 1
+        out.append(x.c[x.sp.idx[tuple(e)]] * (m[k] + 1))
+    return Jet(sp, out)
 
 
 def series(x, value, coeffs):
@@ -315,6 +338,47 @@ def chart_jets(t0, t1, chart):
     return [z[k] * zi, z[l] * zi]
 
 
+def e_tensor(comps, n):
+    """The jets (order 5 - n) of E_n = DF^-1 D^n F, the entries E[(m,) + ks] for the ordered
+    tuples ks: with this tensor the FS form of chart a is that of chart b, abs(Q0_a w) =
+    abs(Q0_b DF^-1 w)."""
+    order = 5 - n
+    df = [[trunc(deriv(f, k), order) for k in range(2)] for f in comps]
+    di = inv(df[0][0] * df[1][1] - df[0][1] * df[1][0])
+    dinv = [[df[1][1] * di, -(df[0][1] * di)], [-(df[1][0] * di), df[0][0] * di]]
+    out = {}
+    for ks in itertools.product(range(2), repeat=n):
+        dn = []
+        for f in comps:
+            for k in ks:
+                f = deriv(f, k)
+            dn.append(f)
+        for m in range(2):
+            out[(m,) + ks] = dinv[m][0] * dn[0] + dinv[m][1] * dn[1]
+    return out
+
+
+def tensor_squares(ent):
+    """The squares of the complex norms of E, DE and D^2 E at the base point of the jets of
+    the entries of E: the sums of k! m! abs(c_m)^2 over the monomials m of degree k."""
+    q = [arb(0), arb(0), arb(0)]
+    for e in ent.values():
+        for idx, m in enumerate(e.sp.mons):
+            k = sum(m)
+            if k <= 2:
+                q[k] += math.factorial(k) * math.prod(math.factorial(x) for x in m) * abs2(e.c[idx])
+    return q
+
+
+def fs_factor(lam_lo, lam_hi, n):
+    """An upper bound of sqrt(lam_max) / lam_min^(n/2) from the floats lam_lo <= lam_min and
+    lam_hi >= lam_max; inf if lam_lo is not above 0."""
+    if not lam_lo > 0 or math.isnan(lam_hi):
+        return arb(math.inf)
+    low = arb(lam_lo) if n == 2 else arb(lam_lo) * arb(lam_lo).sqrt()
+    return arb(lam_hi).sqrt() / low
+
+
 def square_norm(comps, n):
     """The square of the complex norm of D^n F from the jets: the sum over the components and
     the monomials m of degree n of n! m! abs(c_m)^2."""
@@ -333,12 +397,19 @@ def real_factor(n):
 
 
 def value(kind, t0, t1):
-    """The value of the quantity `kind` at the acb balls t: ('fs', 0 or 1) or ('d2' or 'd3',
-    chart); a ball whose lower end (fs, 0) or upper end (else) is a bound."""
+    """The value of the quantity `kind` at the acb balls t, a ball whose lower end (fs, 0) or
+    upper end (else) is a bound: ('fs', 0 or 1) the FS eigenvalues; ('d2' or 'd3', chart) the
+    real norm of D^n F_a; ('c1' or 'c2', chart) the real norm of Q0_b E_n [Q0_b^-1 .] with the
+    FS form Q0_b of chart b at t, bounded by sqrt(lam_max) lam_min^(-n/2) abs(E_n)."""
     if kind[0] == 'fs':
         return fs_eigs(t0, t1, wof(t0, t1))[kind[1]]
-    n = 2 if kind[0] == 'd2' else 3
-    return real_factor(n) * root_up(square_norm(chart_jets(t0, t1, kind[1]), n))
+    if kind[0] in ('d2', 'd3'):
+        n = 2 if kind[0] == 'd2' else 3
+        return real_factor(n) * root_up(square_norm(chart_jets(t0, t1, kind[1]), n))
+    n = 2 if kind[0] == 'c1' else 3
+    lo, hi = fs_eigs(t0, t1, wof(t0, t1))
+    q = tensor_squares(e_tensor(chart_jets(t0, t1, kind[1]), n))
+    return real_factor(n) * fs_factor(down(lo), up(hi), n) * root_up(q[0])
 
 
 def domains(kind):
@@ -366,12 +437,21 @@ def taylor_bound(kind, t0, t1, c0, c1, s):
         lam = eigs(g0)[kind[1]]
         shift = root_up(err) / FS_SCALE
         return lam - shift if kind[1] == 0 else lam + shift
-    n = 2 if kind[0] == 'd2' else 3
-    jc = chart_jets(c0, c1, kind[1])
-    jb = chart_jets(t0, t1, kind[1])
-    norm = lambda js, k: root_up(square_norm(js, k))
-    bound = norm(jc, n) + norm(jc, n + 1) * s + norm(jb, n + 2) * (arb(s) * s / 2)
-    return real_factor(n) * bound
+    if kind[0] in ('d2', 'd3'):
+        n = 2 if kind[0] == 'd2' else 3
+        jc = chart_jets(c0, c1, kind[1])
+        jb = chart_jets(t0, t1, kind[1])
+        norm = lambda js, k: root_up(square_norm(js, k))
+        bound = norm(jc, n) + norm(jc, n + 1) * s + norm(jb, n + 2) * (arb(s) * s / 2)
+        return real_factor(n) * bound
+    n = 2 if kind[0] == 'c1' else 3
+    lo_n, hi_n = fs_eigs(t0, t1, wof(t0, t1))
+    lam_lo = max(down(lo_n), down(taylor_bound(('fs', 0), t0, t1, c0, c1, s)))
+    lam_hi = min(up(hi_n), up(taylor_bound(('fs', 1), t0, t1, c0, c1, s)))
+    qc = tensor_squares(e_tensor(chart_jets(c0, c1, kind[1]), n))
+    qb = tensor_squares(e_tensor(chart_jets(t0, t1, kind[1]), n))
+    e_up = root_up(qc[0]) + root_up(qc[1]) * s + root_up(qb[2]) * (arb(s) * s / 2)
+    return real_factor(n) * fs_factor(lam_lo, lam_hi, n) * e_up
 
 
 # ---------------------------------------------------------------- the search
@@ -479,10 +559,11 @@ def combine(args):
     c_up, mu_min = x(top('mu_up')), x(float(np.min(rec[:, col['mu_low']])))
     lam = mu_min * x(fs['lam0_bound'])
     big = c_up * x(fs['Lam0_bound'])
-    d2 = max(float(tr[f'd2_{i}{j}_bound']) for i, j in CHARTS)
-    d3 = max(float(tr[f'd3_{i}{j}_bound']) for i, j in CHARTS)
-    c1 = big.sqrt() / lam * x(d2)
-    c2 = big.sqrt() / (lam * lam.sqrt()) * x(d3)
+    e2 = max(float(tr[f'c1_{i}{j}_bound']) for i, j in CHARTS)
+    e3 = max(float(tr[f'c2_{i}{j}_bound']) for i, j in CHARTS)
+    # abs(Q_a v) <= sqrt(C) abs(Q0_a v) and abs(Q_b^-1 u) <= mu^(-1/2) abs(Q0_b^-1 u).
+    c1 = c_up.sqrt() / mu_min * x(e2)
+    c2 = c_up.sqrt() / (mu_min * mu_min.sqrt()) * x(e3)
     k_t = x(top('k_t'))
     kt = k_t + 2 * c1
     kappa = x(top('ric')) / 3
@@ -513,7 +594,7 @@ def combine(args):
         ('diam(M/G, omega) <= sqrt(C) diam(M/G, omega_0)', up(diam_g)),
         ('lambda_1,G >= (pi/D - 3 kappa D / (4 pi))^2, D = diam(M/G)', down(gap_root * gap_root)),
         ('FS: lam0', float(fs['lam0_bound'])), ('FS: Lam0', float(fs['Lam0_bound'])),
-        ('largest real norm of D^2 F_a', d2), ('largest real norm of D^3 F_a', d3),
+        ('c~1 with the FS form (c~1_0)', e2), ('c~2 with the FS form (c~2_0)', e3),
     ]
     print(f'{len(rec)} records, target {target:.1e}, code {commit}', flush=True)
     for name, v in rows:
@@ -546,7 +627,7 @@ def main():
         raise SystemExit(f'{args.out} exists; choose a new file')
     if args.stage == 'fs':
         return stage(args, [('fs', 0), ('fs', 1)], 'fs')
-    return stage(args, [(kind, ch) for ch in CHARTS for kind in ('d2', 'd3')], 'transitions')
+    return stage(args, [(kind, ch) for ch in CHARTS for kind in ('c1', 'c2')], 'transitions')
 
 
 if __name__ == '__main__':
