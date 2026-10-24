@@ -8,7 +8,8 @@ For each reference center of the cover (or of --refs), its boxes run in batches 
 cell with rho >= --rho-high at --order-high (with --a-high), the others at --order
 (with --a); the models in tau alone take quartic.cert.box.NY_EXTRA more. Each box also
 gets the bound of abs(grad f), and the bounds of quartic.cert.box.metric_bounds (the
-metric against FS, Ricci, the derivative of the metric). A box whose bound of abs(f) exceeds
+metric against FS, Ricci, the derivative of the metric, and the last two in each chart of
+the atlas that can meet the cell, from quartic.cert.cover.chart_mask). A box whose bound of abs(f) exceeds
 --target tries --order-high first, and
 then splits into the cells of half the side that may meet F, each with the radius and
 the bound of abs(h) of quartic.cert.cover.box_radius, at most --depth times; cell corners stay
@@ -105,8 +106,9 @@ def run_reference(cov, r, local, settings, args, on_batch=None):
         hmaxs = cp.asarray(np.array([b[4] for b in batch]))
         a = settings[order]
         keep = on_batch(batch, order) if on_batch is not None else None
+        charts = np.array([cc.chart_mask(b[0], b[1]) for b in batch])
         f, (d, _, _), info, parts = tc.box_f(fr, local, deltas, order, order + tc.NY_EXTRA,
-                                             a, hmaxs, grad=True, keep=keep)
+                                             a, hmaxs, grad=True, keep=keep, charts=charts)
         sup, c0, pb = sup_bound(parts['sp4'], f, d)
         if keep is not None:
             keep.update(batch=batch, fr=fr, info=info, sup=sup, a=a, hmaxs=hmaxs, deltas=deltas)
@@ -204,7 +206,8 @@ def main():
                  f'{np.max(rec[:, 16]):.4e}), smallest lam_low {np.min(rec[:, 18]):.3e}; '
                  f'mu in [{np.min(rec[:, 20]):.4f}, {np.max(rec[:, 19]):.4f}], largest ric '
                  f'{np.max(rec[:, 21]):.3e}, k_tau {np.max(rec[:, 22]):.3f}, k_t '
-                 f'{np.max(rec[:, 23]):.3f}')
+                 f'{np.max(rec[:, 23]):.3f}; in the charts of the atlas: k {np.max(rec[:, 24]):.3f}, '
+                 f'eigenvalues of G in [{np.min(rec[:, 25]):.5f}, {np.max(rec[:, 26]):.5f}]')
     # A bound that is NaN fails both tests below: max gives NaN, and it counts as above.
     print(f'done: {len(rec)} boxes, {n_boxes} computed, largest bound {rec[:, 8].max():.4e}, '
           f'{np.sum(~(rec[:, 8] <= args.target))} above the target, largest lam_big '

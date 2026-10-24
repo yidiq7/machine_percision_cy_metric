@@ -10,10 +10,15 @@
    bound must hold at each point, and lie within a factor of the largest value. The test
    also checks the two identities of the design: the eigenvalues of G^-1 Ric are 2 / c
    times those of g^-1 R, R = -ddbar log det g, and the real norm of DG is sqrt(8) times
-   the complex norm of c dg in the coordinates of c g = I.
+   the complex norm of c dg in the coordinates of c g = I. The atlas bounds take the point
+   y = p + E tau + n h(tau) and the charts (3, 2), (2, 3) (a quotient by y_2) and (3, 0):
+   in each chart the norm of DG from central differences of G_a and the eigenvalues of G_a.
 2. A real batch (4 cells of the reference center 297, cover v3, local forms v3): g_FS at
    each center equals E_tau^T h_FS(p) conj(E_tau) from the FS formula, with
-   E_tau = dy / dtau = e + n dh(0); mu_low <= mu(center) <= mu_up; each output is finite.
+   E_tau = dy / dtau = e + n dh(0); mu_low <= mu(center) <= mu_up; the eigenvalues of G in
+   the chart t at each center lie in [lam_atlas, Lam_atlas]; each output is finite.
+3. quartic.cert.cover.chart_mask (CPU): at random points of X over random cells, each chart
+   whose domain holds the point is in the mask of the cell.
 
 Run on a GPU node: uv run --extra gpu --locked python -u -m tests.test_metric_bounds
 """
@@ -31,6 +36,7 @@ sys.path.insert(0, str(ROOT))
 from tmgpu import tm                                         # noqa: E402
 from tmgpu.tools import space                                # noqa: E402
 from quartic.cert import box as tc                           # noqa: E402
+from quartic.cert import cover as cc                         # noqa: E402
 
 COVER = ROOT / 'runs_tm' / 'cover_s0.03_c6_v3.npz'
 LOCAL = Path('/n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td_v3/center_297.npz')
@@ -41,7 +47,14 @@ DELTAS = [0.02, 0.04]
 A = 0.35
 POINTS = 24
 # The largest allowed bound over the largest value at the points.
-FACTOR = {'mu_up': 2.0, 'mu_low': 2.0, 'ric': 20.0, 'k_tau': 20.0, 'k_t': 20.0}
+FACTOR = {'mu_up': 2.0, 'mu_low': 2.0, 'ric': 20.0, 'k_tau': 20.0, 'k_t': 20.0, 'k_a': 20.0,
+          'lam_a': 2.0, 'Lam_a': 2.0}
+# The point y = P + E tau + N h(tau) of the synthetic test; rows 0 and 1 give the chart t.
+P = (0j, 0j, 0.9 + 0.2j)
+E = ((1 + 0j, 0j), (0j, 1 + 0j), (-0.4 + 0.1j, 0.3 - 0.2j))
+N2 = 0.5 - 0.1j
+# The charts of the synthetic test in each of its two boxes.
+MASK = [[(3, 2), (2, 3), (3, 0)], [(3, 2), (3, 0)]]
 mp.mp.dps = 40
 
 
@@ -225,10 +238,15 @@ def models(phi, fsp, h, n01, kap):
     log_r2 = to_tm(sp4, fsp, d_phi)
     h_m = to_tm(sp2, h, d_phi)
     n = np.zeros((3, 4, b))
-    for k, z in enumerate(n01):
+    for k, z in enumerate(list(n01) + [N2]):
         n[k, 0], n[k, 2] = z.real, z.imag
+    n = cp.asarray(n)
+    dd = lambda z: cp.asarray(np.array([[z.real] * b, [0.0] * b, [z.imag] * b, [0.0] * b]))
+    ys = [tm.add(sp2, tc.lin_tm(sp2, dd(P[k]), dd(E[k][0]), dd(E[k][1]), d_phi),
+                 tm.scale(sp2, h_m, n[k])) for k in range(3)]
+    charts = np.array([[ch in MASK[bx] for ch in cc.CHARTS] for bx in range(b)])
     grad = tc.gradient_bounds(sp4, f, g, det, d, K0)
-    out = tc.metric_bounds(sp4, sp2, f, g, log_r2, h_m, cp.asarray(n), d, K0, grad)
+    out = tc.metric_bounds(sp4, sp2, f, g, log_r2, h_m, n, d, K0, grad, ys, charts)
     return {k: cp.asnumpy(v) for k, v in out.items()}
 
 
@@ -248,6 +266,9 @@ class Reference:
         self.dh = [{(e[0], e[1]): c for e, c in deriv({(a, b, 0, 0): c for (a, b), c in h.items()},
                                                        k).items()} for k in range(2)]
         self.n01 = [mp.mpc(z.real, z.imag) for z in n01]
+        self.nv = self.n01 + [mp.mpc(N2.real, N2.imag)]
+        self.pv = [mp.mpc(z.real, z.imag) for z in P]
+        self.ev = [[mp.mpc(z.real, z.imag) for z in row] for row in E]
         self.kap = kap
         self.phi = phi
 
@@ -273,43 +294,59 @@ class Reference:
         return dict(mu=mu, ric=max(abs(v) for v in eig_r), eig_r=eig_r, k_tau=k_tau,
                     k_t=self.k_chart(tau), dG=dG, G=G, x=x)
 
-    def t_of(self, tau):
+    def t_of(self, tau, chart=(3, 2)):
+        """The coordinates (z_k / z_i, z_l / z_i) of the chart (i, j), z = (y, 1)."""
         hv = at({(a, b, 0, 0): c for (a, b), c in self.h.items()}, list(tau) + [0, 0])
-        return [tau[k] + self.n01[k] * hv for k in range(2)]
+        z = [self.pv[k] + self.ev[k][0] * tau[0] + self.ev[k][1] * tau[1] + self.nv[k] * hv
+             for k in range(3)] + [mp.mpc(1)]
+        i = chart[0]
+        return [z[m] / z[i] for m in range(4) if m not in chart]
 
-    def jac(self, tau):
+    def jac(self, tau, chart=(3, 2)):
         x = list(tau) + [0, 0]
+        hv = at({(a, b, 0, 0): c for (a, b), c in self.h.items()}, x)
         dh = [at({(e[0], e[1], 0, 0): c for e, c in self.dh[k].items()}, x) for k in range(2)]
-        return [[(1 if i == j else 0) + self.n01[i] * dh[j] for j in range(2)] for i in range(2)]
+        z = [self.pv[k] + self.ev[k][0] * tau[0] + self.ev[k][1] * tau[1] + self.nv[k] * hv
+             for k in range(3)] + [mp.mpc(1)]
+        dz = [[self.ev[k][s] + self.nv[k] * dh[s] for s in range(2)] for k in range(3)] + [[0, 0]]
+        i = chart[0]
+        return [[(dz[m][s] * z[i] - z[m] * dz[i][s]) / z[i] ** 2 for s in range(2)]
+                for m in range(4) if m not in chart]
 
-    def tau_of(self, t, start):
+    def tau_of(self, t, start, chart=(3, 2)):
         tau = list(start)
         for _ in range(60):
-            res = [a - b for a, b in zip(self.t_of(tau), t)]
-            j = mp.matrix(self.jac(tau))
+            res = [a - b for a, b in zip(self.t_of(tau, chart), t)]
+            j = mp.matrix(self.jac(tau, chart))
             step = j ** -1 * mp.matrix(res)
             tau = [tau[k] - step[k] for k in range(2)]
             if max(abs(step[k]) for k in range(2)) < mp.mpf(10) ** (-mp.mp.dps + 5):
                 break
         return tau
 
-    def g_t(self, t, start):
-        tau = self.tau_of(t, start)
-        dtau = real_linear(self.jac(tau)) ** -1
+    def g_t(self, t, start, chart=(3, 2)):
+        tau = self.tau_of(t, start, chart)
+        dtau = real_linear(self.jac(tau, chart)) ** -1
         return dtau.T * self.big_g(tau) * dtau
 
-    def k_chart(self, tau):
-        t = self.t_of(tau)
+    def k_chart(self, tau, chart=(3, 2)):
+        t = self.t_of(tau, chart)
         eps = mp.mpf(10) ** -15
         units = [mp.mpc(1), mp.mpc(0, 1)]
         dG = []
         for v in range(4):
             e = [0, 0]
             e[v // 2] = units[v % 2] * eps
-            plus = self.g_t([t[k] + e[k] for k in range(2)], tau)
-            minus = self.g_t([t[k] - e[k] for k in range(2)], tau)
+            plus = self.g_t([t[k] + e[k] for k in range(2)], tau, chart)
+            minus = self.g_t([t[k] - e[k] for k in range(2)], tau, chart)
             dG.append((plus - minus) / (2 * eps))
-        return frob3(normalized(dG, sym_sqrt_inv(self.g_t(t, tau))))
+        return frob3(normalized(dG, sym_sqrt_inv(self.g_t(t, tau, chart))))
+
+    def chart_values(self, tau, chart):
+        """The norm of DG and the eigenvalues of G_a in the chart at the point tau."""
+        dtau = real_linear(self.jac(tau, chart)) ** -1
+        w = sym_eigs(dtau.T * self.big_g(tau) * dtau)
+        return self.k_chart(tau, chart), min(w), max(w)
 
     def identities(self, vals):
         """The two identities of the design at one point: the relative errors."""
@@ -380,6 +417,23 @@ def test_synthetic():
         assert bound['mu_low'] * FACTOR['mu_low'] >= top['mu_low']
         for k in ('ric', 'k_tau', 'k_t'):
             assert bound[k] <= FACTOR[k] * top[k], (k, bound[k], top[k])
+        for ch in MASK[bx]:
+            col = cc.CHARTS.index(ch)
+            cv = [ref.chart_values(tau, ch) for tau in points(delta, RNG)]
+            k_a, lam_a, big_a = (out[key][bx, col] for key in ('atlas_k', 'atlas_lam', 'atlas_Lam'))
+            top_k, low, high = max(v[0] for v in cv), min(v[1] for v in cv), max(v[2] for v in cv)
+            assert top_k <= k_a <= FACTOR['k_a'] * top_k, (ch, k_a, top_k)
+            assert low / FACTOR['lam_a'] <= lam_a <= low, (ch, lam_a, low)
+            assert high <= big_a <= FACTOR['Lam_a'] * high, (ch, big_a, high)
+            print(f'  box {bx}, chart {ch}: k {k_a:.6g} over the points {float(top_k):.6g}, '
+                  f'eigenvalues of G in [{lam_a:.6g}, {big_a:.6g}] over [{float(low):.6g}, '
+                  f'{float(high):.6g}]', flush=True)
+        cols = [cc.CHARTS.index(ch) for ch in MASK[bx]]
+        assert out['k_atlas'][bx] == max(out['atlas_k'][bx, cols])
+        assert out['lam_atlas'][bx] == min(out['atlas_lam'][bx, cols])
+        assert out['Lam_atlas'][bx] == max(out['atlas_Lam'][bx, cols])
+        assert np.all(np.isnan(np.delete(out['atlas_k'][bx], cols)))
+        assert out['atlas_k'][bx, cc.CHARTS.index((3, 2))] == out['k_t'][bx]
         errs = [ref.identities(v) for v in vals[:4]]
         assert max(e[0] for e in errs) < 1e-25, errs
         assert max(e[1] for e in errs) < 1e-25, errs
@@ -399,17 +453,22 @@ def test_real_box():
     k0 = int(local['k0'])
     idx = np.flatnonzero(cov['ref'] == 297)[:4]
     centers = [[list(x) for x in cov['centers'][i]] for i in idx]
+    side = mp.mpf(float(cov['side']))
+    charts = np.array([cc.chart_mask([mp.mpf(int(v)) * side for v in cov['idx'][i]], side)
+                       for i in idx])
     fr = tc.make_frames(centers, k0)
     keep = {}
     f, (d, _, _), info, parts = tc.box_f(fr, local, [float(cov['deltas'][i]) for i in idx], 28,
                                          28 + tc.NY_EXTRA, 0.35,
                                          cp.asarray(cov['hmaxs'][idx].astype(float)), grad=True,
-                                         keep=keep)
+                                         keep=keep, charts=charts)
     sp4, sp2 = parts['sp4'], parts['sp2']
-    out = {k: cp.asnumpy(info[k]) for k in ('mu_up', 'mu_low', 'ric', 'k_tau', 'k_t')}
+    out = {k: cp.asnumpy(info[k]) for k in ('mu_up', 'mu_low', 'ric', 'k_tau', 'k_t', 'k_atlas',
+                                            'lam_atlas', 'Lam_atlas')}
     for k, v in out.items():
         assert np.all(np.isfinite(v) & (v > 0)), (k, v)
-    assert np.all(out['k_t'] >= out['k_tau'])
+    assert np.all(out['k_t'] >= out['k_tau']) and np.all(out['k_atlas'] >= out['k_t'])
+    c = 1 / (mp.sqrt(2) * mp.pi * k0)
     gfs = {(i, j): cp.asnumpy(tm.cauchy_mixed(sp4, keep['log_r2'], i, 2 + j, d).c[:, 0, :])
            for i in range(2) for j in range(2)}
     gc = {k: cp.asnumpy(v.c[:, 0, :]) for k, v in keep['g'].items()}
@@ -434,16 +493,58 @@ def test_real_box():
         mu = [mp.re(v) / k0 for v in mp.eig(fm ** -1 * gm)[0]]
         assert out['mu_low'][b] <= min(mu) and max(mu) <= out['mu_up'][b], (mu, out)
         worst_mu = max(worst_mu, out['mu_up'][b] / max(mu), min(mu) / out['mu_low'][b])
+        # G in the chart t at the center: J = dt/dtau = I + n_01 dh(0)^T.
+        jinv = mp.matrix([[(1 if i == a else 0) + n[i] * dh[a] for a in range(2)]
+                          for i in range(2)]) ** -1
+        w = [c * mp.re(v) for v in mp.eig(jinv.T * gm * jinv.H.T)[0]]
+        assert out['lam_atlas'][b] <= min(w) and max(w) <= out['Lam_atlas'][b], (w, out)
     assert worst_fs < 1e-25, worst_fs
     # The ratio holds the change of mu over the box as well as the looseness of the bound.
     assert worst_mu < 1.5, worst_mu
+    print(f'  charts of the cells: {[[cc.CHARTS[k] for k in np.flatnonzero(m)] for m in charts]}',
+          flush=True)
     print(f'  g_FS against the FS formula: largest relative error {float(worst_fs):.2e}; '
           f'mu bounds over the center values at most {float(worst_mu):.4f}; '
           + ', '.join(f'{k} {v.max():.4g}' for k, v in out.items()), flush=True)
     print(f'test_real_box: PASS ({time.perf_counter() - t0:.0f}s)', flush=True)
 
 
+# ---------------------------------------------------------------- test 3
+
+
+def in_domain(z, chart):
+    i, j = chart
+    m = [abs(v) for v in z]
+    return (all(m[i] > mp.mpf('0.99') * m[x] for x in range(4) if x != i)
+            and all(m[j] > mp.mpf('0.98') * m[x] for x in range(4) if x not in chart))
+
+
+def test_chart_mask():
+    """Random cells of side 0.03 with corners on the grid, 4 random points of X over each."""
+    t0 = time.perf_counter()
+    rng = np.random.default_rng(20261025)
+    s = mp.mpf(3) / 100
+    seen, multi = 0, 0
+    for _ in range(3000):
+        lo = [mp.mpf(int(rng.integers(0, 34))) * s for _ in range(4)]
+        mask = cc.chart_mask(lo, s)
+        multi += sum(mask) > 1
+        for _ in range(4):
+            t = [mp.mpc(lo[0] + s * rng.uniform(), lo[1] + s * rng.uniform()),
+                 mp.mpc(lo[2] + s * rng.uniform(), lo[3] + s * rng.uniform())]
+            w = (-1 - t[0] ** 4 - t[1] ** 4) ** mp.mpf(0.25)
+            z = [t[0], t[1], w, mp.mpc(1)]
+            for k, ch in enumerate(cc.CHARTS):
+                if in_domain(z, ch):
+                    seen += 1
+                    assert mask[k], (lo, z, ch, mask)
+    assert seen > 1000 and multi > 100, (seen, multi)
+    print(f'test_chart_mask: PASS ({seen} pairs of a point and a chart of its domain; {multi} of '
+          f'3000 cells with more than one chart; {time.perf_counter() - t0:.0f}s)', flush=True)
+
+
 if __name__ == '__main__':
+    test_chart_mask()
     test_synthetic()
     test_real_box()
     print('RESULT: PASS', flush=True)

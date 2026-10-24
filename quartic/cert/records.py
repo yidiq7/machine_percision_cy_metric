@@ -16,7 +16,8 @@ import numpy as np
 
 COLUMNS = ('ref', 'depth', 'lo0', 'lo1', 'lo2', 'lo3', 'side', 'delta', 'bound', 'center',
            'polynomial', 'remainder', 'hmax', 'lam_big', 'order', 'a', 'grad_tau', 'grad_g',
-           'lam_low', 'mu_up', 'mu_low', 'ric', 'k_tau', 'k_t')
+           'lam_low', 'mu_up', 'mu_low', 'ric', 'k_tau', 'k_t', 'k_atlas', 'lam_atlas',
+           'Lam_atlas')
 
 
 def sha256(path):

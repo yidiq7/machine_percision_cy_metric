@@ -56,6 +56,29 @@ def may_meet_f(lo, s):
     return True
 
 
+# The charts (i, j) of the atlas of notes/draft-main.tex: z_i = 1, z_j solved from P = 0, and
+# the other two coordinates over z_i in their order. The chart of F is (3, 2).
+CHARTS = tuple((i, j) for i in range(4) for j in range(4) if i != j)
+
+
+def chart_mask(lo, s):
+    """For each chart (i, j) of CHARTS, False only if interval arithmetic (mpmath.iv) proves
+    that the cell [lo, lo + s]^4 has no point of the domain abs(z_i) > 0.99 abs(z_x) for all
+    x != i, abs(z_j) > 0.98 abs(z_x) for all x not in (i, j); z = (t_0, t_1, z_2, 1)."""
+    _exact_corners()
+    a0, b0, a1, b1 = (iv.mpf([lo[k], lo[k] + s]) for k in range(4))
+    r0, r1 = a0 * a0 + b0 * b0, a1 * a1 + b1 * b1
+    p0, q0 = cpow4(a0, b0)
+    p1, q1 = cpow4(a1, b1)
+    m8 = [r0 ** 4, r1 ** 4, (1 + p0 + p1) ** 2 + (q0 + q1) ** 2, iv.mpf(1)]   # abs(z_x)^8
+    k99, k98 = (iv.mpf(99) / 100) ** 8, (iv.mpf(98) / 100) ** 8
+    # below(x, k, y) proves abs(z_x)^8 <= k abs(z_y)^8 on the whole cell.
+    below = lambda x, k, y: m8[x].b <= (k * m8[y]).a
+    return [not (any(below(i, k99, x) for x in range(4) if x != i)
+                 or any(below(j, k98, x) for x in range(4) if x not in (i, j)))
+            for i, j in CHARTS]
+
+
 def _to_arb(x):
     """An mpmath mpf as an exact arb."""
     from flint import arb

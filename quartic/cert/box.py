@@ -489,12 +489,14 @@ def _check_local(local):
 
 
 @mp.workprec(103)
-def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False, keep=None):
+def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False, keep=None, charts=None):
     """The model of f on a batch of boxes that share the reference center of `local`.
 
     a: the gap fraction of the Cauchy estimate, d_f = d (1 + a), d_Phi = d_f (1 + a).
     hmax: the bound of abs(h) over the cell of each box, for the check in implicit_h_td.
     grad: also bound the gradient of f on the box (`gradient_bounds`), in info.
+    charts: with grad, a bool array (B, 12) of the charts of `cover.CHARTS` that can meet the
+    cell of each box (`cover.chart_mask`), for the atlas bounds of `metric_bounds`.
     keep: a dict or None. With a dict, box_f stores in it references to the intermediate
     models and free numbers that it makes (see the keys at the end of the function).
     mpmath picks the free dd numbers at 103 bits, the precision of every run, so the bits
@@ -658,7 +660,7 @@ def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False, keep=None):
     f = tm.add_const(sp4, v, -one)
     if grad:
         info.update(gradient_bounds(sp4, f, g, det, d, k0, keep))
-        info.update(metric_bounds(sp4, sp2, f, g, log_r2, hm, fr.n, d, k0, info))
+        info.update(metric_bounds(sp4, sp2, f, g, log_r2, hm, fr.n, d, k0, info, ys, charts))
     clock('metric')
     info.update(rem_g=g[0, 0].rem, rem_f=f.rem, times=clock.times)
     if keep is not None:
@@ -704,17 +706,22 @@ def gradient_bounds(sp4, f, g, det, d, k0, keep=None):
     return dict(grad_tau=grad_tau, grad_g=grad_g, lam_low=lam_low, det_low=det_low, tr_up=tr_up)
 
 
-def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad):
+def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad, ys=None, charts=None):
     """Bounds on the box of radius d of the metric against FS, of Ricci and of the derivative
     of the metric (docs/superpowers/specs/2026-10-24-geometry-bounds-design.md).
 
     f and g on d_f > d, log_r2 and the model h of the shift along n (in sp2) on d_Phi > d_f,
-    n (3, 4, B) the unit normal of the frame, grad the dict of `gradient_bounds`. Returns
-    (B,) arrays: mu_up and mu_low bound the eigenvalues of g_FS^-1 g / k0 (omega over the
-    FS form omega_0, both of volume 1); ric bounds abs of each eigenvalue of Ric against G;
-    k_tau and k_t bound the real norm of DG, with each argument normalized by G at the
-    point, in tau and in the chart t = p_01 + tau + n_01 h (`_k_bound`). A box with no proof
-    gets inf (0 for mu_low). The upper bounds round up and the lower bounds round down.
+    n (3, 4, B) the unit normal of the frame, grad the dict of `gradient_bounds`, ys the
+    models of the point y (in sp2, on d_Phi), charts the mask of `box_f`. Returns (B,)
+    arrays: mu_up and mu_low bound the eigenvalues of g_FS^-1 g / k0 (omega over the FS form
+    omega_0, both of volume 1); ric bounds abs of each eigenvalue of Ric against G; k_tau and
+    k_t bound the real norm of DG, with each argument normalized by G at the point, in tau
+    and in the chart t = p_01 + tau + n_01 h (`_k_bound`). k_atlas, lam_atlas and Lam_atlas
+    bound the same norm and the eigenvalues of G in each chart of the mask: the largest,
+    the smallest and the largest over those charts (NaN with no mask); atlas_k, atlas_lam
+    and atlas_Lam (B, 12) hold the values of each chart (NaN outside the mask). A box with
+    no proof gets inf (0 for mu_low). The upper bounds round up and the lower bounds round
+    down.
     """
     c = metric_c_low(k0)
     lam, grad_tau = grad['lam_low'], grad['grad_tau']
@@ -761,16 +768,121 @@ def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad):
     zero2 = tm.const(sp2, tm.cconst(0, b), d_f)
     jinv = {(i, a): tm.sub(sp2, one2 if i == a else zero2, tm.mul(sp2, tm.scale(sp2, dh[a], n[i]), r))
             for i in range(2) for a in range(2)}
-    tau_side = lambda x: tm.tensor(sp_m, sp2, x, one2)
-    sig_side = lambda x: tm.tensor(sp_m, sp2, one2, conj(x))
-    half = {(a, j): tm.add(sp_m, tm.mul(sp_m, gf[a, 0], sig_side(jinv[0, j])),
-                           tm.mul(sp_m, gf[a, 1], sig_side(jinv[1, j])))
-            for a in range(2) for j in range(2)}
-    g_t = {(i, j): tm.add(sp_m, tm.mul(sp_m, tau_side(jinv[0, i]), half[0, j]),
-                          tm.mul(sp_m, tau_side(jinv[1, i]), half[1, j]))
-           for i in range(2) for j in range(2)}
+    g_t, tau_side = _in_chart(sp_m, sp2, gf, jinv, one2)
     k_t = _k_bound(sp_m, g_t, (sp2, jinv, tau_side), d, c)
-    return dict(mu_up=mu_up, mu_low=mu_low, ric=ric, k_tau=k_tau, k_t=k_t)
+    out = dict(mu_up=mu_up, mu_low=mu_low, ric=ric, k_tau=k_tau, k_t=k_t)
+    out.update(_atlas_bounds(sp_m, sp2, gf, ys, charts, g_t, k_t, d, d_f, k0))
+    return out
+
+
+def _atlas_bounds(sp, sp2, gf, ys, charts, g_t, k_t, d, d_f, k0):
+    """The atlas columns of `metric_bounds`: the chart (3, 2) is the chart t (g_t, k_t); each
+    other chart of the mask takes its J^-1 from `_chart_jinv` on the boxes of its column."""
+    from .cover import CHARTS
+    b = d.shape[0]
+    c_low, c_up = metric_c_low(k0), metric_c_up(k0)
+    vals = {key: cp.full((b, len(CHARTS)), cp.nan) for key in ('k', 'lam', 'Lam')}
+    if charts is None:
+        return dict(k_atlas=cp.full(b, cp.nan), lam_atlas=cp.full(b, cp.nan),
+                    Lam_atlas=cp.full(b, cp.nan), atlas_k=vals['k'], atlas_lam=vals['lam'],
+                    atlas_Lam=vals['Lam'])
+    charts = np.asarray(charts, bool)
+    sp2m = space(2, sp.n)
+    for col, chart in enumerate(CHARTS):
+        idx = np.flatnonzero(charts[:, col])
+        if idx.size == 0:
+            continue
+        ix = cp.asarray(idx)
+        if chart == (3, 2):
+            lo, up = _eig_g(sp, g_t, d)
+            k_a, lo, up = k_t[ix], lo[ix], up[ix]
+        else:
+            d_s, d_fs, d_ps = d[ix], d_f[ix], ys[0].delta[ix]
+            pick = lambda x, dl: tm.TM(x.c[:, :, ix], x.rem[ix], dl)
+            ys_s = [tm.truncate(sp2m, sp2, pick(y, d_ps)) for y in ys]
+            jinv = _chart_jinv(sp2m, ys_s, chart, d_fs)
+            one2 = tm.const(sp2m, tm.cconst(1, idx.size), d_fs)
+            g_a, tau_side = _in_chart(sp, sp2m, {k: pick(v, d_fs) for k, v in gf.items()}, jinv,
+                                      one2)
+            k_a = _k_bound(sp, g_a, (sp2m, jinv, tau_side), d_s, c_low)
+            lo, up = _eig_g(sp, g_a, d_s)
+        vals['k'][ix, col] = k_a
+        vals['lam'][ix, col] = mag.mul_down(c_low, lo)
+        vals['Lam'][ix, col] = mag.mul(c_up, up)
+    # The reductions take only the charts of the mask; max and min keep a NaN of the mask, and
+    # a box with no chart gets -inf (inf for lam_atlas), so that the check of the records fails.
+    m = cp.asarray(charts)
+    return dict(k_atlas=cp.max(cp.where(m, vals['k'], -cp.inf), axis=1),
+                lam_atlas=cp.min(cp.where(m, vals['lam'], cp.inf), axis=1),
+                Lam_atlas=cp.max(cp.where(m, vals['Lam'], -cp.inf), axis=1),
+                atlas_k=vals['k'], atlas_lam=vals['lam'], atlas_Lam=vals['Lam'])
+
+
+def _in_chart(sp, sp2, gf, jinv, one2):
+    """g in a chart, J^-T g conj(J)^-1, for the 2x2 models gf of g in tau and the sp2 models
+    jinv[i, a] = (J^-1)_ia; and the map of an sp2 model to a model in tau (sp)."""
+    tau_side = lambda x: tm.tensor(sp, sp2, x, one2)
+    sig_side = lambda x: tm.tensor(sp, sp2, one2, conj(x))
+    half = {(a, j): tm.add(sp, tm.mul(sp, gf[a, 0], sig_side(jinv[0, j])),
+                           tm.mul(sp, gf[a, 1], sig_side(jinv[1, j])))
+            for a in range(2) for j in range(2)}
+    g_a = {(i, j): tm.add(sp, tm.mul(sp, tau_side(jinv[0, i]), half[0, j]),
+                          tm.mul(sp, tau_side(jinv[1, i]), half[1, j]))
+           for i in range(2) for j in range(2)}
+    return g_a, tau_side
+
+
+def _recip(sp, x):
+    """1 / x for sp models with a center value away from 0: k (1 + q)^-1 with q = k x - 1 and
+    k the FP64 inverse of the center value (any constant k gives the same function)."""
+    b = x.delta.shape[0]
+    z = cp.asnumpy(x.c[0, 0, :]) + 1j * cp.asnumpy(x.c[2, 0, :])
+    inv = 1 / np.where(z != 0, z, 1)
+    k = cp.asarray(np.stack([inv.real, np.zeros(b), inv.imag, np.zeros(b)]))
+    q = tm.add_const(sp, tm.scale(sp, x, k), -tm.cconst(1, b))
+    eta = tm.bound(sp, q)
+    r = tm.power_series(sp, tm.powers(sp, q, series_order(eta, sp.n, SERIES_EPS)), -1, eta)
+    return tm.scale(sp, r, k)
+
+
+def _chart_jinv(sp2, ys, chart, d_f):
+    """(J^-1)_ra (sp2 models on d_f) for J = dt / dtau of the chart (i, j) of `cover.CHARTS`:
+    t = (z_k / z_i, z_l / z_i), k < l the other two indices, z = (y_0, y_1, y_2, 1) from the
+    models ys of the point on a polydisc larger than d_f."""
+    i, _ = chart
+    b = d_f.shape[0]
+    z = list(ys) + [tm.const(sp2, tm.cconst(1, b), ys[0].delta)]
+    k, l = [m for m in range(4) if m not in chart]
+    if i == 3:
+        t = [z[k], z[l]]
+    else:
+        inv = _recip(sp2, z[i])
+        t = [inv if m == 3 else tm.mul(sp2, z[m], inv) for m in (k, l)]
+    jac = [[tm.deriv1(sp2, t[r], a, d_f) for a in range(2)] for r in range(2)]
+    det = tm.sub(sp2, tm.mul(sp2, jac[0][0], jac[1][1]), tm.mul(sp2, jac[0][1], jac[1][0]))
+    idet = _recip(sp2, det)
+    minus = tm.cconst(-1, b)
+    return {(0, 0): tm.mul(sp2, jac[1][1], idet),
+            (0, 1): tm.scale(sp2, tm.mul(sp2, jac[0][1], idet), minus),
+            (1, 0): tm.scale(sp2, tm.mul(sp2, jac[1][0], idet), minus),
+            (1, 1): tm.mul(sp2, jac[0][0], idet)}
+
+
+def _eig_g(sp, gm, d):
+    """Bounds (low, up) of the eigenvalues of the Hermitian 2x2 models gm on the polydisc d:
+    with P from the center, they lie in [lam_min(B) / lam_max(A), lam_max(B) / lam_min(A)] for
+    A = P^T conj(P) and B = P^T gm conj(P). (0, inf) where a lower bound is not above 0."""
+    gd = {key: tm.restrict(v, d) for key, v in gm.items()}
+    p = _near_inv_sqrt(gd)
+    b = d.shape[0]
+    one, zero = tm.const(sp, tm.cconst(1, b), d), tm.const(sp, tm.cconst(0, b), d)
+    a_low, a_up = _eig_bounds(sp, _congruent(sp, {(0, 0): one, (0, 1): zero, (1, 0): zero,
+                                                  (1, 1): one}, p))
+    b_low, b_up = _eig_bounds(sp, _congruent(sp, gd, p))
+    ok = (a_low > 0) & (b_low > 0)
+    low = cp.where(ok, mag.div_down(cp.where(ok, b_low, 0.0), a_up), 0.0)
+    up = cp.where(ok, mag.div(b_up, cp.where(ok, a_low, 1.0)), cp.inf)
+    return low, up
 
 
 def _k_bound(sp, gm, chart, d, c):
@@ -880,6 +992,13 @@ def metric_c_low(k0):
     from flint import arb
     with precision():
         return down(1 / (arb(2).sqrt() * arb.pi() * int(k0)))
+
+
+def metric_c_up(k0):
+    """An upper bound (a float) of c = 1 / (sqrt(2) pi k0), from ball arithmetic."""
+    from flint import arb
+    with precision():
+        return upper(1 / (arb(2).sqrt() * arb.pi() * int(k0)))
 
 
 def _real_low(sp4, x, d):

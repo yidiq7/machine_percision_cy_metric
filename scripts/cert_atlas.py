@@ -766,8 +766,12 @@ def combine(args):
         raise SystemExit(f'the files of the stage transitions miss charts: {routes}')
     x = lambda v: arb(float(v))
     c_up, mu_min = x(top('mu_up')), x(float(np.min(rec[:, col['mu_low']])))
-    lam = mu_min * x(fs['lam0_bound'])
-    big = c_up * x(fs['Lam0_bound'])
+    # Two bounds of each of lambda and Lambda: from mu and FS, and from the charts of the atlas
+    # in each box (quartic.cert.box.metric_bounds); each one holds, so the better one does.
+    lam_fs, big_fs = mu_min * x(fs['lam0_bound']), c_up * x(fs['Lam0_bound'])
+    lam_box, big_box = x(float(np.min(rec[:, col['lam_atlas']]))), x(top('Lam_atlas'))
+    lam = max(lam_fs, lam_box, key=down)
+    big = min(big_fs, big_box, key=up)
     # With the FS form: abs(Q_a v) <= sqrt(C) abs(Q0_a v) and abs(Q_b^-1 u) <= mu^(-1/2) abs(Q0_b^-1 u).
     # With the norms: abs(Q_a) <= Lambda^(1/2) and abs(Q_b^-1) <= lambda^(-1/2). Each is a bound.
     c1s, c2s = [], []
@@ -782,8 +786,9 @@ def combine(args):
     c1 = min(c1s, key=up)
     c2 = min(c2s, key=up)
     e2, e3 = routes['c1'], routes['c2']
-    k_t = x(top('k_t'))
-    kt = k_t + 2 * c1
+    k_t, k_box = x(top('k_t')), x(top('k_atlas'))
+    k_chain = k_t + 2 * c1
+    kt = min(k_box, k_chain, key=up)
     kappa = x(top('ric')) / 3
     sup_f = x(top('bound'))
     grad = x(top('grad_g'))
@@ -802,8 +807,14 @@ def combine(args):
         ('mu: omega >= mu omega_0', down(mu_min)),
         ('kappa: Ric >= -3 kappa g', up(kappa)),
         ('lambda: lambda I <= G_a', down(lam)),
+        ('lambda from the charts of the atlas', down(lam_box)),
+        ('lambda = mu lam0', down(lam_fs)),
         ('Lambda: G_a <= Lambda I', up(big)),
-        ('K~ (K in the chart of F + 2 c~1)', up(kt)),
+        ('Lambda from the charts of the atlas', up(big_box)),
+        ('Lambda = C Lam0', up(big_fs)),
+        ('K~', up(kt)),
+        ('K~ from the charts of the atlas', up(k_box)),
+        ('K~ from the chart of F + 2 c~1', up(k_chain)),
         ('K in the chart of F', up(k_t)),
         ('c~1', up(c1)),
         ('c~2', up(c2)),

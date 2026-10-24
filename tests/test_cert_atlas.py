@@ -285,6 +285,9 @@ def test_combine():
     rec[:, col['mu_low']] = [0.7, 0.5, 0.6]
     rec[:, col['ric']] = [3e-14, 6e-14, 1e-14]
     rec[:, col['k_t']] = [10.0, 30.0, 20.0]
+    rec[:, col['k_atlas']] = [12.0, 30.0, 25.0]
+    rec[:, col['lam_atlas']] = [0.2, 0.08, 0.3]
+    rec[:, col['Lam_atlas']] = [1.5, 1.2, 3.0]
     with tempfile.TemporaryDirectory() as d:
         run = Path(d) / 'run.npz'
         np.savez(run, records=rec, target=5e-20, columns=np.array(rs.COLUMNS), commit='abc')
@@ -300,12 +303,14 @@ def test_combine():
         ca.combine(Namespace(runs=[str(run)], fs=str(fs), transitions=[str(tr)], out=str(out)))
         z = np.load(out)
         got = dict(zip([str(s) for s in z['names']], z['values']))
-    lam, big = 0.5 * 0.1, 2.0 * 1.0
+    # lambda: max(0.5 * 0.1, 0.08); Lambda: min(2.0 * 1.0, 3.0); K~: min(30, 30 + 2 c~1).
+    lam, big = 0.08, 2.0
     c1 = math.sqrt(2.0) / 0.5 * 3.0
     want = {'C: omega <= C omega_0': 2.0, 'mu: omega >= mu omega_0': 0.5,
             'kappa: Ric >= -3 kappa g': 2e-14, 'lambda: lambda I <= G_a': lam,
             'Lambda: G_a <= Lambda I': big, 'c~1': c1,
-            'c~2': math.sqrt(2.0) / 0.5 ** 1.5 * 5.0, 'K~ (K in the chart of F + 2 c~1)': 30 + 2 * c1,
+            'c~2': math.sqrt(2.0) / 0.5 ** 1.5 * 5.0, 'K~': 30.0,
+            'K~ from the chart of F + 2 c~1': 30 + 2 * c1,
             '[f o psi_a^-1]_{1,0;V_a} <= sqrt(Lambda) sup abs(grad f)_G': math.sqrt(big) * 3e-16}
     for k, v in want.items():
         assert abs(got[k] - v) <= 1e-12 * abs(v), (k, got[k], v)
