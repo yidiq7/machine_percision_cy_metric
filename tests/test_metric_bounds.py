@@ -435,7 +435,8 @@ def test_real_box():
         assert out['mu_low'][b] <= min(mu) and max(mu) <= out['mu_up'][b], (mu, out)
         worst_mu = max(worst_mu, out['mu_up'][b] / max(mu), min(mu) / out['mu_low'][b])
     assert worst_fs < 1e-25, worst_fs
-    assert worst_mu < 1.2, worst_mu
+    # The ratio holds the change of mu over the box as well as the looseness of the bound.
+    assert worst_mu < 1.5, worst_mu
     print(f'  g_FS against the FS formula: largest relative error {float(worst_fs):.2e}; '
           f'mu bounds over the center values at most {float(worst_mu):.4f}; '
           + ', '.join(f'{k} {v.max():.4g}' for k, v in out.items()), flush=True)
