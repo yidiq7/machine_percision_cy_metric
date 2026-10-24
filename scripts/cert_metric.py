@@ -88,7 +88,8 @@ def main():
     ap.add_argument('--k-target', type=float, default=80.0,
                     help='a box whose bound k_atlas exceeds this splits')
     ap.add_argument('--depth', type=int, default=3)
-    ap.add_argument('--batch', type=int, default=256)
+    ap.add_argument('--batch', type=int, default=64,
+                    help='boxes in each batch; the re-expansion of the forms takes memory for each box')
     ap.add_argument('--refs', type=int, nargs='*', default=None,
                     help='only these reference centers (default: every one of the cover)')
     ap.add_argument('--out', type=str, required=True)
