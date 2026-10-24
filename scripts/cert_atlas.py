@@ -460,16 +460,14 @@ def value(kind, t0, t1):
     """The value of the quantity `kind` at the acb balls t, a ball whose lower end (fs, 0) or
     upper end (else) is a bound: ('fs', 0 or 1) the FS eigenvalues; ('d2' or 'd3', chart) the
     real norm of D^n F_a; ('c1' or 'c2', chart) the real norm of Q0_b E_n [Q0_b^-1 .] with the
-    FS form Q0_b of chart b at t, bounded by sqrt(lam_max) lam_min^(-n/2) abs(E_n)."""
+    FS form Q0_b of chart b at t (c_bound, with S from the midpoint of the ball)."""
     if kind[0] == 'fs':
         return arb(fs_closed(t0, t1)[kind[1]])
     if kind[0] in ('d2', 'd3'):
         n = 2 if kind[0] == 'd2' else 3
         return real_factor(n) * root_up(square_norm(chart_jets(t0, t1, kind[1]), n))
-    n = 2 if kind[0] == 'c1' else 3
-    lo, hi = fs_closed(t0, t1)
-    q = tensor_squares(e_tensor(chart_jets(t0, t1, kind[1]), n))
-    return real_factor(n) * fs_factor(lo, hi, n) * root_up(q[0])
+    mid = lambda z: acb(z.real.mid(), z.imag.mid())
+    return c_bound(kind, t0, t1, mid(t0), mid(t1))
 
 
 def domains(kind):
@@ -480,22 +478,114 @@ def is_min(kind):
     return kind == ('fs', 0)
 
 
+def fs_change(t0, t1, c0, c1, s):
+    """(g(c), E) for the box (balls t) of side s and center c: g(c) the FS matrix at the center
+    (before the division by pi sqrt 2), and E an arb whose upper end bounds abs(g(x) - g(c))_F on
+    the box: the linear terms of the jets at c and the terms of degree 2 on the box, with
+    abs(x_i - c_i) <= s / sqrt 2 in each of (t, sigma)."""
+    sp2, gc = fs_jets(c0, c1)
+    _, gb = fs_jets(t0, t1)
+    h = arb(s) / arb(2).sqrt()
+    err = arb(0)
+    for i in range(2):
+        for j in range(2):
+            lin = sum((abs(gc[i][j][k]) for k, m in enumerate(sp2.mons) if sum(m) == 1), arb(0))
+            rem = sum((abs(gb[i][j][k]) for k, m in enumerate(sp2.mons) if sum(m) == 2), arb(0))
+            err += sq(lin * h + rem * h * h)
+    return [[gc[i][j][0] for j in range(2)] for i in range(2)], root_up(err)
+
+
+def sqrtm2(h):
+    """The Hermitian square root of a positive Hermitian 2x2 matrix h (acb):
+    (h + sqrt(det) I) / sqrt(tr + 2 sqrt(det))."""
+    det = (h[0][0] * h[1][1] - h[0][1] * h[1][0]).real
+    sd = det.sqrt()
+    den = ((h[0][0] + h[1][1]).real + 2 * sd).sqrt()
+    return [[(h[0][0] + sd) / den, h[0][1] / den], [h[1][0] / den, (h[1][1] + sd) / den]]
+
+
+def inv2(m):
+    det = m[0][0] * m[1][1] - m[0][1] * m[1][0]
+    return [[m[1][1] / det, -m[0][1] / det], [-m[1][0] / det, m[0][0] / det]]
+
+
+def hermitian_form(g):
+    """H with G(u, u) = u^H H u for the FS matrix g of fs_matrix: H = conj(g) / (pi sqrt 2)."""
+    return [[g[i][j].conjugate() / FS_SCALE for j in range(2)] for i in range(2)]
+
+
+def normalized(ent, qm, sm, n):
+    """The jets of E' = Q E[S ., ..., S .] for the entries ent of E (keys (m,) + ks), with the
+    constant matrices Q (on the output index) and S (on each of the n input indices)."""
+    out = {}
+    for m in range(2):
+        for ks in itertools.product(range(2), repeat=n):
+            tot = None
+            for m2 in range(2):
+                for src in itertools.product(range(2), repeat=n):
+                    c = qm[m][m2]
+                    for p, q in zip(src, ks):
+                        c = c * sm[p][q]
+                    term = ent[(m2,) + src] * c
+                    tot = term if tot is None else tot + term
+            out[(m,) + ks] = tot
+    return out
+
+
+def congruence(sm, h):
+    """S^H h S for 2x2 acb matrices."""
+    smh = [[sm[j][i].conjugate() for j in range(2)] for i in range(2)]
+    return [[sum((smh[i][a] * h[a][b] * sm[b][j] for a in range(2) for b in range(2)), acb(0))
+             for j in range(2)] for i in range(2)]
+
+
+def n_bounds(h_lo, h_hi, sm, nmat, shift):
+    """Bounds (lo, hi) of the eigenvalues of N = S^H H S on the box, the better of lam(H) (the
+    floats h_lo, h_hi) times the squares of the extreme singular values of S, and the eigenvalues
+    of the matrix nmat moved by shift (Weyl's inequality, shift >= abs(N - nmat)_F)."""
+    sf2 = sum((abs2(sm[i][j]) for i in range(2) for j in range(2)), arb(0))
+    qf2 = sum((abs2(x) for x in [d for row in inv2(sm) for d in row]), arb(0))
+    lo = down(arb(h_lo) / arb(up(qf2))) if h_lo > 0 else -math.inf
+    hi = up(arb(h_hi) * sf2)
+    e_lo, e_hi = eigs([[x * FS_SCALE for x in row] for row in nmat])
+    if not math.isnan(down(e_lo - shift)):
+        lo = max(lo, down(e_lo - shift))
+    if not math.isnan(up(e_hi + shift)):
+        hi = min(hi, up(e_hi + shift))
+    return lo, hi
+
+
+def c_bound(kind, t0, t1, c0, c1, s=None):
+    """The bound of c~1_0 or c~2_0 on the ball t: with S = Q_c^-1 from the FS form at the center c,
+    abs(Q_x E[Q_x^-1 .]) <= lam_max(N)^(1/2) lam_min(N)^(-n/2) abs(Q_c E[S .]), N = S^H H_x S.
+    With s, the Taylor form of the box of side s; without, the ball value."""
+    n = 2 if kind[0] == 'c1' else 3
+    hc = hermitian_form(fs_matrix(c0, c1, wof(c0, c1)))
+    qm = [[acb(x.mid()) for x in row] for row in sqrtm2(hc)]
+    sm = inv2(qm)
+    h_lo, h_hi = fs_closed(t0, t1)
+    if s is None:
+        nmat = congruence(sm, hermitian_form(fs_matrix(t0, t1, wof(t0, t1))))
+        lo, hi = n_bounds(h_lo, h_hi, sm, nmat, arb(0))
+        q = tensor_squares(normalized(e_tensor(chart_jets(t0, t1, kind[1]), n), qm, sm, n))
+        e_up = root_up(q[0])
+    else:
+        gc, err = fs_change(t0, t1, c0, c1, s)
+        sf2 = sum((abs2(sm[i][j]) for i in range(2) for j in range(2)), arb(0))
+        lo, hi = n_bounds(h_lo, h_hi, sm, congruence(sm, hermitian_form(gc)), sf2 * err / FS_SCALE)
+        qc = tensor_squares(normalized(e_tensor(chart_jets(c0, c1, kind[1]), n), qm, sm, n))
+        qb = tensor_squares(normalized(e_tensor(chart_jets(t0, t1, kind[1]), n), qm, sm, n))
+        e_up = root_up(qc[0]) + root_up(qc[1]) * s + root_up(qb[2]) * (arb(s) * s / 2)
+    return real_factor(n) * fs_factor(lo, hi, n) * e_up
+
+
 def taylor_bound(kind, t0, t1, c0, c1, s):
     """The second-order bound of the quantity on the box (balls t) of side s and center c: an
     arb whose lower end (fs, 0) or upper end (else) bounds the quantity on the box."""
     if kind[0] == 'fs':
-        sp2, gc = fs_jets(c0, c1)
-        _, gb = fs_jets(t0, t1)
-        h = arb(s) / arb(2).sqrt()
-        err = arb(0)
-        for i in range(2):
-            for j in range(2):
-                lin = sum((abs(gc[i][j][k]) for k, m in enumerate(sp2.mons) if sum(m) == 1), arb(0))
-                rem = sum((abs(gb[i][j][k]) for k, m in enumerate(sp2.mons) if sum(m) == 2), arb(0))
-                err += sq(lin * h + rem * h * h)
-        g0 = [[gc[i][j][0] for j in range(2)] for i in range(2)]
+        g0, err = fs_change(t0, t1, c0, c1, s)
         lam = eigs(g0)[kind[1]]
-        shift = root_up(err) / FS_SCALE
+        shift = err / FS_SCALE
         return lam - shift if kind[1] == 0 else lam + shift
     if kind[0] in ('d2', 'd3'):
         n = 2 if kind[0] == 'd2' else 3
@@ -504,14 +594,7 @@ def taylor_bound(kind, t0, t1, c0, c1, s):
         norm = lambda js, k: root_up(square_norm(js, k))
         bound = norm(jc, n) + norm(jc, n + 1) * s + norm(jb, n + 2) * (arb(s) * s / 2)
         return real_factor(n) * bound
-    n = 2 if kind[0] == 'c1' else 3
-    lo_n, hi_n = fs_closed(t0, t1)
-    lam_lo = max(lo_n, down(taylor_bound(('fs', 0), t0, t1, c0, c1, s)))
-    lam_hi = min(hi_n, up(taylor_bound(('fs', 1), t0, t1, c0, c1, s)))
-    qc = tensor_squares(e_tensor(chart_jets(c0, c1, kind[1]), n))
-    qb = tensor_squares(e_tensor(chart_jets(t0, t1, kind[1]), n))
-    e_up = root_up(qc[0]) + root_up(qc[1]) * s + root_up(qb[2]) * (arb(s) * s / 2)
-    return real_factor(n) * fs_factor(lam_lo, lam_hi, n) * e_up
+    return c_bound(kind, t0, t1, c0, c1, s)
 
 
 # ---------------------------------------------------------------- the search

@@ -10,7 +10,8 @@
    bounds at or beyond the values at random points of those boxes in the domain, for lam0, Lam0,
    c~1_0 of one chart and c~2_0 of another.
 6. The FS normalization of the transitions: the norm of Q0_a D^n F [Q0_b^-1 .] from the FS
-   matrices of both charts equals that from Q0_b DF^-1 (one metric), and value bounds it.
+   matrices of both charts equals that from Q0_b DF^-1 (one metric), and value at the point
+   gives it within 1 + 1e-6.
 4. combine on a synthetic run gives the formulas of the design.
 5. The jets: the constant terms of fs_jets equal fs_matrix, and the Taylor coefficients of
    chart_jets (degree 5) and of fs_jets (the terms of g to degree 2, phi to degree 4) equal the
@@ -189,8 +190,8 @@ def conj_mat(m):
 
 def test_fs_normalized():
     """At points of D(3, 2) and D(a), the real norm of Q0_a D^n F [Q0_b^-1 .] from the FS
-    matrices of both charts equals that from Q0_b DF^-1 in chart b, and value(c1 or c2) bounds
-    it within a factor of 20."""
+    matrices of both charts equals that from Q0_b DF^-1 in chart b, and value(c1 or c2), with
+    the normalization at the point, bounds it within a factor 1 + 1e-6."""
     worst_id, worst_ratio, count = 0, 0, 0
     scale = mp.pi * mp.sqrt(2)
     for chart in [(2, 3), (3, 0), (0, 2)]:
@@ -233,7 +234,7 @@ def test_fs_normalized():
                 assert val >= direct, (chart, kind, val, direct)
                 worst_ratio = max(worst_ratio, val / direct)
                 count += 1
-    assert worst_id < 1e-20 and worst_ratio < 20, (worst_id, worst_ratio)
+    assert worst_id < 1e-20 and worst_ratio < 1 + 1e-6, (worst_id, worst_ratio)
     print(f'test_fs_normalized: PASS ({count} values; the two forms agree to {float(worst_id):.1e}; '
           f'value over the norm at most {float(worst_ratio):.3f})', flush=True)
 
