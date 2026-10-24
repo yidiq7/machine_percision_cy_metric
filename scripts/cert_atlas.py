@@ -576,8 +576,14 @@ def c_bound(kind, t0, t1, c0, c1, s=None):
         sf2 = sum((abs2(sm[i][j]) for i in range(2) for j in range(2)), arb(0))
         lo, hi = n_bounds(h_lo, h_hi, sm, congruence(sm, hermitian_form(gc)), sf2 * err / FS_SCALE)
         qc = tensor_squares(normalized(e_tensor(chart_jets(c0, c1, kind[1]), n), qm, sm, n))
-        qb = tensor_squares(normalized(e_tensor(chart_jets(t0, t1, kind[1]), n), qm, sm, n))
-        e_up = root_up(qc[0]) + root_up(qc[1]) * s + root_up(qb[2]) * (arb(s) * s / 2)
+        # On the box, D^2 E' = Q D^2 E [S .]: the norm inequality, as the explicit product sums the
+        # radii of the ball through the products with S.
+        qb = tensor_squares(e_tensor(chart_jets(t0, t1, kind[1]), n))
+        qf = root_up(sum((abs2(x) for row in qm for x in row), arb(0)))
+        sf = root_up(sum((abs2(x) for row in sm for x in row), arb(0)))
+        sfn = sf * sf if n == 2 else sf * sf * sf
+        rem = qf * sfn * root_up(qb[2]) * (arb(s) * s / 2)
+        e_up = root_up(qc[0]) + root_up(qc[1]) * s + rem
     return real_factor(n) * fs_factor(lo, hi, n) * e_up
 
 
