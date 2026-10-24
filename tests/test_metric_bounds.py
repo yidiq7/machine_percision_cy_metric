@@ -229,6 +229,8 @@ class Reference:
     """The values of the definitions at points of the slice, for the synthetic potential."""
 
     def __init__(self, phi, fsp, h, n01, kap):
+        # Exact mpmath coefficients, so that the derivatives and products do not round in FP64.
+        phi, fsp, h = ({e: mp.mpc(c) for e, c in p.items()} for p in (phi, fsp, h))
         self.c = 1 / (mp.sqrt(2) * mp.pi * K0)
         self.g = [[deriv(deriv(phi, i), 2 + j) for j in range(2)] for i in range(2)]
         self.gf = [[deriv(deriv(fsp, i), 2 + j) for j in range(2)] for i in range(2)]

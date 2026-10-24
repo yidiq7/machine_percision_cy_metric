@@ -90,7 +90,7 @@ def test_fs():
         lo, hi = ca.fs_eigs(a0, a1, ca.moduli(a0, a1)[1])
         worst = max(worst, abs(float(lo.mid()) - ev[0]) / ev[0], abs(float(hi.mid()) - ev[1]) / ev[1])
     assert worst < 1e-12, worst
-    print(f'test_fs: PASS (largest relative difference {worst:.1e})', flush=True)
+    print(f'test_fs: PASS (largest relative difference {float(worst):.1e})', flush=True)
 
 
 def test_norms():
@@ -111,7 +111,7 @@ def test_norms():
             d2, d3 = ca.deriv_norms(ca.chart_jets(acb(t0), acb(t1), chart))
             worst = max(worst, abs(float(d2.mid()) - n2) / n2, abs(float(d3.mid()) - n3) / n3)
     assert worst < 1e-10, worst
-    print(f'test_norms: PASS (largest relative difference {worst:.1e})', flush=True)
+    print(f'test_norms: PASS (largest relative difference {float(worst):.1e})', flush=True)
 
 
 def test_search():
