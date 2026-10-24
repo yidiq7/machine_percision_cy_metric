@@ -778,7 +778,8 @@ def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad, ys=None, charts=Non
 
 def _atlas_bounds(sp, sp2, gf, ys, charts, g_t, k_t, d, d_f, k0):
     """The atlas columns of `metric_bounds`: the chart (3, 2) is the chart t (g_t, k_t); each
-    other chart of the mask takes its J^-1 from `_chart_jinv` on the boxes of its column."""
+    other chart of the mask takes its J^-1 from `_chart_jinv` on the boxes of its column. The
+    chart (3, 2) always enters, since F lies in its domain, so that k_atlas >= k_t."""
     from .cover import CHARTS
     b = d.shape[0]
     c_low, c_up = metric_c_low(k0), metric_c_up(k0)
@@ -787,7 +788,8 @@ def _atlas_bounds(sp, sp2, gf, ys, charts, g_t, k_t, d, d_f, k0):
         return dict(k_atlas=cp.full(b, cp.nan), lam_atlas=cp.full(b, cp.nan),
                     Lam_atlas=cp.full(b, cp.nan), atlas_k=vals['k'], atlas_lam=vals['lam'],
                     atlas_Lam=vals['Lam'])
-    charts = np.asarray(charts, bool)
+    charts = np.array(charts, bool)
+    charts[:, CHARTS.index((3, 2))] = True
     sp2m = space(2, sp.n)
     for col, chart in enumerate(CHARTS):
         idx = np.flatnonzero(charts[:, col])

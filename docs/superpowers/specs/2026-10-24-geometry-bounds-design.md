@@ -46,7 +46,13 @@ products take g and g_FS at the order METRIC_ORDER = 10 (the rest goes to the re
    Γ_P[c] = Σ_k P_kc ∂_k g_P, the real norm of DG normalized at the point is at most
    √8 abs(Γ_P)_F ÷ (√c λ_min(g_P)^(3/2)): the normalizing matrix at x is P M with
    abs(M)² = 1 ÷ (c λ_min(g_P)), and a complex 3-tensor Γ of c ∂g gives the real norm √8 abs(Γ)_F.
-   Column `k_tau` (in τ).
+   This form takes the sup of abs(Γ_P) and the inf of λ_min from different points. The second
+   form (`_k_square`) bounds S = Σ Γ[c′, (i′, j′)] conj(Γ[c″, (i″, j″)]) M[c″, c′] M[i″, i′] M[j′, j″]
+   with M = g_P⁻¹ (the adjugate and a series for 1 ÷ det) as one model: S is the square of the
+   norm with each slot normalized by g_P at the point, so the bound is √(8 B(S) ÷ c). `_k_bound`
+   takes the smaller of the two. The second form is about 2 times better on the cells of half
+   the side of a box of the run, and much worse on some full boxes, where the series of 1 ÷ det
+   has large terms. Column `k_tau` (in τ).
 4. **In the chart t.** t = p₀₁ + τ + n₀₁ h(τ), J = dt/dτ = I + n₀₁ ∇hᵀ, J⁻¹ = I − n₀₁ ∇hᵀ ÷
    (1 + ∇h·n₀₁) (a series in sp2), g_t = J⁻ᵀ g J̄⁻¹ as models, and ∂_t = J⁻ᵀ ∂_τ, so that
    Γ_P[c] = Σ_a (J⁻¹ P)_ac ∂_τa g_t,P. The same bound as in 3 gives column `k_t`.
@@ -56,66 +62,75 @@ products take g and g_FS at the order METRIC_ORDER = 10 (the rest goes to the re
    from the models of the point y (a series for 1 ÷ z_i when i ≠ 3), J_a = dt_a/dτ by Cauchy,
    J_a⁻¹ by the adjugate and a series for 1 ÷ det, and g_a = J_a⁻ᵀ g J̄_a⁻¹; the same bound as in 3
    gives k_a, and the eigenvalues of G_a = c g_a come from A = Pᵀ P̄ and B = Pᵀ g_a P̄ as in 1.
-   Columns `k_atlas` (the largest k_a), `lam_atlas` and `Lam_atlas` (the smallest and the largest
-   eigenvalue). A chart a and a point x ∈ U_a go to a point of F and a chart that meets its cell
+   Outputs `k_atlas` (the largest k_a), `lam_atlas` and `Lam_atlas` (the smallest and the largest
+   eigenvalue). The chart (3, 2) always enters, since F lies in its domain, so k_atlas ≥ k_t; a
+   cell at the edge of F that chart_mask proves outside D(3, 2) holds no point of F. A chart a and a point x ∈ U_a go to a point of F and a chart that meets its cell
    by an element of G, which is an isometry and maps charts to charts by linear maps, so these
-   columns bound K̃, λ and Λ of the draft directly.
+   outputs bound K̃, λ and Λ of the draft directly.
 
 Each FP64 operation of these bounds uses `tmgpu.mag` (up for upper bounds, down for lower
 bounds). A box with no proof (a lower bound ≤ 0) gets inf for an upper bound and 0 for a lower
-bound. `cert_partition` checks that each new column is finite, that mu_low > 0 and
-lam_atlas > 0, and that k_atlas ≥ k_t.
+bound. `cert_partition` checks that each column of the run is finite and that mu_low > 0.
 
-## The bounds of FS and of the chart maps (CPU, `scripts/cert_atlas.py`, arb)
+## The metric pass (GPU, `scripts/cert_metric.py`)
 
-Chart b = (3, 2): z = (t₀, t₁, w, 1), w⁴ = −(1 + t₀⁴ + t₁⁴). Its domain is
-D = {1 > 0.99 max(abs(t₀), abs(t₁), abs(w)), abs(w) > 0.98 max(abs(t₀), abs(t₁))}, with no window
-of the argument (a superset of each V_a). The symmetry reduces it to arg t₀ ∈ [0, π/4] and
-arg t₁ ∈ [0, π/2].
+On a box of the run (side 0.03, radius about 0.024) the bounds 3 to 5 are loose in a distorted
+chart, because the bound of abs(Γ_P) and of λ_min(g_P) over the box are separate. The probes of
+2026-10-24 measured it:
 
-1. `fs`: λ₀ = inf over D of λ_min(g_FS) ÷ (π√2) and Λ₀ = sup of λ_max(g_FS) ÷ (π√2). The values
-   do not depend on the branch of w.
-2. `transitions`: for each chart a = (i, j) ≠ (3, 2), F_a(t) = (z_k ÷ z_i, z_l ÷ z_i), and the
-   sups c̃1⁰ and c̃2⁰ over D ∩ D(i, j) of the real norm of Q₀_a DⁿF_a[Q₀_b⁻¹ ·] (n = 2, 3) with
-   the FS forms at the same point. FS is one metric, so abs(Q₀_a w) = abs(Q₀_b DF⁻¹ w), and the
-   norm is at most √λ_max λ_min^(−n/2) abs(DF⁻¹ DⁿF) with the FS eigenvalues of chart b.
-   D(i, j) = {abs(z_i) > 0.99 max of the others, abs(z_j) > 0.98 max of the other two}.
-3. **The bound of a box** of side s and center c (abs(x − c)₂ ≤ s) is the better of the ball
-   value and a second-order Taylor form from jets at c and on the box:
-   * E = DF⁻¹ DⁿF from holomorphic jets of F of degree 5: abs(E(x)) ≤ abs(E(c)) +
-     abs(DE(c)) s + sup abs(D²E) s² ÷ 2;
-   * the FS eigenvalues: the potential log(1 + t·σ + w(t) w̃(σ)) in (t, σ), σ = conj(t) on the
-     slice, as jets of degree 4. abs(g(x) − g(c))_F is at most the linear terms at c plus the
-     terms of degree 2 on the box, with abs(xᵢ − cᵢ) ≤ s ÷ √2, and Weyl's inequality moves each
-     eigenvalue by at most that.
-   The first-order forms (ball partials) left gaps of 5 to 34 percent at the side R/256, because
-   the partials on a box grow as much as the values.
-4. A branch-and-bound on boxes of (Re t₀, Im t₀, Re t₁, Im t₁), in rounds of one side so that each
-   round knows the best point value: a box that cannot meet the domain goes out; a box whose
-   bound is within the tolerance of the best point value, or of the smallest side, gives its
-   bound. The result is the largest (smallest) bound of a box. For the transitions a floor from
-   random points of all 11 charts lets a chart stop early, since combine takes only the maximum.
-5. The FS eigenvalues of a ball also come from two closed forms with no root of a ball (s g =
-   I + a aᴴ − b bᴴ / s, and the same in the basis a / abs(a), which has no cancellation near the
-   corner abs(t₀) ≈ abs(t₁) ≈ abs(w) ≈ 0.8).
-6. Two routes for the transitions: `c1 c2` (the FS form at the same point, normalized at the box
-   center by S = Q_c⁻¹) and `d2 d3` (the plain real norms of D²F and D³F, with the factors
-   Λ^(1/2) λ⁻¹ and Λ^(1/2) λ^(−3/2)). combine takes the smaller valid bound. On 2026-10-24 only
-   `d2 d3` converged in the time of a run: near the overlaps of near-equal moduli the jets on
-   balls lose the cancellations of the formulas, so `c1 c2` needs the side R/512 there.
+With the first form of 3 alone:
+
+| box | k_t, the record | at the center | largest bound, cells of side s ÷ 2 | side s ÷ 4 |
+|---|---|---|---|---|
+| the 12 boxes of v3 with k_t > 400 (corner abs(t₀) ≈ abs(t₁) ≈ abs(z₂) ≈ 0.8) | 400 to 439 | 48 to 55 | 95 to 131 | 65 to 84 |
+
+On 210 of the 4,402 boxes of the references 0, 243, 297 and 231 (all near ρ = 1, where all 12
+charts can meet the cell) a chart gives no proof; on the cells of half the side every chart gives
+one, and at the centers k_a is 38 to 61 in every chart.
+
+So `cert_metric` computes the bounds 1 to 5 on cells of its own: the cells of the cover, each
+split into the cells of half the side that may meet F (`cover.halves`) while k_atlas > --k-target
+or a bound has no proof, at most --depth times. The bounds take g at METRIC_ORDER = 10, so a low
+order is enough:
+* on the 27 cells of side s ÷ 4 of the box with the largest k_t, the bounds at order 12 equal
+  those at order 32 to 4 digits, in 55 ms for each box against 308 ms (order 10 loses 5 percent);
+* on full boxes, orders 20, 24 and 32 give the same bounds, and order 12 gives no proof at large ρ.
+So the cells of the cover run at --order 20 and the smaller cells at --order-split 12.
+
+The pilot (jobs 55135390 to 55135399, the 2,789 cells of the references 139, 243, 231, 0 and 297,
+depth 2, both forms of 3) and its trace give the cost of each target of k_atlas:
+
+| target | boxes computed | largest k_atlas |
+|---|---|---|
+| 60 | 29,020 | 60.00 |
+| 70 | 18,533 | 69.97 |
+| 80 | 16,094 | 80.00 |
+| 100 | 14,302 | 99.98 |
+
+A box takes 57 to 70 ms at order 12 and about 90 ms at order 20 on one H200. The full pass takes
+the target 60. Its
+records (`records.METRIC_COLUMNS`) do not bound abs(f); their ric is useless, because f at these
+orders has a large remainder, and combine takes the ric of the run.
+`cert_partition --metric` checks that they make a partition of each cell of the cover, their
+radii and lam_big, that each bound is finite and not below 0, that mu_low > 0 and lam_atlas > 0,
+and that k_atlas ≥ k_t. The run of f keeps the 24 columns of v3, so the run v3 stays the run of
+the bound. With the second form of 3, a new cert_run equals v3 bit for bit in the columns before
+k_tau, and its k_tau and k_t are at most those of v3.
 
 ## The combination (`scripts/cert_atlas.py combine`)
 
-From the records of the run and the two CPU results, in arb with outward rounding:
+From the records of the run, the records of cert_metric (`--metric`) and the two CPU results,
+in arb with outward rounding:
 
-* C = max mu_up; μ_min = min mu_low; κ = max ric ÷ 3;
+* C = max mu_up; μ_min = min mu_low; κ = max ric ÷ 3; each is the better of the two sets of
+  records, since each set covers F;
 * λ = the larger of μ_min λ₀ and min lam_atlas; Λ = the smaller of C Λ₀ and max Lam_atlas;
 * c̃1 = √C c̃1⁰ ÷ μ_min and c̃2 = √C c̃2⁰ ÷ μ_min^(3/2), from abs(Q_a v) ≤ √C abs(Q₀_a v) and
   abs(Q₀_b Q_b⁻¹) ≤ μ_min^(−1/2); or c̃1 = Λ^(1/2) λ⁻¹ sup abs(D²F) and c̃2 = Λ^(1/2) λ^(−3/2)
   sup abs(D³F); the smaller of the two;
 * K̃ = the smaller of max k_atlas and max k_t + 2 c̃1 (the chain rule from the chart of F to any
-  chart, with the term of c̃1). In the v3 run the second gave 9,341, and k_t alone is at most
-  438.7, so the first route is the one that counts;
+  chart, with the term of c̃1). In the v3 run the second gave 9,341 (c̃1 = 4,451 from the plain
+  norms), so the first route is the one that counts;
 * the C¹ term of the residual in the parent charts: Λ^(1/2) max grad_g;
 * the diameters sqrt(C) diam(·, ω₀) from the Proposition of the draft.
 
