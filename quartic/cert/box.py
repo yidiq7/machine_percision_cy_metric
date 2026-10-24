@@ -717,27 +717,24 @@ def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad):
     gets inf (0 for mu_low). The upper bounds round up and the lower bounds round down.
     """
     c = metric_c_low(k0)
-    lam, det_low, grad_tau = (grad[k] for k in ('lam_low', 'det_low', 'grad_tau'))
+    lam, grad_tau = grad['lam_low'], grad['grad_tau']
     pos = lam > 0
     lam1 = cp.where(pos, lam, 1.0)
-    # mu: with s = tr(adj(g_FS) g) / (k0 det g_FS) and p = det g / (k0^2 det g_FS),
-    # mu_max = (s + sqrt(s^2 - 4p)) / 2 grows with s and falls with p, and mu_min = p / mu_max.
+    # mu: with any constant P, A = P^T g_FS conj(P) and B = P^T g conj(P), the eigenvalues of
+    # g_FS^-1 g lie in [lam_min(B) / lam_max(A), lam_max(B) / lam_min(A)]; P from the center
+    # makes A near I.
     sp_m = space(4, min(METRIC_ORDER, sp4.n))
     gm = {k: tm.truncate(sp_m, sp4, tm.restrict(v, d)) for k, v in g.items()}
     fs = {(i, j): tm.truncate(sp_m, sp4, tm.cauchy_mixed(sp4, log_r2, i, 2 + j, d))
           for i in range(2) for j in range(2)}
-    det_fs = tm.sub(sp_m, tm.mul(sp_m, fs[0, 0], fs[1, 1]), tm.mul(sp_m, fs[0, 1], fs[1, 0]))
-    tr_adj = tm.sub(sp_m, tm.add(sp_m, tm.mul(sp_m, gm[0, 0], fs[1, 1]),
-                                 tm.mul(sp_m, gm[1, 1], fs[0, 0])),
-                    tm.add(sp_m, tm.mul(sp_m, gm[0, 1], fs[1, 0]), tm.mul(sp_m, gm[1, 0], fs[0, 1])))
-    dfs_low = _real_low(sp_m, det_fs, d)
-    ok_mu = pos & (dfs_low > 0) & (det_low > 0)
-    s = mag.div(tm.bound(sp_m, tr_adj), mag.mul_down(float(k0), cp.where(ok_mu, dfs_low, 1.0)))
-    p = mag.div_down(cp.where(ok_mu, det_low, 0.0),
-                     mag.mul(float(k0 * k0), tm.bound(sp_m, det_fs)))
-    disc = cp.maximum(mag.add(mag.mul(s, s), -mag.mul_down(4.0, p)), 0.0)
-    mu_up = cp.where(ok_mu, mag.mul(0.5, mag.add(s, mag.sqrt(disc))), cp.inf)
-    mu_low = cp.where(ok_mu, mag.div_down(p, mu_up), 0.0)
+    p_fs = _near_inv_sqrt(fs)
+    a_low, a_up = _eig_bounds(sp_m, _congruent(sp_m, fs, p_fs))
+    b_low, b_up = _eig_bounds(sp_m, _congruent(sp_m, gm, p_fs))
+    ok_mu = (a_low > 0) & (b_low > 0)
+    mu_up = cp.where(ok_mu, mag.div(b_up, mag.mul_down(float(k0), cp.where(ok_mu, a_low, 1.0))),
+                     cp.inf)
+    mu_low = cp.where(ok_mu, mag.div_down(cp.where(ok_mu, b_low, 0.0), mag.mul(float(k0), a_up)),
+                      0.0)
     # Ric = -ddbar log(1 + f): abs(Ric)_F <= abs(ddbar f)_F / (1 - abs(f)) + abs(df)^2 / (1 -
     # abs(f))^2, and an eigenvalue against G has abs at most (2 / c) abs(Ric)_F / lam_min.
     fxx = [tm.bound(sp4, tm.cauchy_mixed(sp4, f, i, 2 + j, d)) for i in range(2) for j in range(2)]
@@ -746,7 +743,8 @@ def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad):
     one1 = cp.where(ok_r, one, 1.0)
     ric_f = mag.add(mag.div(_norm(fxx), one1),
                     mag.div(mag.mul(grad_tau, grad_tau), mag.mul_down(one1, one1)))
-    ric = cp.where(ok_r, mag.div(mag.mul(2.0, ric_f), mag.mul_down(c, lam1)), cp.inf)
+    lam_r = cp.maximum(lam1, _eig_bounds(sp_m, gm)[0])
+    ric = cp.where(ok_r, mag.div(mag.mul(2.0, ric_f), mag.mul_down(c, lam_r)), cp.inf)
     # DG normalized at the point: for any constant P, with g_P = P^T g conj(P) and Gamma_P[c]
     # = sum_k P_kc d_k g_P, the real norm is at most sqrt(8) abs(Gamma_P)_F / (sqrt(c)
     # lam_min(g_P)^(3/2)); P from the center makes g_P near I. In tau, and in t with
@@ -782,11 +780,7 @@ def _k_bound(sp, gm, chart, d, c):
     with g(center) = U W U^H (FP64 on the host; any P gives a bound). inf where lam_min(g_P)
     has no proof above 0."""
     p = _near_inv_sqrt(gm)
-    pc = [[_conj_dd(p[i][j]) for j in range(2)] for i in range(2)]
-    gm_p = {(i, bb): tm.add(sp, tm.scale(sp, gm[i, 0], pc[0][bb]), tm.scale(sp, gm[i, 1], pc[1][bb]))
-            for i in range(2) for bb in range(2)}
-    gp = {(a, bb): tm.add(sp, tm.scale(sp, gm_p[0, bb], p[0][a]), tm.scale(sp, gm_p[1, bb], p[1][a]))
-          for a in range(2) for bb in range(2)}
+    gp = _congruent(sp, gm, p)
     dgp = [{k: tm.deriv1(sp, v, a, d) for k, v in gp.items()} for a in range(2)]
     if chart is None:
         w = [[None] * 2 for _ in range(2)]
@@ -803,14 +797,34 @@ def _k_bound(sp, gm, chart, d, c):
             else:
                 x = tm.add(sp, tm.mul(sp, w[0][cc], dgp[0][k]), tm.mul(sp, w[1][cc], dgp[1][k]))
             gam.append(tm.bound(sp, x))
-    gd = {k: tm.restrict(v, d) for k, v in gp.items()}
-    det = tm.sub(sp, tm.mul(sp, gd[0, 0], gd[1, 1]), tm.mul(sp, gd[0, 1], gd[1, 0]))
-    det_low, g00_low = _real_low(sp, det, d), _real_low(sp, gd[0, 0], d)
-    tr_up = mag.add(tm.bound(sp, gd[0, 0]), tm.bound(sp, gd[1, 1]))
-    ok = (det_low > 0) & (g00_low > 0)
-    lam = cp.where(ok, mag.div_down(det_low, tr_up), 1.0)
+    lam, _ = _eig_bounds(sp, {k: tm.restrict(v, d) for k, v in gp.items()})
+    ok = lam > 0
+    lam = cp.where(ok, lam, 1.0)
     den = mag.mul_down(mag.sqrt_down(c), mag.mul_down(lam, mag.sqrt_down(lam)))
     return cp.where(ok, mag.div(mag.mul(mag.sqrt(8.0), _norm(gam)), den), cp.inf)
+
+
+def _congruent(sp, m, p):
+    """P^T m conj(P) for the 2x2 models m and the dd constants p[i][j]: first m conj(P), then
+    P^T times it, so that each sum is that of the one matrix P."""
+    pc = [[_conj_dd(p[i][j]) for j in range(2)] for i in range(2)]
+    mp_ = {(i, b): tm.add(sp, tm.scale(sp, m[i, 0], pc[0][b]), tm.scale(sp, m[i, 1], pc[1][b]))
+           for i in range(2) for b in range(2)}
+    return {(a, b): tm.add(sp, tm.scale(sp, mp_[0, b], p[0][a]), tm.scale(sp, mp_[1, b], p[1][a]))
+            for a in range(2) for b in range(2)}
+
+
+def _eig_bounds(sp, m):
+    """Bounds (low, up) of the eigenvalues of the Hermitian 2x2 models m on their polydisc, from
+    lam = (a + d -+ sqrt((a - d)^2 + 4 abs(b)^2)) / 2 with the bounds of Re a, Re d, abs(a - d)
+    and abs(b); low <= lam_min and up >= lam_max."""
+    d = m[0, 0].delta
+    r = mag.sqrt(mag.add(mag.powi(tm.bound(sp, tm.sub(sp, m[0, 0], m[1, 1])), 2),
+                         mag.mul(4.0, mag.powi(tm.bound(sp, m[0, 1]), 2))))
+    low = mag.mul_down(0.5, mag.sub_down(mag.add_down(_real_low(sp, m[0, 0], d),
+                                                      _real_low(sp, m[1, 1], d)), r))
+    up = mag.mul(0.5, mag.add(tm.bound(sp, m[0, 0]), tm.bound(sp, m[1, 1]), r))
+    return low, up
 
 
 def _near_inv_sqrt(gm):
