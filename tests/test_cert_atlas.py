@@ -87,7 +87,7 @@ def test_fs():
                 g[i, j] = (hess[xi][xj] + hess[yi][yj] + 1j * (hess[xi][yj] - hess[yi][xj])) / 4
         ev = sorted(mp.re(v) / (mp.pi * mp.sqrt(2)) for v in mp.eig(g)[0])
         a0, a1 = acb(t0), acb(t1)
-        lo, hi = ca.fs_eigs(a0, a1, ca.root4(-(1 + a0 ** 4 + a1 ** 4)))
+        lo, hi = ca.fs_eigs(a0, a1, ca.moduli(a0, a1)[1])
         worst = max(worst, abs(float(lo.mid()) - ev[0]) / ev[0], abs(float(hi.mid()) - ev[1]) / ev[1])
     assert worst < 1e-12, worst
     print(f'test_fs: PASS (largest relative difference {worst:.1e})', flush=True)

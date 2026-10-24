@@ -121,6 +121,17 @@ def root4_jet(v):
 # ---------------------------------------------------------------- the boxes
 
 
+def sq(x):
+    """x * x: python-flint gives NaN for x ** 2 of a ball that holds 0."""
+    return x * x
+
+
+def root_up(x):
+    """sqrt of the upper end of the ball x, for a true value not below 0: its upper end is an
+    upper bound of the true root (the lower end of x can be below 0 for a ball that holds 0)."""
+    return arb(up(x)).sqrt()
+
+
 def ball(lo, s):
     """t_0, t_1 as acb balls of the box [lo, lo + s]^4 of (Re t_0, Im t_0, Re t_1, Im t_1)."""
     x = [arb(lo[k] + s / 2, s / 2) for k in range(4)]
@@ -129,7 +140,8 @@ def ball(lo, s):
 
 def moduli(t0, t1):
     """abs(z) for z = (t_0, t_1, w, 1), as arb balls, and w."""
-    w = root4(-(1 + t0 ** 4 + t1 ** 4))
+    q0, q1 = t0 * t0, t1 * t1
+    w = root4(-(1 + q0 * q0 + q1 * q1))
     return [abs(t0), abs(t1), abs(w), arb(1)], w
 
 
@@ -167,17 +179,19 @@ def in_wedge(lo, s):
 
 
 def fs_eigs(t0, t1, w):
-    """The two eigenvalues of the FS metric of volume 1 in the chart b, as arb balls."""
+    """Balls of the two eigenvalues of the FS metric of volume 1 in the chart b: the lower end of
+    the first and the upper end of the second are bounds (root_up)."""
     y = [t0, t1, w]
-    jac = [[acb(1), acb(0)], [acb(0), acb(1)], [-(t0 / w) ** 3, -(t1 / w) ** 3]]
-    s = 1 + abs(t0) ** 2 + abs(t1) ** 2 + abs(w) ** 2
-    h = [[(1 if m == q else 0) / s - y[m].conjugate() * y[q] / s ** 2 for q in range(3)]
+    r0, r1 = t0 / w, t1 / w
+    jac = [[acb(1), acb(0)], [acb(0), acb(1)], [-r0 * r0 * r0, -r1 * r1 * r1]]
+    s = 1 + sq(abs(t0)) + sq(abs(t1)) + sq(abs(w))
+    h = [[(1 if m == q else 0) / s - y[m].conjugate() * y[q] / (s * s) for q in range(3)]
          for m in range(3)]
     g = [[sum((jac[m][i] * h[m][q] * jac[q][j].conjugate() for m in range(3) for q in range(3)),
               acb(0)) for j in range(2)] for i in range(2)]
     a, d = g[0][0].real, g[1][1].real
     mid = (a + d) / 2
-    rad = (((a - d) / 2) ** 2 + abs(g[0][1]) ** 2).sqrt()
+    rad = root_up(sq((a - d) / 2) + sq(abs(g[0][1])))
     scale = arb.pi() * arb(2).sqrt()
     return (mid - rad) / scale, (mid + rad) / scale
 
@@ -194,13 +208,13 @@ def chart_jets(t0, t1, chart):
 
 
 def deriv_norms(comps):
-    """The real norms of D^2 F and D^3 F (2 and 2 sqrt 2 times the complex norms)."""
-    d2 = sum((abs(2 * f.c[IDX[(2, 0)]]) ** 2 + 2 * abs(f.c[IDX[(1, 1)]]) ** 2
-              + abs(2 * f.c[IDX[(0, 2)]]) ** 2 for f in comps), arb(0))
-    d3 = sum((abs(6 * f.c[IDX[(3, 0)]]) ** 2 + 3 * abs(2 * f.c[IDX[(2, 1)]]) ** 2
-              + 3 * abs(2 * f.c[IDX[(1, 2)]]) ** 2 + abs(6 * f.c[IDX[(0, 3)]]) ** 2
+    """Balls whose upper ends bound the real norms of D^2 F and D^3 F (2 and 2 sqrt 2 times
+    the complex norms)."""
+    a2 = lambda f, m: sq(abs(f.c[IDX[m]]))
+    d2 = sum((4 * a2(f, (2, 0)) + 2 * a2(f, (1, 1)) + 4 * a2(f, (0, 2)) for f in comps), arb(0))
+    d3 = sum((36 * a2(f, (3, 0)) + 12 * a2(f, (2, 1)) + 12 * a2(f, (1, 2)) + 36 * a2(f, (0, 3))
               for f in comps), arb(0))
-    return 2 * d2.sqrt(), 2 * (2 * d3).sqrt()
+    return 2 * root_up(d2), 2 * root_up(2 * d3)
 
 
 def value(kind, t0, t1, w):
@@ -361,7 +375,7 @@ def combine(args):
         ('[f o psi_a^-1]_{1,0;V_a} <= sqrt(Lambda) sup abs(grad f)_G', up(big.sqrt() * grad)),
         ('diam(M, omega) <= sqrt(C) diam(M, omega_0)', up(diam_m)),
         ('diam(M/G, omega) <= sqrt(C) diam(M/G, omega_0)', up(diam_g)),
-        ('lambda_1,G >= (pi/D - 3 kappa D / (4 pi))^2, D = diam(M/G)', down(gap_root ** 2)),
+        ('lambda_1,G >= (pi/D - 3 kappa D / (4 pi))^2, D = diam(M/G)', down(gap_root * gap_root)),
         ('FS: lam0', float(fs['lam0_bound'])), ('FS: Lam0', float(fs['Lam0_bound'])),
         ('largest real norm of D^2 F_a', d2), ('largest real norm of D^3 F_a', d3),
     ]
