@@ -557,7 +557,7 @@ def step(job):
     return b, point
 
 
-def run_kind(kind, pool, tol, min_side, boxes=None):
+def run_kind(kind, pool, tol, min_side, boxes=None, verbose=False):
     """The branch-and-bound in rounds of one side, so that each round knows the best point
     value of all boxes so far; boxes (default: first_boxes()) are the boxes to start from."""
     small = is_min(kind)
@@ -565,7 +565,8 @@ def run_kind(kind, pool, tol, min_side, boxes=None):
     top = math.inf if small else -math.inf
     level, n, at_min = (first_boxes() if boxes is None else list(boxes)), 0, 0
     while level:
-        res = pool.map(step, [(kind, lo, s) for lo, s in level], chunksize=16)
+        chunk = max(1, min(16, len(level) // (4 * pool._processes)))
+        res = pool.map(step, [(kind, lo, s) for lo, s in level], chunksize=chunk)
         pts = [r[1] for r in res if r is not None and r[1] is not None]
         if pts:
             best = min(best, min(pts)) if small else max(best, max(pts))
@@ -581,6 +582,9 @@ def run_kind(kind, pool, tol, min_side, boxes=None):
                 top = min(top, b) if small else max(top, b)
             else:
                 nxt.extend(children(lo, s))
+        if verbose:
+            print(f'    {kind} side R/{round(R / level[0][1])}: {len(level)} boxes, {len(nxt)} '
+                  f'next; best {best:.6g}, bound so far {top:.6g}', flush=True)
         level = nxt
     return dict(bound=top, best=best, boxes=n, at_min=at_min)
 
@@ -591,7 +595,7 @@ def stage(args, kinds, name):
     with multiprocessing.Pool(args.procs) as pool:
         for kind in kinds:
             t1 = time.perf_counter()
-            r = run_kind(kind, pool, args.tol, R / 2 ** args.min_depth)
+            r = run_kind(kind, pool, args.tol, R / 2 ** args.min_depth, verbose=True)
             key = kind[0] if kind[0] == 'fs' else f'{kind[0]}_{kind[1][0]}{kind[1][1]}'
             if kind[0] == 'fs':
                 key = 'lam0' if kind[1] == 0 else 'Lam0'
