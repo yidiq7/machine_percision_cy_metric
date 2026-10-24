@@ -295,7 +295,7 @@ def test_combine():
             vals[f'c2_{i}{j}_bound'] = 5.0 if n == 7 else -math.inf
         np.savez(tr, **vals)
         out = Path(d) / 'out.npz'
-        ca.combine(Namespace(runs=[str(run)], fs=str(fs), transitions=str(tr), out=str(out)))
+        ca.combine(Namespace(runs=[str(run)], fs=str(fs), transitions=[str(tr)], out=str(out)))
         z = np.load(out)
         got = dict(zip([str(s) for s in z['names']], z['values']))
     lam, big = 0.5 * 0.1, 2.0 * 1.0

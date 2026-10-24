@@ -618,23 +618,27 @@ def first_boxes():
 
 def step(job):
     """None if the box cannot meet the domain, else (its bound, the value at its center if the
-    center is in the domain, else None). The bound is the better of the ball value and
-    taylor_bound; a NaN bound counts as no bound."""
-    kind, lo, s = job
+    box goes on and its center is in the domain, else None). The bound is the ball value, or the
+    better of it and taylor_bound when the ball value does not finish the box (with best and tol
+    of the round); a NaN bound counts as no bound."""
+    kind, lo, s, best, tol = job
     t0, t1 = ball(lo, s)
     if not all(may_meet(moduli(t0, t1), ch) for ch in domains(kind)):
         return None
     small = is_min(kind)
     pick = down if small else up
+    done = (lambda b: b >= best * (1 - tol)) if small else (lambda b: b <= best * (1 + tol))
     c = [lo[k] + s / 2 for k in range(4)]
     c0, c1 = acb(c[0], c[1]), acb(c[2], c[3])
-    b, bt = pick(value(kind, t0, t1)), pick(taylor_bound(kind, t0, t1, c0, c1, s))
-    if not math.isnan(bt):
-        b = bt if math.isnan(b) else (max(b, bt) if small else min(b, bt))
+    b = pick(value(kind, t0, t1))
+    if math.isnan(b) or not done(b):
+        bt = pick(taylor_bound(kind, t0, t1, c0, c1, s))
+        if not math.isnan(bt):
+            b = bt if math.isnan(b) else (max(b, bt) if small else min(b, bt))
     if math.isnan(b):
         b = -math.inf if small else math.inf
     point = None
-    if c[1] <= c[0] and all(inside(moduli(c0, c1), ch) for ch in domains(kind)):
+    if not done(b) and c[1] <= c[0] and all(inside(moduli(c0, c1), ch) for ch in domains(kind)):
         qc = value(kind, c0, c1)
         point = up(qc) if small else down(qc)
     return b, point
@@ -649,7 +653,7 @@ def run_kind(kind, pool, tol, min_side, boxes=None, verbose=False):
     level, n, at_min = (first_boxes() if boxes is None else list(boxes)), 0, 0
     while level:
         chunk = max(1, min(16, len(level) // (4 * pool._processes)))
-        res = pool.map(step, [(kind, lo, s) for lo, s in level], chunksize=chunk)
+        res = pool.map(step, [(kind, lo, s, best, tol) for lo, s in level], chunksize=chunk)
         pts = [r[1] for r in res if r is not None and r[1] is not None]
         if pts:
             best = min(best, min(pts)) if small else max(best, max(pts))
@@ -701,7 +705,15 @@ def combine(args):
     top = lambda key: float(np.max(rec[:, col[key]]))
     if np.isnan(rec[:, 8:]).any():
         raise SystemExit('a record holds NaN')
-    fs, tr = np.load(args.fs), np.load(args.transitions)
+    fs = np.load(args.fs)
+    tr = {}
+    for path in args.transitions:
+        z = np.load(path)
+        tr.update({k: z[k] for k in z.files})
+    missing = [ch for ch in CHARTS if f'c1_{ch[0]}{ch[1]}_bound' not in tr
+               or f'c2_{ch[0]}{ch[1]}_bound' not in tr]
+    if missing:
+        raise SystemExit(f'the files of the stage transitions miss the charts {missing}')
     x = lambda v: arb(float(v))
     c_up, mu_min = x(top('mu_up')), x(float(np.min(rec[:, col['mu_low']])))
     lam = mu_min * x(fs['lam0_bound'])
@@ -762,10 +774,14 @@ def main():
         p.add_argument('--min-depth', type=int, default=9,
                        help='the smallest side of a box is R / 2^min_depth')
         p.add_argument('--out', required=True)
+        if name == 'transitions':
+            p.add_argument('--charts', nargs='*', default=None,
+                           help='only these charts, as digit pairs ij (default: all 11)')
     c = sub.add_parser('combine')
     c.add_argument('--runs', nargs='+', required=True)
     c.add_argument('--fs', required=True)
-    c.add_argument('--transitions', required=True)
+    c.add_argument('--transitions', nargs='+', required=True,
+                   help='the files of the stage transitions; together they must hold all 11 charts')
     c.add_argument('--out', default=None)
     args = ap.parse_args()
     if args.stage == 'combine':
@@ -774,7 +790,8 @@ def main():
         raise SystemExit(f'{args.out} exists; choose a new file')
     if args.stage == 'fs':
         return stage(args, [('fs', 0), ('fs', 1)], 'fs')
-    return stage(args, [(kind, ch) for ch in CHARTS for kind in ('c1', 'c2')], 'transitions')
+    charts = CHARTS if not args.charts else [tuple(int(x) for x in c) for c in args.charts]
+    return stage(args, [(kind, ch) for ch in charts for kind in ('c1', 'c2')], 'transitions')
 
 
 if __name__ == '__main__':
