@@ -254,20 +254,22 @@ def test_search():
                                              for k, x in enumerate((0.62, 0.50, 0.45, 0.70)))]
             boxes = corner + meet[::max(1, len(meet) // 23)][:24 - len(corner)]
             r = ca.run_kind(kind, pool, 0.3, ca.R / 2 ** 9, boxes=boxes)
-            vals = []
-            while len(vals) < 40:
-                lo, s = boxes[len(vals) % len(boxes)]
+            vals, tries = [], 0
+            while len(vals) < 40 and tries < 100000:
+                tries += 1
+                lo, s = boxes[RNG.integers(len(boxes))]
                 x = [lo[k] + s * RNG.uniform() for k in range(4)]
                 if x[1] > x[0]:
                     continue
                 a0, a1 = acb(x[0], x[1]), acb(x[2], x[3])
                 if all(ca.inside(ca.moduli(a0, a1), ch) for ch in ca.domains(kind)):
                     vals.append(float(ca.value(kind, a0, a1).mid()))
+            assert len(vals) >= 10, (kind, len(vals), tries)
             if ca.is_min(kind):
                 assert 0 < r['bound'] <= min(vals), (kind, r, min(vals))
             else:
                 assert r['bound'] >= max(vals), (kind, r, max(vals))
-            print(f'  {kind}: bound {r["bound"]:.6g}, best {r["best"]:.6g}, random points '
+            print(f'  {kind}: bound {r["bound"]:.6g}, best {r["best"]:.6g}, {len(vals)} random points '
                   f'{min(vals) if ca.is_min(kind) else max(vals):.6g}, {r["boxes"]} boxes, '
                   f'{r["at_min"]} at the smallest side', flush=True)
     print(f'test_search: PASS ({time.perf_counter() - t0:.0f}s)', flush=True)
