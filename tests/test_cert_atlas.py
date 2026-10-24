@@ -45,7 +45,7 @@ def random_points(count, domains):
         if x[1] > x[0]:
             continue
         t0, t1 = acb(x[0], x[1]), acb(x[2], x[3])
-        m, _ = ca.moduli(t0, t1)
+        m = ca.moduli(t0, t1)
         if all(ca.inside(m, ch) for ch in domains):
             out.append((complex(x[0], x[1]), complex(x[2], x[3])))
     return out
@@ -87,7 +87,7 @@ def test_fs():
                 g[i, j] = (hess[xi][xj] + hess[yi][yj] + 1j * (hess[xi][yj] - hess[yi][xj])) / 4
         ev = sorted(mp.re(v) / (mp.pi * mp.sqrt(2)) for v in mp.eig(g)[0])
         a0, a1 = acb(t0), acb(t1)
-        lo, hi = ca.fs_eigs(a0, a1, ca.moduli(a0, a1)[1])
+        lo, hi = ca.fs_eigs(a0, a1, ca.wof(a0, a1))
         worst = max(worst, abs(float(lo.mid()) - ev[0]) / ev[0], abs(float(hi.mid()) - ev[1]) / ev[1])
     assert worst < 1e-12, worst
     print(f'test_fs: PASS (largest relative difference {float(worst):.1e})', flush=True)
@@ -122,9 +122,7 @@ def test_search():
             r = ca.run_kind(kind, pool, 0.2, ca.R / 2 ** 5)
             vals = []
             for p0, p1 in random_points(40, ca.domains(kind)):
-                a0, a1 = acb(p0), acb(p1)
-                _, w = ca.moduli(a0, a1)
-                vals.append(float(ca.value(kind, a0, a1, w).mid()))
+                vals.append(float(ca.value(kind, acb(p0), acb(p1)).mid()))
             if ca.is_min(kind):
                 assert r['bound'] <= min(vals) and r['bound'] > 0, (kind, r, min(vals))
             else:

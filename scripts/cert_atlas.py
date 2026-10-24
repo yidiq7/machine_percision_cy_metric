@@ -17,9 +17,11 @@ Stages:
 * combine: the constants of the draft from the records of a run (all parts) and the results
   of fs and transitions.
 
-The value of a box is an arb enclosure over the box. A branch-and-bound halves a box in each
-coordinate until its bound is within --tol of the best value at a point of the domain, or its
-side is at most --min-side. The result is the largest (or smallest) bound of a box.
+The bound of a box is the better of two arb enclosures over the box: the ball value, and the
+centered form q(c) + grad q(box) . (x - c), with the partials from dual numbers. A
+branch-and-bound halves a box in each coordinate until its bound is within --tol of the best
+value at a point of the domain, or its side is at most R / 2^--min-depth. The result is the
+largest (or smallest) bound of a box.
 
 Usage, on CPU cores:
     uv run --extra gpu --locked python -u scripts/cert_atlas.py fs --procs 48 --out A.npz
@@ -58,18 +60,18 @@ PAIRS = [(a, b, IDX[(ma[0] + mb[0], ma[1] + mb[1])]) for a, ma in enumerate(MONS
 
 class Jet:
     """A holomorphic function of (t_0, t_1) to degree 3 about a point: the Taylor coefficients
-    of MONS as acb balls."""
+    of MONS as acb balls (or Duals)."""
 
     def __init__(self, c):
         self.c = c
 
     @staticmethod
     def const(z):
-        return Jet([acb(z)] + [acb(0)] * 9)
+        return Jet([z if isinstance(z, Dual) else acb(z)] + [acb(0)] * 9)
 
     @staticmethod
     def var(k, z):
-        c = [acb(z)] + [acb(0)] * 9
+        c = [z if isinstance(z, Dual) else acb(z)] + [acb(0)] * 9
         c[1 + k] = acb(1)
         return Jet(c)
 
@@ -105,9 +107,67 @@ def inv(x):
     return series(x, 1 / x.c[0], [acb(1), acb(-1), acb(1), acb(-1)])
 
 
+class Dual:
+    """A value and its partial derivatives in the real coordinates (Re t_0, Im t_0, Re t_1,
+    Im t_1), as acb balls. With the balls of a box as the input, each partial encloses its
+    values on the whole box. d is None once a partial has no finite enclosure."""
+    __slots__ = ('v', 'd')
+
+    def __init__(self, v, d):
+        self.v, self.d = v, d
+
+    @staticmethod
+    def lift(x):
+        return x if isinstance(x, Dual) else Dual(acb(x), [acb(0)] * 4)
+
+    def _join(self, o, f):
+        return None if self.d is None or o.d is None else [f(p, q) for p, q in zip(self.d, o.d)]
+
+    def __add__(self, o):
+        o = Dual.lift(o)
+        return Dual(self.v + o.v, self._join(o, lambda p, q: p + q))
+
+    __radd__ = __add__
+
+    def __neg__(self):
+        return Dual(-self.v, None if self.d is None else [-p for p in self.d])
+
+    def __sub__(self, o):
+        return self + (-Dual.lift(o))
+
+    def __rsub__(self, o):
+        return Dual.lift(o) + (-self)
+
+    def __mul__(self, o):
+        o = Dual.lift(o)
+        return Dual(self.v * o.v, self._join(o, lambda p, q: self.v * q + o.v * p))
+
+    __rmul__ = __mul__
+
+    def inv(self):
+        r = 1 / self.v
+        return Dual(r, None if self.d is None else [-r * r * p for p in self.d])
+
+    def __truediv__(self, o):
+        return self * Dual.lift(o).inv()
+
+    def __rtruediv__(self, o):
+        return Dual.lift(o) * self.inv()
+
+    def conjugate(self):
+        return Dual(self.v.conjugate(), None if self.d is None else [p.conjugate() for p in self.d])
+
+    @property
+    def real(self):
+        return Dual(acb(self.v.real), None if self.d is None else [acb(p.real) for p in self.d])
+
+
 def root4(v):
     """A fourth root of the ball v, continuous on it: the principal root of v, or
     e^(i pi/4) times the principal root of -v when v is nearer the negative real axis."""
+    if isinstance(v, Dual):
+        r = root4(v.v)
+        return Dual(r, None if v.d is None else [r / (4 * v.v) * p for p in v.d])
     if float(v.real.mid()) >= 0:
         return v.root(4)
     return acb(arb(1) / 4).exp_pi_i() * (-v).root(4)
@@ -126,10 +186,33 @@ def sq(x):
     return x * x
 
 
+def abs2(x):
+    """abs(x)^2 as the real part of x conj(x), for an acb or a Dual."""
+    return (x * x.conjugate()).real
+
+
 def root_up(x):
     """sqrt of the upper end of the ball x, for a true value not below 0: its upper end is an
     upper bound of the true root (the lower end of x can be below 0 for a ball that holds 0)."""
     return arb(up(x)).sqrt()
+
+
+def sqrt_up(x):
+    """A root of x >= 0 whose upper end bounds the true root; for a Dual, with the partials of
+    the root where x proves to be above 0 (else no partials)."""
+    if not isinstance(x, Dual):
+        return root_up(x)
+    v = x.v.real
+    if down(v) > 0:
+        r = v.sqrt()
+        return Dual(acb(r), None if x.d is None else [p / (2 * r) for p in x.d])
+    return Dual(acb(root_up(v)), None)
+
+
+def wof(t0, t1):
+    """w with w^4 = -(1 + t_0^4 + t_1^4), for acb balls or Duals."""
+    q0, q1 = t0 * t0, t1 * t1
+    return root4(-(1 + q0 * q0 + q1 * q1))
 
 
 def ball(lo, s):
@@ -138,11 +221,19 @@ def ball(lo, s):
     return acb(x[0], x[1]), acb(x[2], x[3])
 
 
+def _range(x):
+    """(lower, upper) floats of an arb x >= 0; a lower end below 0 (or NaN) gives 0."""
+    lo = down(x)
+    return (lo if lo > 0 else 0.0), up(x)
+
+
 def moduli(t0, t1):
-    """abs(z) for z = (t_0, t_1, w, 1), as arb balls, and w."""
+    """The ranges (lower, upper) of abs(z) for z = (t_0, t_1, w, 1), from abs(w)^4 =
+    abs(1 + t_0^4 + t_1^4), so that a ball that holds w = 0 gives no NaN."""
     q0, q1 = t0 * t0, t1 * t1
-    w = root4(-(1 + q0 * q0 + q1 * q1))
-    return [abs(t0), abs(t1), abs(w), arb(1)], w
+    lo_u, hi_u = _range(abs(1 + q0 * q0 + q1 * q1))
+    w = (down(arb(lo_u).sqrt().sqrt()) if lo_u > 0 else 0.0, up(arb(hi_u).sqrt().sqrt()))
+    return [_range(abs(t0)), _range(abs(t1)), w, (1.0, 1.0)]
 
 
 def _below(a, k, b):
@@ -151,23 +242,22 @@ def _below(a, k, b):
 
 
 def may_meet(m, chart):
-    """False only if the balls m of the moduli prove that no point is in D(chart)."""
+    """False only if the ranges m of the moduli prove that no point is in D(chart)."""
     i, j = chart
     for x in range(4):
-        if x != i and _below(up(m[i]), F99, down(m[x])):
+        if x != i and _below(m[i][1], F99, m[x][0]):
             return False
-        if x not in chart and _below(up(m[j]), F98, down(m[x])):
+        if x not in chart and _below(m[j][1], F98, m[x][0]):
             return False
     return True
 
 
 def inside(m, chart):
-    """True only if the balls m prove that their point is in D(chart)."""
+    """True only if the ranges m prove that their point is in D(chart)."""
     i, j = chart
-    return all(not _below(down(m[i]), F99, up(m[x])) and math.isfinite(up(m[x]))
-               for x in range(4) if x != i) \
-        and all(not _below(down(m[j]), F98, up(m[x])) and math.isfinite(up(m[x]))
-                for x in range(4) if x not in chart)
+    ok = lambda a, k, b: math.isfinite(b) and not _below(a, k, b)
+    return all(ok(m[i][0], F99, m[x][1]) for x in range(4) if x != i) \
+        and all(ok(m[j][0], F98, m[x][1]) for x in range(4) if x not in chart)
 
 
 def in_wedge(lo, s):
@@ -179,19 +269,19 @@ def in_wedge(lo, s):
 
 
 def fs_eigs(t0, t1, w):
-    """Balls of the two eigenvalues of the FS metric of volume 1 in the chart b: the lower end of
-    the first and the upper end of the second are bounds (root_up)."""
+    """The two eigenvalues of the FS metric of volume 1 in the chart b, for acb balls or Duals:
+    the lower end of the first and the upper end of the second are bounds (sqrt_up)."""
     y = [t0, t1, w]
     r0, r1 = t0 / w, t1 / w
     jac = [[acb(1), acb(0)], [acb(0), acb(1)], [-r0 * r0 * r0, -r1 * r1 * r1]]
-    s = 1 + sq(abs(t0)) + sq(abs(t1)) + sq(abs(w))
+    s = 1 + abs2(t0) + abs2(t1) + abs2(w)
     h = [[(1 if m == q else 0) / s - y[m].conjugate() * y[q] / (s * s) for q in range(3)]
          for m in range(3)]
     g = [[sum((jac[m][i] * h[m][q] * jac[q][j].conjugate() for m in range(3) for q in range(3)),
               acb(0)) for j in range(2)] for i in range(2)]
     a, d = g[0][0].real, g[1][1].real
     mid = (a + d) / 2
-    rad = root_up(sq((a - d) / 2) + sq(abs(g[0][1])))
+    rad = sqrt_up(sq((a - d) / 2) + abs2(g[0][1]))
     scale = arb.pi() * arb(2).sqrt()
     return (mid - rad) / scale, (mid + rad) / scale
 
@@ -208,20 +298,20 @@ def chart_jets(t0, t1, chart):
 
 
 def deriv_norms(comps):
-    """Balls whose upper ends bound the real norms of D^2 F and D^3 F (2 and 2 sqrt 2 times
-    the complex norms)."""
-    a2 = lambda f, m: sq(abs(f.c[IDX[m]]))
+    """The real norms of D^2 F and D^3 F (2 and 2 sqrt 2 times the complex norms), with upper
+    ends that bound them (sqrt_up)."""
+    a2 = lambda f, m: abs2(f.c[IDX[m]])
     d2 = sum((4 * a2(f, (2, 0)) + 2 * a2(f, (1, 1)) + 4 * a2(f, (0, 2)) for f in comps), arb(0))
     d3 = sum((36 * a2(f, (3, 0)) + 12 * a2(f, (2, 1)) + 12 * a2(f, (1, 2)) + 36 * a2(f, (0, 3))
               for f in comps), arb(0))
-    return 2 * root_up(d2), 2 * root_up(2 * d3)
+    return 2 * sqrt_up(d2), 2 * sqrt_up(2 * d3)
 
 
-def value(kind, t0, t1, w):
-    """The arb value of the quantity `kind` at the ball t: ('fs', 0 or 1) or ('d2' or 'd3',
-    chart)."""
+def value(kind, t0, t1):
+    """The value of the quantity `kind` at t (acb balls, or Duals): ('fs', 0 or 1) or ('d2' or
+    'd3', chart)."""
     if kind[0] == 'fs':
-        return fs_eigs(t0, t1, w)[kind[1]]
+        return fs_eigs(t0, t1, wof(t0, t1))[kind[1]]
     d2, d3 = deriv_norms(chart_jets(t0, t1, kind[1]))
     return d2 if kind[0] == 'd2' else d3
 
@@ -235,19 +325,6 @@ def is_min(kind):
 
 
 # ---------------------------------------------------------------- the search
-
-
-def point_value(kind, lo, s):
-    """The value at the center of the box if the center is in the domain, else None."""
-    c = [lo[k] + s / 2 for k in range(4)]
-    if c[1] > c[0]:
-        return None
-    t0, t1 = acb(c[0], c[1]), acb(c[2], c[3])
-    m, w = moduli(t0, t1)
-    if not all(inside(m, ch) for ch in domains(kind)):
-        return None
-    v = value(kind, t0, t1, w)
-    return up(v) if is_min(kind) else down(v)
 
 
 def children(lo, s):
@@ -266,19 +343,38 @@ def first_boxes():
     return out
 
 
+# The partials of t_0 and t_1 in (Re t_0, Im t_0, Re t_1, Im t_1).
+D_T0 = [acb(1), acb(0, 1), acb(0), acb(0)]
+D_T1 = [acb(0), acb(0), acb(1), acb(0, 1)]
+
+
 def step(job):
-    """None if the box cannot meet the domain, else (its bound, the value at its center or
-    None). A NaN bound counts as no bound."""
+    """None if the box cannot meet the domain, else (its bound, the value at its center if the
+    center is in the domain, else None). The bound is the better of the ball value on the box
+    and the centered form q(c) + sum of the partials on the box times [-s/2, s/2]; a NaN bound
+    counts as no bound."""
     kind, lo, s = job
     t0, t1 = ball(lo, s)
-    m, w = moduli(t0, t1)
-    if not all(may_meet(m, ch) for ch in domains(kind)):
+    if not all(may_meet(moduli(t0, t1), ch) for ch in domains(kind)):
         return None
-    v = value(kind, t0, t1, w)
-    b = down(v) if is_min(kind) else up(v)
+    small = is_min(kind)
+    pick = down if small else up
+    q = value(kind, Dual(t0, D_T0), Dual(t1, D_T1))
+    b = pick(q.v.real)
+    c = [lo[k] + s / 2 for k in range(4)]
+    c0, c1 = acb(c[0], c[1]), acb(c[2], c[3])
+    qc = value(kind, c0, c1)
+    if q.d is not None:
+        half = arb(0, s / 2)
+        bc = pick(qc + sum((p.real * half for p in q.d), arb(0)))
+        if not math.isnan(bc):
+            b = bc if math.isnan(b) else (max(b, bc) if small else min(b, bc))
     if math.isnan(b):
-        b = -math.inf if is_min(kind) else math.inf
-    return b, point_value(kind, lo, s)
+        b = -math.inf if small else math.inf
+    point = None
+    if c[1] <= c[0] and all(inside(moduli(c0, c1), ch) for ch in domains(kind)):
+        point = up(qc) if small else down(qc)
+    return b, point
 
 
 def run_kind(kind, pool, tol, min_side):

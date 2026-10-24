@@ -152,6 +152,13 @@ def sym_sqrt_inv(m):
     return q * mp.diag([1 / mp.sqrt(x) for x in w]) * q.T
 
 
+def sym_eigs(m):
+    """The eigenvalues of a real symmetric matrix (mpmath eigsy; the QR of eig does not
+    converge on the double eigenvalues of a realified Hermitian matrix)."""
+    w = mp.eigsy((m + m.T) / 2)[0]
+    return [w[k] for k in range(m.rows)]
+
+
 def frob3(t):
     return mp.sqrt(mp.fsum(t[a][b][c] ** 2 for a in range(4) for b in range(4) for c in range(4)))
 
@@ -255,11 +262,13 @@ class Reference:
         x = list(tau) + [mp.conj(t) for t in tau]
         G = self.c * realify(self.cmat(self.g, x))
         G0 = realify(self.cmat(self.gf, x)) / (mp.pi * mp.sqrt(2))
-        mu = sorted(mp.re(v) for v in mp.eig(G0 ** -1 * G)[0])
+        s0 = sym_sqrt_inv(G0)
+        mu = sorted(sym_eigs(s0 * G * s0))
         dG = [self.c * realify(self.cmat(self.dg[v], x)) for v in range(4)]
         ddG = [[self.c * realify(self.cmat(self.ddg[v][w], x)) for w in range(4)] for v in range(4)]
         ric = ricci(G, dG, ddG)
-        eig_r = [mp.re(v) for v in mp.eig(G ** -1 * ric)[0]]
+        sg = sym_sqrt_inv(G)
+        eig_r = sym_eigs(sg * (ric + ric.T) / 2 * sg)
         k_tau = frob3(normalized(dG, sym_sqrt_inv(G)))
         return dict(mu=mu, ric=max(abs(v) for v in eig_r), eig_r=eig_r, k_tau=k_tau,
                     k_t=self.k_chart(tau), dG=dG, G=G, x=x)
