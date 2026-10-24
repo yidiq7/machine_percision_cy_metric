@@ -646,7 +646,7 @@ def main():
     for name in ('fs', 'transitions'):
         p = sub.add_parser(name)
         p.add_argument('--procs', type=int, default=8)
-        p.add_argument('--tol', type=float, default=0.02)
+        p.add_argument('--tol', type=float, default=0.05)
         p.add_argument('--min-depth', type=int, default=9,
                        help='the smallest side of a box is R / 2^min_depth')
         p.add_argument('--out', required=True)

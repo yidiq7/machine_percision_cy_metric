@@ -242,7 +242,7 @@ def test_search():
     kinds = [('fs', 0), ('fs', 1), ('c1', (2, 3)), ('c2', (3, 0))]
     with multiprocessing.Pool(PROCS) as pool:
         for kind in kinds:
-            r = ca.run_kind(kind, pool, 0.1, ca.R / 2 ** 7)
+            r = ca.run_kind(kind, pool, 0.3, ca.R / 2 ** 7)
             vals = []
             for p0, p1 in random_points(40, ca.domains(kind)):
                 vals.append(float(ca.value(kind, acb(p0), acb(p1)).mid()))
