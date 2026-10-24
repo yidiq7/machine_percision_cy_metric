@@ -51,9 +51,20 @@ products take g and g_FS at the order METRIC_ORDER = 10 (the rest goes to the re
    (1 + ∇h·n₀₁) (a series in sp2), g_t = J⁻ᵀ g J̄⁻¹ as models, and ∂_t = J⁻ᵀ ∂_τ, so that
    Γ_P[c] = Σ_a (J⁻¹ P)_ac ∂_τa g_t,P. The same bound as in 3 gives column `k_t`.
 
+5. **In each chart of the atlas.** `cover.chart_mask` (mpmath.iv on the cell) gives the charts
+   (i, j) whose domain D(i, j) can meet the cell. For each of them, t_a = (z_k ÷ z_i, z_l ÷ z_i)
+   from the models of the point y (a series for 1 ÷ z_i when i ≠ 3), J_a = dt_a/dτ by Cauchy,
+   J_a⁻¹ by the adjugate and a series for 1 ÷ det, and g_a = J_a⁻ᵀ g J̄_a⁻¹; the same bound as in 3
+   gives k_a, and the eigenvalues of G_a = c g_a come from A = Pᵀ P̄ and B = Pᵀ g_a P̄ as in 1.
+   Columns `k_atlas` (the largest k_a), `lam_atlas` and `Lam_atlas` (the smallest and the largest
+   eigenvalue). A chart a and a point x ∈ U_a go to a point of F and a chart that meets its cell
+   by an element of G, which is an isometry and maps charts to charts by linear maps, so these
+   columns bound K̃, λ and Λ of the draft directly.
+
 Each FP64 operation of these bounds uses `tmgpu.mag` (up for upper bounds, down for lower
 bounds). A box with no proof (a lower bound ≤ 0) gets inf for an upper bound and 0 for a lower
-bound. `cert_partition` checks that each new column is finite and that mu_low > 0.
+bound. `cert_partition` checks that each new column is finite, that mu_low > 0 and
+lam_atlas > 0, and that k_atlas ≥ k_t.
 
 ## The bounds of FS and of the chart maps (CPU, `scripts/cert_atlas.py`, arb)
 
@@ -98,11 +109,13 @@ arg t₁ ∈ [0, π/2].
 From the records of the run and the two CPU results, in arb with outward rounding:
 
 * C = max mu_up; μ_min = min mu_low; κ = max ric ÷ 3;
-* λ = μ_min λ₀ and Λ = C Λ₀;
+* λ = the larger of μ_min λ₀ and min lam_atlas; Λ = the smaller of C Λ₀ and max Lam_atlas;
 * c̃1 = √C c̃1⁰ ÷ μ_min and c̃2 = √C c̃2⁰ ÷ μ_min^(3/2), from abs(Q_a v) ≤ √C abs(Q₀_a v) and
   abs(Q₀_b Q_b⁻¹) ≤ μ_min^(−1/2); or c̃1 = Λ^(1/2) λ⁻¹ sup abs(D²F) and c̃2 = Λ^(1/2) λ^(−3/2)
   sup abs(D³F); the smaller of the two;
-* K̃ = max k_t + 2 c̃1 (the chain rule from the chart of F to any chart, with the term of c̃1);
+* K̃ = the smaller of max k_atlas and max k_t + 2 c̃1 (the chain rule from the chart of F to any
+  chart, with the term of c̃1). In the v3 run the second gave 9,341, and k_t alone is at most
+  438.7, so the first route is the one that counts;
 * the C¹ term of the residual in the parent charts: Λ^(1/2) max grad_g;
 * the diameters sqrt(C) diam(·, ω₀) from the Proposition of the draft.
 
