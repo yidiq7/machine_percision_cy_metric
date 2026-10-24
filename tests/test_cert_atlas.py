@@ -6,8 +6,9 @@
 2. At random points, the real norms of D^2 F_a and D^3 F_a of `value` agree with the
    Frobenius norms of the second and third partial derivatives of F_a as a map R^4 -> R^4,
    from mpmath differences, for 4 charts.
-3. The branch-and-bound with coarse settings gives bounds at or beyond the values at random
-   points of the domain, for lam0, Lam0, c~1_0 of one chart and c~2_0 of another.
+3. The branch-and-bound from 24 first boxes (with the corner of lam0) to the side R/512 gives
+   bounds at or beyond the values at random points of those boxes in the domain, for lam0, Lam0,
+   c~1_0 of one chart and c~2_0 of another.
 6. The FS normalization of the transitions: the norm of Q0_a D^n F [Q0_b^-1 .] from the FS
    matrices of both charts equals that from Q0_b DF^-1 (one metric), and value bounds it.
 4. combine on a synthetic run gives the formulas of the design.
@@ -238,21 +239,36 @@ def test_fs_normalized():
 
 
 def test_search():
+    """The branch-and-bound from 24 first boxes that meet each domain (the corner box of
+    lam0 among them) down to the side R/512: each bound holds at random points of those boxes
+    in the domain."""
     t0 = time.perf_counter()
     kinds = [('fs', 0), ('fs', 1), ('c1', (2, 3)), ('c2', (3, 0))]
+    side = ca.R / 8
     with multiprocessing.Pool(PROCS) as pool:
         for kind in kinds:
-            r = ca.run_kind(kind, pool, 0.3, ca.R / 2 ** 7)
+            meet = [b for b in ca.first_boxes()
+                    if all(ca.may_meet(ca.moduli(*ca.ball(*b)), ch) for ch in ca.domains(kind))]
+            corner = [b for b in meet if all(abs(b[0][k] + side / 2 - x) < side / 2
+                                             for k, x in enumerate((0.62, 0.50, 0.45, 0.70)))]
+            boxes = corner + meet[::max(1, len(meet) // 23)][:24 - len(corner)]
+            r = ca.run_kind(kind, pool, 0.05, ca.R / 2 ** 9, boxes=boxes)
             vals = []
-            for p0, p1 in random_points(40, ca.domains(kind)):
-                vals.append(float(ca.value(kind, acb(p0), acb(p1)).mid()))
+            while len(vals) < 40:
+                lo, s = boxes[len(vals) % len(boxes)]
+                x = [lo[k] + s * RNG.uniform() for k in range(4)]
+                if x[1] > x[0]:
+                    continue
+                a0, a1 = acb(x[0], x[1]), acb(x[2], x[3])
+                if all(ca.inside(ca.moduli(a0, a1), ch) for ch in ca.domains(kind)):
+                    vals.append(float(ca.value(kind, a0, a1).mid()))
             if ca.is_min(kind):
-                assert r['bound'] <= min(vals) and r['bound'] > 0, (kind, r, min(vals))
+                assert 0 < r['bound'] <= min(vals), (kind, r, min(vals))
             else:
                 assert r['bound'] >= max(vals), (kind, r, max(vals))
             print(f'  {kind}: bound {r["bound"]:.6g}, best {r["best"]:.6g}, random points '
-                  f'{min(vals) if ca.is_min(kind) else max(vals):.6g}, {r["boxes"]} boxes',
-                  flush=True)
+                  f'{min(vals) if ca.is_min(kind) else max(vals):.6g}, {r["boxes"]} boxes, '
+                  f'{r["at_min"]} at the smallest side', flush=True)
     print(f'test_search: PASS ({time.perf_counter() - t0:.0f}s)', flush=True)
 
 

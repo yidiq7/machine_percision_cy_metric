@@ -557,13 +557,13 @@ def step(job):
     return b, point
 
 
-def run_kind(kind, pool, tol, min_side):
+def run_kind(kind, pool, tol, min_side, boxes=None):
     """The branch-and-bound in rounds of one side, so that each round knows the best point
-    value of all boxes so far."""
+    value of all boxes so far; boxes (default: first_boxes()) are the boxes to start from."""
     small = is_min(kind)
     best = math.inf if small else 0.0
     top = math.inf if small else -math.inf
-    level, n, at_min = first_boxes(), 0, 0
+    level, n, at_min = (first_boxes() if boxes is None else list(boxes)), 0, 0
     while level:
         res = pool.map(step, [(kind, lo, s) for lo, s in level], chunksize=16)
         pts = [r[1] for r in res if r is not None and r[1] is not None]
