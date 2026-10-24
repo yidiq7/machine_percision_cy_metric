@@ -8,7 +8,7 @@
    from mpmath differences, for 4 charts.
 3. The branch-and-bound from 24 first boxes (with the corner of lam0) to the side R/512 gives
    bounds at or beyond the values at random points of those boxes in the domain, for lam0, Lam0,
-   c~1_0 of one chart and c~2_0 of another.
+   the norm of D^2 F of one chart and of D^3 F of another.
 6. The FS normalization of the transitions: the norm of Q0_a D^n F [Q0_b^-1 .] from the FS
    matrices of both charts equals that from Q0_b DF^-1 (one metric), and value at the point
    gives it within 1 + 1e-6.
@@ -244,7 +244,7 @@ def test_search():
     lam0 among them) down to the side R/512: each bound holds at random points of those boxes
     in the domain."""
     t0 = time.perf_counter()
-    kinds = [('fs', 0), ('fs', 1), ('c1', (2, 3)), ('c2', (3, 0))]
+    kinds = [('fs', 0), ('fs', 1), ('d2', (2, 3)), ('d3', (3, 0))]
     side = ca.R / 8
     with multiprocessing.Pool(PROCS) as pool:
         for kind in kinds:
@@ -253,7 +253,7 @@ def test_search():
             corner = [b for b in meet if all(abs(b[0][k] + side / 2 - x) < side / 2
                                              for k, x in enumerate((0.62, 0.50, 0.45, 0.70)))]
             boxes = corner + meet[::max(1, len(meet) // 23)][:24 - len(corner)]
-            r = ca.run_kind(kind, pool, 0.05, ca.R / 2 ** 9, boxes=boxes)
+            r = ca.run_kind(kind, pool, 0.3, ca.R / 2 ** 9, boxes=boxes)
             vals = []
             while len(vals) < 40:
                 lo, s = boxes[len(vals) % len(boxes)]
