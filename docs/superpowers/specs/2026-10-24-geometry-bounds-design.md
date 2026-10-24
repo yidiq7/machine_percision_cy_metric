@@ -82,7 +82,16 @@ arg t₁ ∈ [0, π/2].
 4. A branch-and-bound on boxes of (Re t₀, Im t₀, Re t₁, Im t₁), in rounds of one side so that each
    round knows the best point value: a box that cannot meet the domain goes out; a box whose
    bound is within the tolerance of the best point value, or of the smallest side, gives its
-   bound. The result is the largest (smallest) bound of a box.
+   bound. The result is the largest (smallest) bound of a box. For the transitions a floor from
+   random points of all 11 charts lets a chart stop early, since combine takes only the maximum.
+5. The FS eigenvalues of a ball also come from two closed forms with no root of a ball (s g =
+   I + a aᴴ − b bᴴ / s, and the same in the basis a / abs(a), which has no cancellation near the
+   corner abs(t₀) ≈ abs(t₁) ≈ abs(w) ≈ 0.8).
+6. Two routes for the transitions: `c1 c2` (the FS form at the same point, normalized at the box
+   center by S = Q_c⁻¹) and `d2 d3` (the plain real norms of D²F and D³F, with the factors
+   Λ^(1/2) λ⁻¹ and Λ^(1/2) λ^(−3/2)). combine takes the smaller valid bound. On 2026-10-24 only
+   `d2 d3` converged in the time of a run: near the overlaps of near-equal moduli the jets on
+   balls lose the cancellations of the formulas, so `c1 c2` needs the side R/512 there.
 
 ## The combination (`scripts/cert_atlas.py combine`)
 
@@ -91,7 +100,8 @@ From the records of the run and the two CPU results, in arb with outward roundin
 * C = max mu_up; μ_min = min mu_low; κ = max ric ÷ 3;
 * λ = μ_min λ₀ and Λ = C Λ₀;
 * c̃1 = √C c̃1⁰ ÷ μ_min and c̃2 = √C c̃2⁰ ÷ μ_min^(3/2), from abs(Q_a v) ≤ √C abs(Q₀_a v) and
-  abs(Q₀_b Q_b⁻¹) ≤ μ_min^(−1/2);
+  abs(Q₀_b Q_b⁻¹) ≤ μ_min^(−1/2); or c̃1 = Λ^(1/2) λ⁻¹ sup abs(D²F) and c̃2 = Λ^(1/2) λ^(−3/2)
+  sup abs(D³F); the smaller of the two;
 * K̃ = max k_t + 2 c̃1 (the chain rule from the chart of F to any chart, with the term of c̃1);
 * the C¹ term of the residual in the parent charts: Λ^(1/2) max grad_g;
 * the diameters sqrt(C) diam(·, ω₀) from the Proposition of the draft.
