@@ -2,7 +2,7 @@
 
 1. At t = 0 the FS metric of volume 1 is I / (2 pi sqrt 2), and at random points of D(3, 2)
    fs_eigs agrees with the eigenvalues of ddbar log(1 + abs(y)^2) from mpmath differences in
-   real coordinates, divided by pi sqrt 2.
+   real coordinates, divided by pi sqrt 2; the closed form fs_closed agrees with fs_eigs.
 2. At random points, the real norms of D^2 F_a and D^3 F_a of `value` agree with the
    Frobenius norms of the second and third partial derivatives of F_a as a map R^4 -> R^4,
    from mpmath differences, for 4 charts.
@@ -78,7 +78,7 @@ def test_fs():
     lo, hi = ca.fs_eigs(acb(0), acb(0), ca.root4(acb(-1)))
     want = 1 / (2 * mp.pi * mp.sqrt(2))
     assert abs(float(lo.mid()) - want) < 1e-15 and abs(float(hi.mid()) - want) < 1e-15
-    worst = 0
+    worst, worst_closed = 0, 0
     for t0, t1 in random_points(6, [ca.CHART_B]):
         def phi(a, b, c, d):
             s0, s1 = mp.mpc(a, b), mp.mpc(c, d)
@@ -95,8 +95,12 @@ def test_fs():
         a0, a1 = acb(t0), acb(t1)
         lo, hi = ca.fs_eigs(a0, a1, ca.wof(a0, a1))
         worst = max(worst, abs(float(lo.mid()) - ev[0]) / ev[0], abs(float(hi.mid()) - ev[1]) / ev[1])
-    assert worst < 1e-12, worst
-    print(f'test_fs: PASS (largest relative difference {float(worst):.1e})', flush=True)
+        c_lo, c_hi = ca.fs_closed(a0, a1)
+        e_lo, e_hi = (float(x.mid()) for x in ca.fs_eigs(a0, a1, ca.wof(a0, a1)))
+        worst_closed = max(worst_closed, abs(c_lo - e_lo) / e_lo, abs(c_hi - e_hi) / e_hi)
+    assert worst < 1e-12 and worst_closed < 1e-12, (worst, worst_closed)
+    print(f'test_fs: PASS (largest relative difference {float(worst):.1e}; closed form '
+          f'{float(worst_closed):.1e})', flush=True)
 
 
 def test_norms():

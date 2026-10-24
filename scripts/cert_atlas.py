@@ -24,7 +24,8 @@ The bound of a box of side s and center c comes from Taylor jets at c (exact) an
 (arb balls), so that the growth of the balls enters only the term of s^2:
 * E_n = DF^-1 D^n F (n = 2, 3), holomorphic in t: abs(E(x)) <= abs(E(c)) + abs(DE(c)) s
   + sup abs(D^2 E) s^2 / 2 on the box, since abs(x - c)_2 <= s; jets of F of degree 5.
-* the FS eigenvalues: the potential log(1 + t.sigma + w(t) w~(sigma)) in the four variables
+* the FS eigenvalues: the ball value comes from the closed form `fs_closed`, which takes no
+  root of a ball; and the potential log(1 + t.sigma + w(t) w~(sigma)) in the four variables
   (t, sigma), sigma = conj(t) on the slice, as jets of degree 4. g(x) - g(c) is at most the
   linear terms at c plus the terms of degree 2 on the box, each with abs(x_i - c_i) <= s /
   sqrt 2, and Weyl's inequality moves each eigenvalue by at most abs(g(x) - g(c))_F.
@@ -302,6 +303,40 @@ def fs_eigs(t0, t1, w):
     return eigs(fs_matrix(t0, t1, w))
 
 
+def fs_closed(t0, t1):
+    """Bounds (low, up) as floats of the two eigenvalues of the FS metric of volume 1 in chart b
+    on the balls t, from the closed form with no root of a ball: with u = 1 + t_0^4 + t_1^4 and
+    abs(w)^2 = abs(u)^(1/2), s g = I + a a^H - b b^H / s, s = 1 + abs(t)^2 + abs(u)^(1/2),
+    abs(a)^2 = (abs(t_0)^6 + abs(t_1)^6) / abs(u)^(3/2), b_i = conj(t_i) + abs(u)^(1/2) t_i^3 / u,
+    abs(a^H b)^2 = abs(sum of conj(t_i^4) + abs(u)^(1/2) abs(t_i)^6 / u)^2 / abs(u)^(3/2).
+    lam_min(M) = 2 det / (tr + sqrt(tr^2 - 4 det)) falls with tr and grows with det, and lam_max(M)
+    = (tr + sqrt(tr^2 - 4 det)) / 2 grows with tr and falls with det."""
+    q = [t0 * t0, t1 * t1]
+    p = [x * x for x in q]
+    r2 = [abs2(t0), abs2(t1)]
+    r6 = [x * x * x for x in r2]
+    u = 1 + p[0] + p[1]
+    au = abs(u)
+    if not down(au) > 0:
+        return -math.inf, math.inf
+    su = au.sqrt()
+    s = 1 + r2[0] + r2[1] + su
+    a2 = (r6[0] + r6[1]) / (au * su)
+    b2 = sum((abs2(t.conjugate() + su * t * x / u) for t, x in zip((t0, t1), q)), arb(0))
+    c = sum((x.conjugate() + su * r / u for x, r in zip(p, r6)), acb(0))
+    cc = abs2(c) / (au * su)
+    tr = 2 + a2 - b2 / s
+    det = (1 + a2) * (1 - b2 / s) + cc / s
+    tr_hi, det_lo, s_lo, s_hi = up(tr), down(det), down(s), up(s)
+    if not (s_lo > 0 and det_lo > 0):
+        return -math.inf, math.inf
+    t_hi, d_lo = arb(tr_hi), arb(det_lo)
+    root = arb(up(t_hi * t_hi - 4 * d_lo)).sqrt() if up(t_hi * t_hi - 4 * d_lo) > 0 else arb(0)
+    low = down(2 * d_lo / (t_hi + root) / arb(s_hi) / FS_SCALE)
+    high = up((t_hi + root) / 2 / arb(s_lo) / FS_SCALE)
+    return low, high
+
+
 def fs_jets(t0, t1):
     """The jets of degree 2 of the matrix g_ij = d_t_i d_sigma_j phi about (t, conj t), with
     phi = log(1 + t.sigma + w(t) w~(sigma)) and w~(sigma) = conj(w(conj sigma))."""
@@ -402,14 +437,14 @@ def value(kind, t0, t1):
     real norm of D^n F_a; ('c1' or 'c2', chart) the real norm of Q0_b E_n [Q0_b^-1 .] with the
     FS form Q0_b of chart b at t, bounded by sqrt(lam_max) lam_min^(-n/2) abs(E_n)."""
     if kind[0] == 'fs':
-        return fs_eigs(t0, t1, wof(t0, t1))[kind[1]]
+        return arb(fs_closed(t0, t1)[kind[1]])
     if kind[0] in ('d2', 'd3'):
         n = 2 if kind[0] == 'd2' else 3
         return real_factor(n) * root_up(square_norm(chart_jets(t0, t1, kind[1]), n))
     n = 2 if kind[0] == 'c1' else 3
-    lo, hi = fs_eigs(t0, t1, wof(t0, t1))
+    lo, hi = fs_closed(t0, t1)
     q = tensor_squares(e_tensor(chart_jets(t0, t1, kind[1]), n))
-    return real_factor(n) * fs_factor(down(lo), up(hi), n) * root_up(q[0])
+    return real_factor(n) * fs_factor(lo, hi, n) * root_up(q[0])
 
 
 def domains(kind):
@@ -445,9 +480,9 @@ def taylor_bound(kind, t0, t1, c0, c1, s):
         bound = norm(jc, n) + norm(jc, n + 1) * s + norm(jb, n + 2) * (arb(s) * s / 2)
         return real_factor(n) * bound
     n = 2 if kind[0] == 'c1' else 3
-    lo_n, hi_n = fs_eigs(t0, t1, wof(t0, t1))
-    lam_lo = max(down(lo_n), down(taylor_bound(('fs', 0), t0, t1, c0, c1, s)))
-    lam_hi = min(up(hi_n), up(taylor_bound(('fs', 1), t0, t1, c0, c1, s)))
+    lo_n, hi_n = fs_closed(t0, t1)
+    lam_lo = max(lo_n, down(taylor_bound(('fs', 0), t0, t1, c0, c1, s)))
+    lam_hi = min(hi_n, up(taylor_bound(('fs', 1), t0, t1, c0, c1, s)))
     qc = tensor_squares(e_tensor(chart_jets(c0, c1, kind[1]), n))
     qb = tensor_squares(e_tensor(chart_jets(t0, t1, kind[1]), n))
     e_up = root_up(qc[0]) + root_up(qc[1]) * s + root_up(qb[2]) * (arb(s) * s / 2)
