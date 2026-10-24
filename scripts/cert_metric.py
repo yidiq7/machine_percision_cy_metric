@@ -46,8 +46,9 @@ def final(vals, k_target):
     return good and vals['mu_low'] > 0 and vals['lam_atlas'] > 0 and vals['k_atlas'] <= k_target
 
 
-def run_reference(cov, r, local, args):
-    """The records of the reference center r, the number of its cells and of computed boxes."""
+def run_reference(cov, r, local, args, trace=None):
+    """The records of the reference center r, the number of its cells and of computed boxes.
+    With a list `trace`, the row of every computed box goes into it, also of a box that splits."""
     k0 = int(local['k0'])
     idx = np.flatnonzero(cov['ref'] == r)
     side = mp.mpf(float(cov['side']))
@@ -68,13 +69,15 @@ def run_reference(cov, r, local, args):
         n_computed += len(batch)
         for j, (lo, s, cen, dl, hm, depth) in enumerate(batch):
             vals = {k: float(info[k][j]) for k in BOUNDS}
+            row = (r, depth, *[float(v) for v in lo], float(s), dl, hm, float(info['lam_big'][j]),
+                   args.order, args.a, *[vals[k] for k in BOUNDS])
+            if trace is not None:
+                trace.append(row)
             if not final(vals, args.k_target) and depth < args.depth:
                 queue.extend((sub, h, c, rad, hmx, depth + 1)
                              for sub, h, c, rad, hmx in cc.halves(lo, s))
                 continue
-            records.append((r, depth, *[float(v) for v in lo], float(s), dl, hm,
-                            float(info['lam_big'][j]), args.order, args.a,
-                            *[vals[k] for k in BOUNDS]))
+            records.append(row)
     return records, len(idx), n_computed
 
 
@@ -93,6 +96,9 @@ def main():
     ap.add_argument('--refs', type=int, nargs='*', default=None,
                     help='only these reference centers (default: every one of the cover)')
     ap.add_argument('--out', type=str, required=True)
+    ap.add_argument('--trace', type=str, default='',
+                    help='also write the rows of every computed box to this file, for a study of '
+                         'the target and the depth')
     args = ap.parse_args()
     if Path(args.out).exists():
         raise SystemExit(f'{args.out} exists; choose a new file')
@@ -101,6 +107,7 @@ def main():
     commit = rs.commit_of(ROOT)
     t0 = time.perf_counter()
     records, shas, n_boxes = [], [], 0
+    trace = [] if args.trace else None
     col = {c: k for k, c in enumerate(rs.METRIC_COLUMNS)}
     for r in refs:
         # One read of the file gives both the hash and the forms that the boxes use.
@@ -108,16 +115,20 @@ def main():
         shas.append(hashlib.sha256(raw).hexdigest())
         local = tc.local_on_gpu(io.BytesIO(raw))
         t1 = time.perf_counter()
-        recs, n_cells, n_ref = run_reference(cov, r, local, args)
+        recs, n_cells, n_ref = run_reference(cov, r, local, args, trace)
         records.extend(recs)
         n_boxes += n_ref
         worst = max((x[col['k_atlas']] for x in recs), default=float('nan'))
-        print(f'reference {r}: {n_cells} cells, {n_ref} boxes computed, {len(recs)} final boxes, '
-              f'largest k_atlas {worst:.3f}; {time.perf_counter() - t1:.1f}s; total {n_boxes} '
-              f'boxes in {time.perf_counter() - t0:.0f}s', flush=True)
+        depths = np.bincount([int(x[1]) for x in recs], minlength=args.depth + 1).tolist()
+        print(f'reference {r}: {n_cells} cells, {n_ref} boxes computed, {len(recs)} final boxes '
+              f'(by depth {depths}), largest k_atlas {worst:.3f}; {time.perf_counter() - t1:.1f}s; '
+              f'total {n_boxes} boxes in {time.perf_counter() - t0:.0f}s', flush=True)
         np.savez(args.out, records=np.array(records).reshape(-1, len(rs.METRIC_COLUMNS)),
                  target=args.k_target, columns=np.array(rs.METRIC_COLUMNS), commit=commit,
                  local_refs=np.array(refs[:len(shas)]), local_sha=np.array(shas))
+        if trace is not None:
+            np.savez(args.trace, records=np.array(trace).reshape(-1, len(rs.METRIC_COLUMNS)),
+                     columns=np.array(rs.METRIC_COLUMNS), commit=commit)
     rec = np.array(records).reshape(-1, len(rs.METRIC_COLUMNS))
     m = lambda k: rec[:, col[k]]
     # np.max and np.min give NaN if one record has NaN, so no NaN can hide here.
