@@ -53,6 +53,8 @@ SERIES_EPS = 1e-34
 K_FULL = 3
 # The models in tau alone (h, the offsets, the monomials) take the order of the box plus this.
 NY_EXTRA = 6
+# metric_bounds takes the products of g and g_FS at this order; the rest goes to the remainder.
+METRIC_ORDER = 10
 
 
 @dataclass
@@ -656,6 +658,7 @@ def box_f(fr, local, delta_box, n, ny, a, hmax, grad=False, keep=None):
     f = tm.add_const(sp4, v, -one)
     if grad:
         info.update(gradient_bounds(sp4, f, g, det, d, k0, keep))
+        info.update(metric_bounds(sp4, sp2, f, g, log_r2, hm, fr.n, d, k0, info))
     clock('metric')
     info.update(rem_g=g[0, 0].rem, rem_f=f.rem, times=clock.times)
     if keep is not None:
@@ -698,7 +701,81 @@ def gradient_bounds(sp4, f, g, det, d, k0, keep=None):
     grad_g = cp.where(pos, mag.div(mag.mul(2.0, grad_tau), root), cp.inf)
     if keep is not None:
         keep.update(dfs=dfs, df_bounds=b, det_low=det_low, g00_low=g00_low, tr_up=tr_up)
-    return dict(grad_tau=grad_tau, grad_g=grad_g, lam_low=lam_low)
+    return dict(grad_tau=grad_tau, grad_g=grad_g, lam_low=lam_low, det_low=det_low, tr_up=tr_up)
+
+
+def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad):
+    """Bounds on the box of radius d of the metric against FS, of Ricci and of the derivative
+    of the metric (docs/superpowers/specs/2026-10-24-geometry-bounds-design.md).
+
+    f and g on d_f > d, log_r2 and the model h of the shift along n (in sp2) on d_Phi > d_f,
+    n (3, 4, B) the unit normal of the frame, grad the dict of `gradient_bounds`. Returns
+    (B,) arrays: mu_up and mu_low bound the eigenvalues of g_FS^-1 g / k0 (omega over the
+    FS form omega_0, both of volume 1); ric bounds abs of each eigenvalue of Ric against G;
+    k_tau and k_t bound the real norm of DG, with each argument normalized by G at the
+    point, in tau and in the chart t = p_01 + tau + n_01 h. A box with no proof gets inf
+    (0 for mu_low). The upper bounds round up and the lower bounds round down.
+    """
+    c = metric_c_low(k0)
+    lam, tr_up, det_low, grad_tau = (grad[k] for k in ('lam_low', 'tr_up', 'det_low', 'grad_tau'))
+    pos = lam > 0
+    lam1 = cp.where(pos, lam, 1.0)
+    root_c = mag.sqrt_down(c)
+    # mu: with s = tr(adj(g_FS) g) / (k0 det g_FS) and p = det g / (k0^2 det g_FS),
+    # mu_max = (s + sqrt(s^2 - 4p)) / 2 grows with s and falls with p, and mu_min = p / mu_max.
+    sp_m = space(4, min(METRIC_ORDER, sp4.n))
+    gm = {k: tm.truncate(sp_m, sp4, tm.restrict(v, d)) for k, v in g.items()}
+    fs = {(i, j): tm.truncate(sp_m, sp4, tm.cauchy_mixed(sp4, log_r2, i, 2 + j, d))
+          for i in range(2) for j in range(2)}
+    det_fs = tm.sub(sp_m, tm.mul(sp_m, fs[0, 0], fs[1, 1]), tm.mul(sp_m, fs[0, 1], fs[1, 0]))
+    tr_adj = tm.sub(sp_m, tm.add(sp_m, tm.mul(sp_m, gm[0, 0], fs[1, 1]),
+                                 tm.mul(sp_m, gm[1, 1], fs[0, 0])),
+                    tm.add(sp_m, tm.mul(sp_m, gm[0, 1], fs[1, 0]), tm.mul(sp_m, gm[1, 0], fs[0, 1])))
+    dfs_low = _real_low(sp_m, det_fs, d)
+    ok_mu = pos & (dfs_low > 0) & (det_low > 0)
+    s = mag.div(tm.bound(sp_m, tr_adj), mag.mul_down(float(k0), cp.where(ok_mu, dfs_low, 1.0)))
+    p = mag.div_down(cp.where(ok_mu, det_low, 0.0),
+                     mag.mul(float(k0 * k0), tm.bound(sp_m, det_fs)))
+    disc = cp.maximum(mag.add(mag.mul(s, s), -mag.mul_down(4.0, p)), 0.0)
+    mu_up = cp.where(ok_mu, mag.mul(0.5, mag.add(s, mag.sqrt(disc))), cp.inf)
+    mu_low = cp.where(ok_mu, mag.div_down(p, mu_up), 0.0)
+    # Ric = -ddbar log(1 + f): abs(Ric)_F <= abs(ddbar f)_F / (1 - abs(f)) + abs(df)^2 / (1 -
+    # abs(f))^2, and an eigenvalue against G has abs at most (2 / c) abs(Ric)_F / lam_min.
+    fxx = [tm.bound(sp4, tm.cauchy_mixed(sp4, f, i, 2 + j, d)) for i in range(2) for j in range(2)]
+    one = mag.sub_down(1.0, tm.bound(sp4, tm.restrict(f, d)))
+    ok_r = pos & (one > 0)
+    one1 = cp.where(ok_r, one, 1.0)
+    ric_f = mag.add(mag.div(_norm(fxx), one1),
+                    mag.div(mag.mul(grad_tau, grad_tau), mag.mul_down(one1, one1)))
+    ric = cp.where(ok_r, mag.div(mag.mul(2.0, ric_f), mag.mul_down(c, lam1)), cp.inf)
+    # DG in tau: Gamma_k = c d_k g in the coordinates of c g = I has the real norm sqrt(8)
+    # abs(Gamma)_F, and abs(Gamma)_F <= abs(dg)_F c^(-1/2) lam_min^(-3/2).
+    dg = [tm.bound(sp4, tm.deriv1(sp4, g[i, j], k, d))
+          for k in range(2) for i in range(2) for j in range(2)]
+    den = mag.mul_down(root_c, mag.mul_down(lam1, mag.sqrt_down(lam1)))
+    k_tau = cp.where(pos, mag.div(mag.mul(mag.sqrt(8.0), _norm(dg)), den), cp.inf)
+    # From tau to t: K_t <= K_tau + 2 N, N <= 2 sqrt(lam_max) abs(J^-1) abs(n_01)
+    # abs(d^2 h)_F / (sqrt(c) lam_min), J = I + n_01 grad(h)^T.
+    d_mid = f.delta
+    hd = [tm.deriv1(sp2, h, k, d_mid) for k in range(2)]
+    hxx = [tm.bound(sp2, tm.deriv1(sp2, hd[0], 0, d)),
+           tm.bound(sp2, tm.cauchy_mixed(sp2, h, 0, 1, d)),
+           tm.bound(sp2, tm.cauchy_mixed(sp2, h, 1, 0, d)),
+           tm.bound(sp2, tm.deriv1(sp2, hd[1], 1, d))]
+    grad_h = _norm([tm.bound(sp2, tm.deriv1(sp2, h, k, d)) for k in range(2)])
+    n01 = _norm([tm.abs_ub(n[k][:, None, :])[0] for k in range(2)])
+    q = mag.mul(n01, grad_h)
+    ok_t = pos & (q < 1)
+    jinv = mag.div(1.0, mag.sub_down(1.0, cp.where(ok_t, q, 0.0)))
+    num = mag.mul(mag.mul(mag.mul(2.0, mag.sqrt(tr_up)), jinv), mag.mul(n01, _norm(hxx)))
+    n_t = mag.div(num, mag.mul_down(root_c, lam1))
+    k_t = cp.where(ok_t, mag.add(k_tau, mag.mul(2.0, n_t)), cp.inf)
+    return dict(mu_up=mu_up, mu_low=mu_low, ric=ric, k_tau=k_tau, k_t=k_t)
+
+
+def _norm(xs):
+    """An upper bound of sqrt(sum of x^2) for bounds x >= 0 (B,)."""
+    return mag.sqrt(mag.add(*[mag.mul(x, x) for x in xs]))
 
 
 def metric_c_low(k0):

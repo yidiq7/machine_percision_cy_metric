@@ -7,8 +7,9 @@ for reference center i.
 For each reference center of the cover (or of --refs), its boxes run in batches of one order: a
 cell with rho >= --rho-high at --order-high (with --a-high), the others at --order
 (with --a); the models in tau alone take quartic.cert.box.NY_EXTRA more. Each box also
-gets the bound of abs(grad f). A box whose bound of abs(f) exceeds --target tries
---order-high first, and
+gets the bound of abs(grad f), and the bounds of quartic.cert.box.metric_bounds (the
+metric against FS, Ricci, the derivative of the metric). A box whose bound of abs(f) exceeds
+--target tries --order-high first, and
 then splits into the cells of half the side that may meet F, each with the radius and
 the bound of abs(h) of quartic.cert.cover.box_radius, at most --depth times; cell corners stay
 exact mpmath numbers. Each final box gives one record: the
@@ -112,6 +113,7 @@ def run_reference(cov, r, local, settings, args, on_batch=None):
         sup, c0, pb, rem, lam_big = (cp.asnumpy(x) for x in (sup, c0, pb, f.rem,
                                                               info['lam_big']))
         gt, gg, ll = (cp.asnumpy(info[k]) for k in ('grad_tau', 'grad_g', 'lam_low'))
+        geo = np.stack([cp.asnumpy(info[k]) for k in rs.COLUMNS[19:]], axis=1)
         n_ref += len(batch)
         n_split, n_retry = 0, 0
         for j, (lo, s, cen, dl, hm, depth, od) in enumerate(batch):
@@ -126,7 +128,8 @@ def run_reference(cov, r, local, settings, args, on_batch=None):
                 n_split += 1
                 continue
             records.append((r, depth, *[float(v) for v in lo], float(s), dl, sup[j], c0[j],
-                            pb[j], rem[j], hm, lam_big[j], od, a, gt[j], gg[j], ll[j]))
+                            pb[j], rem[j], hm, lam_big[j], od, a, gt[j], gg[j], ll[j],
+                            *geo[j]))
         if args.verbose:
             print(f'    batch of {len(batch)} at order {order} (depth {min(b[5] for b in batch)} '
                   f'to {max(b[5] for b in batch)}): {n_retry} to order {args.order_high}, '
@@ -198,7 +201,10 @@ def main():
     rec = np.array(records)
     # np.max and np.min give NaN if one record has NaN, so no NaN can hide here.
     grad_text = (f', largest gradient bound {np.max(rec[:, 17]):.4e} (in tau '
-                 f'{np.max(rec[:, 16]):.4e}), smallest lam_low {np.min(rec[:, 18]):.3e}')
+                 f'{np.max(rec[:, 16]):.4e}), smallest lam_low {np.min(rec[:, 18]):.3e}; '
+                 f'mu in [{np.min(rec[:, 20]):.4f}, {np.max(rec[:, 19]):.4f}], largest ric '
+                 f'{np.max(rec[:, 21]):.3e}, k_tau {np.max(rec[:, 22]):.3f}, k_t '
+                 f'{np.max(rec[:, 23]):.3f}')
     # A bound that is NaN fails both tests below: max gives NaN, and it counts as above.
     print(f'done: {len(rec)} boxes, {n_boxes} computed, largest bound {rec[:, 8].max():.4e}, '
           f'{np.sum(~(rec[:, 8] <= args.target))} above the target, largest lam_big '

@@ -18,7 +18,8 @@ the cells:
    script checks that file; cert_run forms the center of each smaller cell in the same
    way.
 5. Every record has a finite bound of abs(grad f) in G and in tau above 0, and a finite
-   lam_low > 0; a NaN fails.
+   lam_low > 0; a NaN fails. The bounds of quartic.cert.box.metric_bounds (mu_up, mu_low,
+   ric, k_tau, k_t) are finite and not below 0, and mu_low > 0.
 6. With --manifest (the file of scripts/cert_local_values.py --manifest) and the files
    --data and --forms that define the potential, the manifest is that of those files,
    and every file of local forms that the run read has the SHA-256 of the manifest and
@@ -198,6 +199,15 @@ def main():
     print('the gradient bound holds on every record' if bad_grad == 0 and ok
           else 'THE GRADIENT CHECK FAILS', flush=True)
     ok = ok and bad_grad == 0
+    geo = rec[:, 19:24]
+    bad_geo = int(np.sum(~(np.all(np.isfinite(geo) & (geo >= 0), axis=1) & (rec[:, 20] > 0))))
+    print(f'metric bounds: mu in [{np.min(rec[:, 20]):.6f}, {np.max(rec[:, 19]):.6f}], largest '
+          f'ric {np.max(rec[:, 21]):.4e}, k_tau {np.max(rec[:, 22]):.4f}, k_t '
+          f'{np.max(rec[:, 23]):.4f}; {bad_geo} records with a bound not finite, below 0, or '
+          f'with mu_low not above 0', flush=True)
+    print('the metric bounds hold on every record' if bad_geo == 0 and ok
+          else 'THE CHECK OF THE METRIC BOUNDS FAILS', flush=True)
+    ok = ok and bad_geo == 0
     print(f'code of the run: {commit}; {len(shas)} files of local forms with a SHA-256', flush=True)
     if commit is not None and commit.endswith('-dirty'):
         print('THE CODE OF THE RUN HAD CHANGES THAT WERE NOT COMMITTED', flush=True)
