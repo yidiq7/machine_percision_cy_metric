@@ -708,8 +708,8 @@ def stage(args, kinds, name):
     with multiprocessing.Pool(args.procs) as pool:
         floors = {}
         if name == 'transitions':
-            # The stage needs only the largest c~1_0 and c~2_0 over the charts.
-            for kind in kinds:
+            # The stage needs only the largest c~1_0 and c~2_0 over all 11 charts.
+            for kind in [(k, ch) for ch in CHARTS for k in ('c1', 'c2')]:
                 b = sample_best(kind, pool)
                 floors[kind[0]] = max(floors.get(kind[0], 0.0), b)
                 print(f'{name} sample {kind}: best point value {b:.6g}', flush=True)
