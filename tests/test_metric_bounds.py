@@ -385,7 +385,7 @@ def test_synthetic():
         assert max(e[1] for e in errs) < 1e-25, errs
         print(f'  box {bx} (delta {delta}): ' + ', '.join(
             f'{k} {bound[k]:.6g} over the points {float(top[k]):.6g}' for k in top)
-            + f'; identities {max(max(e) for e in errs):.1e}', flush=True)
+            + f'; identities {float(max(max(e) for e in errs)):.1e}', flush=True)
     print(f'test_synthetic: PASS ({time.perf_counter() - t0:.0f}s)', flush=True)
 
 

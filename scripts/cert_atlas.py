@@ -18,7 +18,8 @@ Stages:
   of fs and transitions.
 
 The bound of a box is the better of two arb enclosures over the box: the ball value, and the
-centered form q(c) + grad q(box) . (x - c), with the partials from dual numbers. A
+centered form q(c) -+ L s, with L a bound of the rate of change on the box from dual numbers
+(Weyl's inequality for the eigenvalues) and s the side of the box. A
 branch-and-bound halves a box in each coordinate until its bound is within --tol of the best
 value at a point of the domain, or its side is at most R / 2^--min-depth. The result is the
 largest (or smallest) bound of a box.
@@ -197,18 +198,6 @@ def root_up(x):
     return arb(up(x)).sqrt()
 
 
-def sqrt_up(x):
-    """A root of x >= 0 whose upper end bounds the true root; for a Dual, with the partials of
-    the root where x proves to be above 0 (else no partials)."""
-    if not isinstance(x, Dual):
-        return root_up(x)
-    v = x.v.real
-    if down(v) > 0:
-        r = v.sqrt()
-        return Dual(acb(r), None if x.d is None else [p / (2 * r) for p in x.d])
-    return Dual(acb(root_up(v)), None)
-
-
 def wof(t0, t1):
     """w with w^4 = -(1 + t_0^4 + t_1^4), for acb balls or Duals."""
     q0, q1 = t0 * t0, t1 * t1
@@ -268,22 +257,34 @@ def in_wedge(lo, s):
 # ---------------------------------------------------------------- the values
 
 
-def fs_eigs(t0, t1, w):
-    """The two eigenvalues of the FS metric of volume 1 in the chart b, for acb balls or Duals:
-    the lower end of the first and the upper end of the second are bounds (sqrt_up)."""
+def fs_matrix(t0, t1, w):
+    """The Hermitian matrix of the FS metric in the chart b (before the division by pi sqrt 2),
+    for acb balls or Duals."""
     y = [t0, t1, w]
     r0, r1 = t0 / w, t1 / w
     jac = [[acb(1), acb(0)], [acb(0), acb(1)], [-r0 * r0 * r0, -r1 * r1 * r1]]
     s = 1 + abs2(t0) + abs2(t1) + abs2(w)
     h = [[(1 if m == q else 0) / s - y[m].conjugate() * y[q] / (s * s) for q in range(3)]
          for m in range(3)]
-    g = [[sum((jac[m][i] * h[m][q] * jac[q][j].conjugate() for m in range(3) for q in range(3)),
-              acb(0)) for j in range(2)] for i in range(2)]
+    return [[sum((jac[m][i] * h[m][q] * jac[q][j].conjugate() for m in range(3) for q in range(3)),
+                 acb(0)) for j in range(2)] for i in range(2)]
+
+
+FS_SCALE = arb.pi() * arb(2).sqrt()
+
+
+def eigs(g):
+    """The two eigenvalues of g / (pi sqrt 2) for an acb matrix g: the lower end of the first and
+    the upper end of the second are bounds (root_up)."""
     a, d = g[0][0].real, g[1][1].real
     mid = (a + d) / 2
-    rad = sqrt_up(sq((a - d) / 2) + abs2(g[0][1]))
-    scale = arb.pi() * arb(2).sqrt()
-    return (mid - rad) / scale, (mid + rad) / scale
+    rad = root_up(sq((a - d) / 2) + abs2(g[0][1]))
+    return (mid - rad) / FS_SCALE, (mid + rad) / FS_SCALE
+
+
+def fs_eigs(t0, t1, w):
+    """The two eigenvalues of the FS metric of volume 1 in the chart b, as in `eigs`."""
+    return eigs(fs_matrix(t0, t1, w))
 
 
 def chart_jets(t0, t1, chart):
@@ -297,23 +298,59 @@ def chart_jets(t0, t1, chart):
     return [z[k] * zi, z[l] * zi]
 
 
-def deriv_norms(comps):
-    """The real norms of D^2 F and D^3 F (2 and 2 sqrt 2 times the complex norms), with upper
-    ends that bound them (sqrt_up)."""
-    a2 = lambda f, m: abs2(f.c[IDX[m]])
+def square_norms(comps, part=lambda x: x):
+    """The squares of the complex norms of D^2 F and D^3 F, from part(c) of each Taylor
+    coefficient c of the jets (the coefficient, or one of its partials)."""
+    a2 = lambda f, m: abs2(part(f.c[IDX[m]]))
     d2 = sum((4 * a2(f, (2, 0)) + 2 * a2(f, (1, 1)) + 4 * a2(f, (0, 2)) for f in comps), arb(0))
     d3 = sum((36 * a2(f, (3, 0)) + 12 * a2(f, (2, 1)) + 12 * a2(f, (1, 2)) + 36 * a2(f, (0, 3))
               for f in comps), arb(0))
-    return 2 * sqrt_up(d2), 2 * sqrt_up(2 * d3)
+    return d2, d3
+
+
+def deriv_norms(comps):
+    """The real norms of D^2 F and D^3 F (2 and 2 sqrt 2 times the complex norms), with upper
+    ends that bound them (root_up)."""
+    d2, d3 = square_norms(comps)
+    return 2 * root_up(d2), 2 * root_up(2 * d3)
 
 
 def value(kind, t0, t1):
-    """The value of the quantity `kind` at t (acb balls, or Duals): ('fs', 0 or 1) or ('d2' or
-    'd3', chart)."""
+    """The value of the quantity `kind` at the acb balls t: ('fs', 0 or 1) or ('d2' or 'd3',
+    chart)."""
     if kind[0] == 'fs':
         return fs_eigs(t0, t1, wof(t0, t1))[kind[1]]
     d2, d3 = deriv_norms(chart_jets(t0, t1, kind[1]))
     return d2 if kind[0] == 'd2' else d3
+
+
+def _partial(k):
+    """part(c) = the partial k of a coefficient c (0 for a constant); NaN if it has none."""
+    def part(x):
+        if not isinstance(x, Dual):
+            return acb(0)
+        return x.d[k] if x.d is not None else acb(math.nan)
+    return part
+
+
+def box_values(kind, t0, t1):
+    """For the balls t of a box: (the ball value, L), with L a bound of the rate of change of
+    the quantity in the real coordinates, abs(q(x) - q(c)) <= L abs(x - c)_2 on the box. For
+    fs, L = sqrt(sum of abs(d_k g)_F^2) / (pi sqrt 2) bounds the change of each eigenvalue
+    (Weyl's inequality); for D^2 F and D^3 F, L is the real norm of the tensor of the partials
+    d_k D^m F."""
+    T0, T1 = Dual(t0, D_T0), Dual(t1, D_T1)
+    if kind[0] == 'fs':
+        g = fs_matrix(T0, T1, wof(T0, T1))
+        v = eigs([[Dual.lift(x).v for x in row] for row in g])[kind[1]]
+        rate = sum((abs2(_partial(k)(x)) for row in g for x in row for k in range(4)), arb(0))
+        return v, root_up(rate) / FS_SCALE
+    comps = chart_jets(T0, T1, kind[1])
+    n2, n3 = square_norms(comps, lambda x: Dual.lift(x).v)
+    r2, r3 = (sum(z, arb(0)) for z in zip(*[square_norms(comps, _partial(k)) for k in range(4)]))
+    if kind[0] == 'd2':
+        return 2 * root_up(n2), 2 * root_up(r2)
+    return 2 * root_up(2 * n3), 2 * root_up(2 * r3)
 
 
 def domains(kind):
@@ -351,7 +388,7 @@ D_T1 = [acb(0), acb(0), acb(1), acb(0, 1)]
 def step(job):
     """None if the box cannot meet the domain, else (its bound, the value at its center if the
     center is in the domain, else None). The bound is the better of the ball value on the box
-    and the centered form q(c) + sum of the partials on the box times [-s/2, s/2]; a NaN bound
+    and the centered form q(c) -+ L s, with abs(x - c)_2 <= s on the box of side s; a NaN bound
     counts as no bound."""
     kind, lo, s = job
     t0, t1 = ball(lo, s)
@@ -359,16 +396,14 @@ def step(job):
         return None
     small = is_min(kind)
     pick = down if small else up
-    q = value(kind, Dual(t0, D_T0), Dual(t1, D_T1))
-    b = pick(q.v.real)
+    v, rate = box_values(kind, t0, t1)
     c = [lo[k] + s / 2 for k in range(4)]
     c0, c1 = acb(c[0], c[1]), acb(c[2], c[3])
     qc = value(kind, c0, c1)
-    if q.d is not None:
-        half = arb(0, s / 2)
-        bc = pick(qc + sum((p.real * half for p in q.d), arb(0)))
-        if not math.isnan(bc):
-            b = bc if math.isnan(b) else (max(b, bc) if small else min(b, bc))
+    bc = pick(qc - rate * s) if small else pick(qc + rate * s)
+    b = pick(v)
+    if not math.isnan(bc):
+        b = bc if math.isnan(b) else (max(b, bc) if small else min(b, bc))
     if math.isnan(b):
         b = -math.inf if small else math.inf
     point = None
