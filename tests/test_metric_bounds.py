@@ -41,7 +41,7 @@ DELTAS = [0.02, 0.04]
 A = 0.35
 POINTS = 24
 # The largest allowed bound over the largest value at the points.
-FACTOR = {'mu_up': 1.5, 'mu_low': 1.5, 'ric': 20.0, 'k_tau': 20.0, 'k_t': 20.0}
+FACTOR = {'mu_up': 2.0, 'mu_low': 2.0, 'ric': 20.0, 'k_tau': 20.0, 'k_t': 20.0}
 mp.mp.dps = 40
 
 

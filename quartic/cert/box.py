@@ -713,14 +713,13 @@ def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad):
     (B,) arrays: mu_up and mu_low bound the eigenvalues of g_FS^-1 g / k0 (omega over the
     FS form omega_0, both of volume 1); ric bounds abs of each eigenvalue of Ric against G;
     k_tau and k_t bound the real norm of DG, with each argument normalized by G at the
-    point, in tau and in the chart t = p_01 + tau + n_01 h. A box with no proof gets inf
-    (0 for mu_low). The upper bounds round up and the lower bounds round down.
+    point, in tau and in the chart t = p_01 + tau + n_01 h (`_k_bound`). A box with no proof
+    gets inf (0 for mu_low). The upper bounds round up and the lower bounds round down.
     """
     c = metric_c_low(k0)
-    lam, tr_up, det_low, grad_tau = (grad[k] for k in ('lam_low', 'tr_up', 'det_low', 'grad_tau'))
+    lam, det_low, grad_tau = (grad[k] for k in ('lam_low', 'det_low', 'grad_tau'))
     pos = lam > 0
     lam1 = cp.where(pos, lam, 1.0)
-    root_c = mag.sqrt_down(c)
     # mu: with s = tr(adj(g_FS) g) / (k0 det g_FS) and p = det g / (k0^2 det g_FS),
     # mu_max = (s + sqrt(s^2 - 4p)) / 2 grows with s and falls with p, and mu_min = p / mu_max.
     sp_m = space(4, min(METRIC_ORDER, sp4.n))
@@ -748,29 +747,93 @@ def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad):
     ric_f = mag.add(mag.div(_norm(fxx), one1),
                     mag.div(mag.mul(grad_tau, grad_tau), mag.mul_down(one1, one1)))
     ric = cp.where(ok_r, mag.div(mag.mul(2.0, ric_f), mag.mul_down(c, lam1)), cp.inf)
-    # DG in tau: Gamma_k = c d_k g in the coordinates of c g = I has the real norm sqrt(8)
-    # abs(Gamma)_F, and abs(Gamma)_F <= abs(dg)_F c^(-1/2) lam_min^(-3/2).
-    dg = [tm.bound(sp4, tm.deriv1(sp4, g[i, j], k, d))
-          for k in range(2) for i in range(2) for j in range(2)]
-    den = mag.mul_down(root_c, mag.mul_down(lam1, mag.sqrt_down(lam1)))
-    k_tau = cp.where(pos, mag.div(mag.mul(mag.sqrt(8.0), _norm(dg)), den), cp.inf)
-    # From tau to t: K_t <= K_tau + 2 N, N <= 2 sqrt(lam_max) abs(J^-1) abs(n_01)
-    # abs(d^2 h)_F / (sqrt(c) lam_min), J = I + n_01 grad(h)^T.
-    d_mid = f.delta
-    hd = [tm.deriv1(sp2, h, k, d_mid) for k in range(2)]
-    hxx = [tm.bound(sp2, tm.deriv1(sp2, hd[0], 0, d)),
-           tm.bound(sp2, tm.cauchy_mixed(sp2, h, 0, 1, d)),
-           tm.bound(sp2, tm.cauchy_mixed(sp2, h, 1, 0, d)),
-           tm.bound(sp2, tm.deriv1(sp2, hd[1], 1, d))]
-    grad_h = _norm([tm.bound(sp2, tm.deriv1(sp2, h, k, d)) for k in range(2)])
-    n01 = _norm([tm.abs_ub(n[k][:, None, :])[0] for k in range(2)])
-    q = mag.mul(n01, grad_h)
-    ok_t = pos & (q < 1)
-    jinv = mag.div(1.0, mag.sub_down(1.0, cp.where(ok_t, q, 0.0)))
-    num = mag.mul(mag.mul(mag.mul(2.0, mag.sqrt(tr_up)), jinv), mag.mul(n01, _norm(hxx)))
-    n_t = mag.div(num, mag.mul_down(root_c, lam1))
-    k_t = cp.where(ok_t, mag.add(k_tau, mag.mul(2.0, n_t)), cp.inf)
+    # DG normalized at the point: for any constant P, with g_P = P^T g conj(P) and Gamma_P[c]
+    # = sum_k P_kc d_k g_P, the real norm is at most sqrt(8) abs(Gamma_P)_F / (sqrt(c)
+    # lam_min(g_P)^(3/2)); P from the center makes g_P near I. In tau, and in t with
+    # g_t = J^-T g conj(J)^-1, J = dt/dtau = I + n_01 grad(h)^T and d_t = J^-T d_tau.
+    d_f = f.delta
+    gf = {k: tm.truncate(sp_m, sp4, v) for k, v in g.items()}
+    k_tau = _k_bound(sp_m, gf, None, d, c)
+    dh = [tm.deriv1(sp2, h, a, d_f) for a in range(2)]
+    q = tm.add(sp2, tm.scale(sp2, dh[0], n[0]), tm.scale(sp2, dh[1], n[1]))
+    eta_q = tm.bound(sp2, q)
+    r = tm.power_series(sp2, tm.powers(sp2, q, series_order(eta_q, sp2.n, SERIES_EPS)), -1, eta_q)
+    b = d.shape[0]
+    one2 = tm.const(sp2, tm.cconst(1, b), d_f)
+    zero2 = tm.const(sp2, tm.cconst(0, b), d_f)
+    jinv = {(i, a): tm.sub(sp2, one2 if i == a else zero2, tm.mul(sp2, tm.scale(sp2, dh[a], n[i]), r))
+            for i in range(2) for a in range(2)}
+    tau_side = lambda x: tm.tensor(sp_m, sp2, x, one2)
+    sig_side = lambda x: tm.tensor(sp_m, sp2, one2, conj(x))
+    half = {(a, j): tm.add(sp_m, tm.mul(sp_m, gf[a, 0], sig_side(jinv[0, j])),
+                           tm.mul(sp_m, gf[a, 1], sig_side(jinv[1, j])))
+            for a in range(2) for j in range(2)}
+    g_t = {(i, j): tm.add(sp_m, tm.mul(sp_m, tau_side(jinv[0, i]), half[0, j]),
+                          tm.mul(sp_m, tau_side(jinv[1, i]), half[1, j]))
+           for i in range(2) for j in range(2)}
+    k_t = _k_bound(sp_m, g_t, (sp2, jinv, tau_side), d, c)
     return dict(mu_up=mu_up, mu_low=mu_low, ric=ric, k_tau=k_tau, k_t=k_t)
+
+
+def _k_bound(sp, gm, chart, d, c):
+    """sqrt(8) abs(Gamma_P)_F / (sqrt(c) lam_min(g_P)^(3/2)) on the polydisc d, for the 2x2
+    models gm of g (on a larger polydisc) in the chart of the derivative: None for tau, or
+    (sp2, J^-1, tau_side) for t, so that d_t_k = sum_a (J^-1)_ak d_tau_a. P = conj(U) W^(-1/2)
+    with g(center) = U W U^H (FP64 on the host; any P gives a bound). inf where lam_min(g_P)
+    has no proof above 0."""
+    p = _near_inv_sqrt(gm)
+    pc = [[_conj_dd(p[i][j]) for j in range(2)] for i in range(2)]
+    gm_p = {(i, bb): tm.add(sp, tm.scale(sp, gm[i, 0], pc[0][bb]), tm.scale(sp, gm[i, 1], pc[1][bb]))
+            for i in range(2) for bb in range(2)}
+    gp = {(a, bb): tm.add(sp, tm.scale(sp, gm_p[0, bb], p[0][a]), tm.scale(sp, gm_p[1, bb], p[1][a]))
+          for a in range(2) for bb in range(2)}
+    dgp = [{k: tm.deriv1(sp, v, a, d) for k, v in gp.items()} for a in range(2)]
+    if chart is None:
+        w = [[None] * 2 for _ in range(2)]
+    else:
+        sp2, jinv, tau_side = chart
+        w = [[tau_side(tm.restrict(tm.add(sp2, tm.scale(sp2, jinv[a, 0], p[0][cc]),
+                                          tm.scale(sp2, jinv[a, 1], p[1][cc])), d))
+              for cc in range(2)] for a in range(2)]
+    gam = []
+    for cc in range(2):
+        for k in gp:
+            if chart is None:
+                x = tm.add(sp, tm.scale(sp, dgp[0][k], p[0][cc]), tm.scale(sp, dgp[1][k], p[1][cc]))
+            else:
+                x = tm.add(sp, tm.mul(sp, w[0][cc], dgp[0][k]), tm.mul(sp, w[1][cc], dgp[1][k]))
+            gam.append(tm.bound(sp, x))
+    gd = {k: tm.restrict(v, d) for k, v in gp.items()}
+    det = tm.sub(sp, tm.mul(sp, gd[0, 0], gd[1, 1]), tm.mul(sp, gd[0, 1], gd[1, 0]))
+    det_low, g00_low = _real_low(sp, det, d), _real_low(sp, gd[0, 0], d)
+    tr_up = mag.add(tm.bound(sp, gd[0, 0]), tm.bound(sp, gd[1, 1]))
+    ok = (det_low > 0) & (g00_low > 0)
+    lam = cp.where(ok, mag.div_down(det_low, tr_up), 1.0)
+    den = mag.mul_down(mag.sqrt_down(c), mag.mul_down(lam, mag.sqrt_down(lam)))
+    return cp.where(ok, mag.div(mag.mul(mag.sqrt(8.0), _norm(gam)), den), cp.inf)
+
+
+def _near_inv_sqrt(gm):
+    """dd constants p[i][j] (4, B) of P = conj(U) W^(-1/2), g(center) = U W U^H, from the hi
+    limbs of the center coefficients of the 2x2 models gm; I where g(center) is not positive."""
+    b = gm[0, 0].c.shape[2]
+    m = np.zeros((b, 2, 2), complex)
+    for (i, j), x in gm.items():
+        c0 = cp.asnumpy(x.c[:, 0, :])
+        m[:, i, j] = c0[0] + 1j * c0[2]
+    m = (m + np.conj(np.transpose(m, (0, 2, 1)))) / 2
+    w, u = np.linalg.eigh(m)
+    good = np.all(w > 0, axis=1)
+    pm = np.conj(u) / np.sqrt(np.where(good[:, None], w, 1.0))[:, None, :]
+    pm[~good] = np.eye(2)
+    zero = np.zeros(b)
+    return [[cp.asarray(np.stack([pm[:, i, j].real, zero, pm[:, i, j].imag, zero]))
+             for j in range(2)] for i in range(2)]
+
+
+def _conj_dd(z):
+    """The conjugate of dd numbers (4, B)."""
+    return cp.stack([z[0], z[1], -z[2], -z[3]])
 
 
 def _norm(xs):
