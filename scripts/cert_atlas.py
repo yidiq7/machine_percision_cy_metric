@@ -12,11 +12,13 @@ arg t_0 in [0, pi/4] and arg t_1 in [0, pi/2]. No value depends on the branch of
 Stages:
 * fs: lam0 and Lam0, the smallest and the largest eigenvalue of the FS metric of volume 1
   (FS / (pi sqrt 2)) in the chart b, on D(3, 2).
-* transitions: for each chart a != (3, 2), the sups c~1_0 and c~2_0 on D(3, 2) and D(a) of the
+* transitions: for each chart a != (3, 2), bounds of the sups c~1_0 and c~2_0 on D(3, 2) and D(a) of the
   real norms of Q0_a D^n F_a [Q0_b^-1 .] (n = 2, 3) with the FS forms Q0 at the same point, F_a
   the coordinates of a as functions of t. Since FS is one metric, abs(Q0_a w) = abs(Q0_b DF_a^-1
   w), so each is at most sqrt(lam_max) lam_min^(-n/2) abs(DF_a^-1 D^n F_a) with the FS
-  eigenvalues of chart b at t.
+  eigenvalues of chart b at t. A floor from random points of all charts lets a chart with a
+  smaller sup stop early, so each result bounds max(its sup, the floor) and their maximum bounds
+  the maximum over the charts, which is what combine takes.
 * combine: the constants of the draft from the records of a run (all parts) and the results
   of fs and transitions.
 
@@ -644,11 +646,35 @@ def step(job):
     return b, point
 
 
-def run_kind(kind, pool, tol, min_side, boxes=None, verbose=False):
+def sample_best(kind, pool, count=4096, seed=20261024):
+    """The best value at random points of the domain of `kind` (a value at a point)."""
+    rnd = np.random.default_rng(seed)
+    pts = rnd.uniform(0, R, size=(count, 4))
+    pts = pts[pts[:, 1] <= pts[:, 0]]
+    vals = [v for v in pool.map(_point, [(kind, list(x)) for x in pts], chunksize=16)
+            if v is not None]
+    if not vals:
+        return math.inf if is_min(kind) else 0.0
+    return min(vals) if is_min(kind) else max(vals)
+
+
+def _point(job):
+    kind, x = job
+    c0, c1 = acb(x[0], x[1]), acb(x[2], x[3])
+    if not all(inside(moduli(c0, c1), ch) for ch in domains(kind)):
+        return None
+    v = value(kind, c0, c1)
+    return up(v) if is_min(kind) else down(v)
+
+
+def run_kind(kind, pool, tol, min_side, boxes=None, verbose=False, floor=None):
     """The branch-and-bound in rounds of one side, so that each round knows the best point
-    value of all boxes so far; boxes (default: first_boxes()) are the boxes to start from."""
+    value of all boxes so far; boxes (default: first_boxes()) are the boxes to start from. With
+    floor (a value at a point of another kind of the same maximum), a box is done once its bound
+    is within tol of the larger of best and floor: the result then bounds the maximum of the
+    kinds, not this kind alone."""
     small = is_min(kind)
-    best = math.inf if small else 0.0
+    best = math.inf if small else (0.0 if floor is None else floor)
     top = math.inf if small else -math.inf
     level, n, at_min = (first_boxes() if boxes is None else list(boxes)), 0, 0
     while level:
@@ -680,9 +706,24 @@ def stage(args, kinds, name):
     t0 = time.perf_counter()
     out = {}
     with multiprocessing.Pool(args.procs) as pool:
+        floors = {}
+        if name == 'transitions':
+            # The stage needs only the largest c~1_0 and c~2_0 over the charts.
+            for kind in kinds:
+                b = sample_best(kind, pool)
+                floors[kind[0]] = max(floors.get(kind[0], 0.0), b)
+                print(f'{name} sample {kind}: best point value {b:.6g}', flush=True)
+            for path in args.floor_from or []:
+                z = np.load(path)
+                for key in ('c1', 'c2'):
+                    vals = [float(z[k]) for k in z.files if k.startswith(key + '_') and k.endswith('_best')]
+                    if vals:
+                        floors[key] = max(floors.get(key, 0.0), max(vals))
+            print(f'{name}: floors {floors}', flush=True)
         for kind in kinds:
             t1 = time.perf_counter()
-            r = run_kind(kind, pool, args.tol, R / 2 ** args.min_depth, verbose=True)
+            r = run_kind(kind, pool, args.tol, R / 2 ** args.min_depth, verbose=True,
+                         floor=floors.get(kind[0]))
             key = kind[0] if kind[0] == 'fs' else f'{kind[0]}_{kind[1][0]}{kind[1][1]}'
             if kind[0] == 'fs':
                 key = 'lam0' if kind[1] == 0 else 'Lam0'
@@ -777,6 +818,8 @@ def main():
         if name == 'transitions':
             p.add_argument('--charts', nargs='*', default=None,
                            help='only these charts, as digit pairs ij (default: all 11)')
+            p.add_argument('--floor-from', nargs='*', default=None,
+                           help='files of this stage whose best point values also enter the floors')
     c = sub.add_parser('combine')
     c.add_argument('--runs', nargs='+', required=True)
     c.add_argument('--fs', required=True)
