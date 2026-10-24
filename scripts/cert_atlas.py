@@ -714,14 +714,14 @@ def stage(args, kinds, name):
     with multiprocessing.Pool(args.procs) as pool:
         floors = {}
         if name == 'transitions':
-            # The stage needs only the largest c~1_0 and c~2_0 over all 11 charts.
-            for kind in [(k, ch) for ch in CHARTS for k in ('c1', 'c2')]:
+            # The stage needs only the largest value of each kind over all 11 charts.
+            for kind in [(k, ch) for ch in CHARTS for k in args.kinds]:
                 b = sample_best(kind, pool)
                 floors[kind[0]] = max(floors.get(kind[0], 0.0), b)
                 print(f'{name} sample {kind}: best point value {b:.6g}', flush=True)
             for path in args.floor_from or []:
                 z = np.load(path)
-                for key in ('c1', 'c2'):
+                for key in args.kinds:
                     vals = [float(z[k]) for k in z.files if k.startswith(key + '_') and k.endswith('_best')]
                     if vals:
                         floors[key] = max(floors.get(key, 0.0), max(vals))
@@ -757,19 +757,31 @@ def combine(args):
     for path in args.transitions:
         z = np.load(path)
         tr.update({k: z[k] for k in z.files})
-    missing = [ch for ch in CHARTS if f'c1_{ch[0]}{ch[1]}_bound' not in tr
-               or f'c2_{ch[0]}{ch[1]}_bound' not in tr]
-    if missing:
-        raise SystemExit(f'the files of the stage transitions miss the charts {missing}')
+    def largest(key):
+        """The largest bound of a kind over the 11 charts, or None if a chart has none."""
+        vals = [tr.get(f'{key}_{i}{j}_bound') for i, j in CHARTS]
+        return None if any(v is None for v in vals) else max(float(v) for v in vals)
+    routes = {k: largest(k) for k in ('c1', 'c2', 'd2', 'd3')}
+    if (routes['c1'] is None and routes['d2'] is None) or (routes['c2'] is None and routes['d3'] is None):
+        raise SystemExit(f'the files of the stage transitions miss charts: {routes}')
     x = lambda v: arb(float(v))
     c_up, mu_min = x(top('mu_up')), x(float(np.min(rec[:, col['mu_low']])))
     lam = mu_min * x(fs['lam0_bound'])
     big = c_up * x(fs['Lam0_bound'])
-    e2 = max(float(tr[f'c1_{i}{j}_bound']) for i, j in CHARTS)
-    e3 = max(float(tr[f'c2_{i}{j}_bound']) for i, j in CHARTS)
-    # abs(Q_a v) <= sqrt(C) abs(Q0_a v) and abs(Q_b^-1 u) <= mu^(-1/2) abs(Q0_b^-1 u).
-    c1 = c_up.sqrt() / mu_min * x(e2)
-    c2 = c_up.sqrt() / (mu_min * mu_min.sqrt()) * x(e3)
+    # With the FS form: abs(Q_a v) <= sqrt(C) abs(Q0_a v) and abs(Q_b^-1 u) <= mu^(-1/2) abs(Q0_b^-1 u).
+    # With the norms: abs(Q_a) <= Lambda^(1/2) and abs(Q_b^-1) <= lambda^(-1/2). Each is a bound.
+    c1s, c2s = [], []
+    if routes['c1'] is not None:
+        c1s.append(c_up.sqrt() / mu_min * x(routes['c1']))
+    if routes['d2'] is not None:
+        c1s.append(big.sqrt() / lam * x(routes['d2']))
+    if routes['c2'] is not None:
+        c2s.append(c_up.sqrt() / (mu_min * mu_min.sqrt()) * x(routes['c2']))
+    if routes['d3'] is not None:
+        c2s.append(big.sqrt() / (lam * lam.sqrt()) * x(routes['d3']))
+    c1 = min(c1s, key=up)
+    c2 = min(c2s, key=up)
+    e2, e3 = routes['c1'], routes['c2']
     k_t = x(top('k_t'))
     kt = k_t + 2 * c1
     kappa = x(top('ric')) / 3
@@ -800,7 +812,10 @@ def combine(args):
         ('diam(M/G, omega) <= sqrt(C) diam(M/G, omega_0)', up(diam_g)),
         ('lambda_1,G >= (pi/D - 3 kappa D / (4 pi))^2, D = diam(M/G)', down(gap_root * gap_root)),
         ('FS: lam0', float(fs['lam0_bound'])), ('FS: Lam0', float(fs['Lam0_bound'])),
-        ('c~1 with the FS form (c~1_0)', e2), ('c~2 with the FS form (c~2_0)', e3),
+        ('c~1_0 (the FS form; nan if not computed)', math.nan if e2 is None else e2),
+        ('c~2_0 (the FS form; nan if not computed)', math.nan if e3 is None else e3),
+        ('sup abs(D^2 F_a), real (nan if not computed)', math.nan if routes['d2'] is None else routes['d2']),
+        ('sup abs(D^3 F_a), real (nan if not computed)', math.nan if routes['d3'] is None else routes['d3']),
     ]
     print(f'{len(rec)} records, target {target:.1e}, code {commit}', flush=True)
     for name, v in rows:
@@ -826,6 +841,9 @@ def main():
                            help='only these charts, as digit pairs ij (default: all 11)')
             p.add_argument('--floor-from', nargs='*', default=None,
                            help='files of this stage whose best point values also enter the floors')
+            p.add_argument('--kinds', nargs='+', default=['c1', 'c2'], choices=['c1', 'c2', 'd2', 'd3'],
+                           help='c1 c2: the transitions normalized by FS at the point; d2 d3: the real '
+                                'norms of D^2 F and D^3 F, for c~1 <= Lambda^(1/2) lambda^-1 sup abs(D^2 F)')
     c = sub.add_parser('combine')
     c.add_argument('--runs', nargs='+', required=True)
     c.add_argument('--fs', required=True)
@@ -840,7 +858,7 @@ def main():
     if args.stage == 'fs':
         return stage(args, [('fs', 0), ('fs', 1)], 'fs')
     charts = CHARTS if not args.charts else [tuple(int(x) for x in c) for c in args.charts]
-    return stage(args, [(kind, ch) for ch in charts for kind in ('c1', 'c2')], 'transitions')
+    return stage(args, [(kind, ch) for ch in charts for kind in args.kinds], 'transitions')
 
 
 if __name__ == '__main__':
