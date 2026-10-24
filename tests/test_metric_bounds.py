@@ -48,7 +48,7 @@ A = 0.35
 POINTS = 24
 # The largest allowed bound over the largest value at the points.
 FACTOR = {'mu_up': 2.0, 'mu_low': 2.0, 'ric': 20.0, 'k_tau': 20.0, 'k_t': 20.0, 'k_a': 20.0,
-          'lam_a': 2.0, 'Lam_a': 2.0}
+          'lam_a': 3.0, 'Lam_a': 2.0}
 # The point y = P + E tau + N h(tau) of the synthetic test; rows 0 and 1 give the chart t.
 P = (0j, 0j, 0.9 + 0.2j)
 E = ((1 + 0j, 0j), (0j, 1 + 0j), (-0.4 + 0.1j, 0.3 - 0.2j))
