@@ -285,12 +285,22 @@ def test_combine():
     rec[:, col['mu_low']] = [0.7, 0.5, 0.6]
     rec[:, col['ric']] = [3e-14, 6e-14, 1e-14]
     rec[:, col['k_t']] = [10.0, 30.0, 20.0]
-    rec[:, col['k_atlas']] = [12.0, 30.0, 25.0]
-    rec[:, col['lam_atlas']] = [0.2, 0.08, 0.3]
-    rec[:, col['Lam_atlas']] = [1.5, 1.2, 3.0]
+    met = np.zeros((4, len(rs.METRIC_COLUMNS)))
+    mcol = {c: k for k, c in enumerate(rs.METRIC_COLUMNS)}
+    met[:, mcol['ref']] = [0, 0, 1, 1]
+    met[:, mcol['mu_up']] = [1.4, 2.2, 1.6, 1.0]
+    met[:, mcol['mu_low']] = [0.6, 0.55, 0.7, 0.8]
+    met[:, mcol['ric']] = [2e-14, 5e-14, 1e-14, 0.0]
+    met[:, mcol['k_t']] = [8.0, 25.0, 18.0, 5.0]
+    met[:, mcol['k_atlas']] = [12.0, 28.0, 22.0, 6.0]
+    met[:, mcol['lam_atlas']] = [0.2, 0.08, 0.3, 0.5]
+    met[:, mcol['Lam_atlas']] = [1.5, 1.2, 3.0, 1.0]
     with tempfile.TemporaryDirectory() as d:
         run = Path(d) / 'run.npz'
         np.savez(run, records=rec, target=5e-20, columns=np.array(rs.COLUMNS), commit='abc')
+        metric = Path(d) / 'metric.npz'
+        np.savez(metric, records=met, target=80.0, columns=np.array(rs.METRIC_COLUMNS),
+                 commit='abc')
         fs = Path(d) / 'fs.npz'
         np.savez(fs, lam0_bound=0.1, Lam0_bound=1.0)
         tr = Path(d) / 'tr.npz'
@@ -299,21 +309,34 @@ def test_combine():
             vals[f'c1_{i}{j}_bound'] = 3.0 if n == 4 else 1.0
             vals[f'c2_{i}{j}_bound'] = 5.0 if n == 7 else -math.inf
         np.savez(tr, **vals)
-        out = Path(d) / 'out.npz'
-        ca.combine(Namespace(runs=[str(run)], fs=str(fs), transitions=[str(tr)], out=str(out)))
-        z = np.load(out)
-        got = dict(zip([str(s) for s in z['names']], z['values']))
-    # lambda: max(0.5 * 0.1, 0.08); Lambda: min(2.0 * 1.0, 3.0); K~: min(30, 30 + 2 c~1).
-    lam, big = 0.08, 2.0
+        got = {}
+        for name, files in (('run', None), ('metric', [str(metric)])):
+            out = Path(d) / f'out_{name}.npz'
+            ca.combine(Namespace(runs=[str(run)], metric=files, fs=str(fs), transitions=[str(tr)],
+                                 out=str(out)))
+            z = np.load(out)
+            got[name] = dict(zip([str(s) for s in z['names']], z['values']))
+    # The run alone: C 2.0, mu 0.5, lambda = mu lam0 = 0.05, Lambda = C Lam0 = 2.0, K~ = 30 + 2 c~1.
     c1 = math.sqrt(2.0) / 0.5 * 3.0
-    want = {'C: omega <= C omega_0': 2.0, 'mu: omega >= mu omega_0': 0.5,
-            'kappa: Ric >= -3 kappa g': 2e-14, 'lambda: lambda I <= G_a': lam,
-            'Lambda: G_a <= Lambda I': big, 'c~1': c1,
-            'c~2': math.sqrt(2.0) / 0.5 ** 1.5 * 5.0, 'K~': 30.0,
-            'K~ from the chart of F + 2 c~1': 30 + 2 * c1,
-            '[f o psi_a^-1]_{1,0;V_a} <= sqrt(Lambda) sup abs(grad f)_G': math.sqrt(big) * 3e-16}
-    for k, v in want.items():
-        assert abs(got[k] - v) <= 1e-12 * abs(v), (k, got[k], v)
+    want = {'run': {'C: omega <= C omega_0': 2.0, 'mu: omega >= mu omega_0': 0.5,
+                    'kappa: Ric >= -3 kappa g': 2e-14, 'lambda: lambda I <= G_a': 0.05,
+                    'Lambda: G_a <= Lambda I': 2.0, 'c~1': c1,
+                    'c~2': math.sqrt(2.0) / 0.5 ** 1.5 * 5.0, 'K~': 30 + 2 * c1,
+                    '[f o psi_a^-1]_{1,0;V_a} <= sqrt(Lambda) sup abs(grad f)_G':
+                        math.sqrt(2.0) * 3e-16}}
+    # With cert_metric: C min(2.0, 2.2), mu max(0.5, 0.55), kappa min(6e-14, 5e-14) / 3, lambda
+    # max(0.55 * 0.1, 0.08), Lambda min(2.0 * 1.0, 3.0), K in the chart of F min(30, 25), K~ 28.
+    c1 = math.sqrt(2.0) / 0.55 * 3.0
+    want['metric'] = {'C: omega <= C omega_0': 2.0, 'mu: omega >= mu omega_0': 0.55,
+                      'kappa: Ric >= -3 kappa g': 5e-14 / 3, 'lambda: lambda I <= G_a': 0.08,
+                      'Lambda: G_a <= Lambda I': 2.0, 'c~1': c1, 'K~': 28.0,
+                      'K in the chart of F': 25.0, 'K~ from the chart of F + 2 c~1': 25 + 2 * c1,
+                      'lambda from the charts of the atlas': 0.08,
+                      'Lambda from the charts of the atlas': 3.0}
+    for name in want:
+        for k, v in want[name].items():
+            assert abs(got[name][k] - v) <= 1e-12 * abs(v), (name, k, got[name][k], v)
+    assert math.isnan(got['run']['K~ from the charts of the atlas'])
     print('test_combine: PASS', flush=True)
 
 

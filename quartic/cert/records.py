@@ -1,6 +1,8 @@
-"""The record files of scripts/cert_run.py: the columns, and one run from one or more parts.
+"""The record files of scripts/cert_run.py and scripts/cert_metric.py: the columns, and one run
+from one or more parts.
 
-A record file holds `records` (one row for each final box, with the columns COLUMNS),
+A record file holds `records` (one row for each final box, with the columns COLUMNS of
+cert_run or METRIC_COLUMNS of cert_metric),
 `target`, `columns`, `commit` (the git commit of the code of the run) and, for each file
 of local forms that the run read, its reference center in `local_refs` and its SHA-256 in
 `local_sha`. A run on several GPUs writes one file for each part, and `load` joins them.
@@ -11,13 +13,26 @@ line the reference center, the SHA-256 of center_<r>.npz and its largest gap ove
 bound, with all digits, so that every reader applies the same test gap <= 1.
 """
 import hashlib
+import subprocess
 
 import numpy as np
 
 COLUMNS = ('ref', 'depth', 'lo0', 'lo1', 'lo2', 'lo3', 'side', 'delta', 'bound', 'center',
            'polynomial', 'remainder', 'hmax', 'lam_big', 'order', 'a', 'grad_tau', 'grad_g',
-           'lam_low', 'mu_up', 'mu_low', 'ric', 'k_tau', 'k_t', 'k_atlas', 'lam_atlas',
-           'Lam_atlas')
+           'lam_low', 'mu_up', 'mu_low', 'ric', 'k_tau', 'k_t')
+# The boxes of cert_metric: the bounds of quartic.cert.box.metric_bounds, with the atlas.
+METRIC_COLUMNS = ('ref', 'depth', 'lo0', 'lo1', 'lo2', 'lo3', 'side', 'delta', 'hmax', 'lam_big',
+                  'order', 'a', 'mu_up', 'mu_low', 'ric', 'k_tau', 'k_t', 'k_atlas', 'lam_atlas',
+                  'Lam_atlas')
+
+
+def commit_of(root):
+    """The git commit of the checkout at root, with -dirty if a tracked file differs from it."""
+    commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=root, capture_output=True,
+                            text=True, check=True).stdout.strip()
+    if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=root).returncode != 0:
+        commit += '-dirty'
+    return commit
 
 
 def sha256(path):
@@ -28,21 +43,21 @@ def sha256(path):
     return h.hexdigest()
 
 
-def load(paths):
+def load(paths, columns=COLUMNS):
     """The records, the target, the commit and {ref: SHA-256} of the parts of one run.
 
-    The parts must have the columns COLUMNS, one target and one commit, and no reference
+    The parts must have the given columns, one target and one commit, and no reference
     center may appear in two parts. A file of a run before the hashes has no commit and no
     hashes; it gives commit None and an empty dict.
     """
     recs, targets, commits, shas, seen = [], set(), set(), {}, set()
     for path in paths:
         z = np.load(path)
-        if 'columns' not in z.files or tuple(str(c) for c in z['columns']) != COLUMNS:
-            raise ValueError(f'{path}: the columns differ from quartic.cert.records.COLUMNS')
+        if 'columns' not in z.files or tuple(str(c) for c in z['columns']) != tuple(columns):
+            raise ValueError(f'{path}: the columns differ from the expected columns')
         rec = np.asarray(z['records'])
-        if rec.ndim != 2 or rec.shape[1] != len(COLUMNS):
-            raise ValueError(f'{path}: the records are not a table of {len(COLUMNS)} columns')
+        if rec.ndim != 2 or rec.shape[1] != len(columns):
+            raise ValueError(f'{path}: the records are not a table of {len(columns)} columns')
         targets.add(float(z['target']))
         commits.add(str(z['commit']) if 'commit' in z.files else None)
         part = {}

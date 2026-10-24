@@ -187,3 +187,18 @@ def cell(idx, s):
     _exact_corners()
     lo = [mp.mpf(int(i)) * s for i in idx]
     return lo, center(lo, s)
+
+
+def halves(lo, s):
+    """The cells of side s/2 inside the cell [lo, lo + s]^4 that may meet F, each as (lower
+    corner, side, exact dd center, radius, bound of abs(h)); lo and s are exact mpmath numbers."""
+    out = []
+    h = s / 2
+    for k in range(16):
+        sub = [lo[i] + h * ((k >> i) & 1) for i in range(4)]
+        if not may_meet_f(sub, h):
+            continue
+        cdd = center(sub, h)
+        rad, hmax = box_radius(sub, h, cdd)
+        out.append((sub, h, cdd, rad, hmax))
+    return out

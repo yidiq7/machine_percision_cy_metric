@@ -7,9 +7,9 @@ for reference center i.
 For each reference center of the cover (or of --refs), its boxes run in batches of one order: a
 cell with rho >= --rho-high at --order-high (with --a-high), the others at --order
 (with --a); the models in tau alone take quartic.cert.box.NY_EXTRA more. Each box also
-gets the bound of abs(grad f), and the bounds of quartic.cert.box.metric_bounds (the
-metric against FS, Ricci, the derivative of the metric, and the last two in each chart of
-the atlas that can meet the cell, from quartic.cert.cover.chart_mask). A box whose bound of abs(f) exceeds
+gets the bound of abs(grad f), and the bounds of quartic.cert.box.metric_bounds in tau and in
+the chart t (the metric against FS, Ricci and the derivative of the metric; scripts/cert_metric.py
+gives them on smaller cells and in every chart of the atlas). A box whose bound of abs(f) exceeds
 --target tries --order-high first, and
 then splits into the cells of half the side that may meet F, each with the radius and
 the bound of abs(h) of quartic.cert.cover.box_radius, at most --depth times; cell corners stay
@@ -28,7 +28,6 @@ Usage, on one GPU node:
 import argparse
 import hashlib
 import io
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -44,21 +43,6 @@ from tmgpu.tools import sup_bound                           # noqa: E402
 from quartic.cert import box as tc                           # noqa: E402
 from quartic.cert import cover as cc                                     # noqa: E402
 from quartic.cert import records as rs                                   # noqa: E402
-
-
-def split(lo, s):
-    """The cells of side s/2 inside the cell [lo, lo + s]^4 that may meet F, each with its
-    exact dd center, radius and bound of abs(h); lo and s are exact mpmath numbers."""
-    out = []
-    h = s / 2
-    for k in range(16):
-        sub = [lo[i] + h * ((k >> i) & 1) for i in range(4)]
-        if not cc.may_meet_f(sub, h):
-            continue
-        cdd = cc.center(sub, h)
-        rad, hmax = cc.box_radius(sub, h, cdd)
-        out.append((sub, h, cdd, rad, hmax))
-    return out
 
 
 def cell_rho(c_dd):
@@ -106,9 +90,8 @@ def run_reference(cov, r, local, settings, args, on_batch=None):
         hmaxs = cp.asarray(np.array([b[4] for b in batch]))
         a = settings[order]
         keep = on_batch(batch, order) if on_batch is not None else None
-        charts = np.array([cc.chart_mask(b[0], b[1]) for b in batch])
         f, (d, _, _), info, parts = tc.box_f(fr, local, deltas, order, order + tc.NY_EXTRA,
-                                             a, hmaxs, grad=True, keep=keep, charts=charts)
+                                             a, hmaxs, grad=True, keep=keep)
         sup, c0, pb = sup_bound(parts['sp4'], f, d)
         if keep is not None:
             keep.update(batch=batch, fr=fr, info=info, sup=sup, a=a, hmaxs=hmaxs, deltas=deltas)
@@ -124,7 +107,7 @@ def run_reference(cov, r, local, settings, args, on_batch=None):
                 n_retry += 1
                 continue
             if not sup[j] <= args.target and depth < args.depth:
-                for sub, h, c, rad, hmx in split(lo, s):
+                for sub, h, c, rad, hmx in cc.halves(lo, s):
                     sub_order = args.order_high if cell_rho(c) >= args.rho_high else args.order
                     queue.append((sub, h, c, rad, hmx, depth + 1, sub_order))
                 n_split += 1
@@ -169,11 +152,7 @@ def main():
     args = ap.parse_args()
     cov = np.load(args.cover)
     refs = args.refs if args.refs is not None else list(range(len(cov['ref_centers'])))
-    # The commit of the code, with -dirty if a tracked file differs from it.
-    commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True,
-                            text=True, check=True).stdout.strip()
-    if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=ROOT).returncode != 0:
-        commit += '-dirty'
+    commit = rs.commit_of(ROOT)
     shas = []
     if args.order == args.order_high and args.a != args.a_high:
         raise SystemExit('--order equals --order-high, so --a must equal --a-high')
@@ -206,8 +185,7 @@ def main():
                  f'{np.max(rec[:, 16]):.4e}), smallest lam_low {np.min(rec[:, 18]):.3e}; '
                  f'mu in [{np.min(rec[:, 20]):.4f}, {np.max(rec[:, 19]):.4f}], largest ric '
                  f'{np.max(rec[:, 21]):.3e}, k_tau {np.max(rec[:, 22]):.3f}, k_t '
-                 f'{np.max(rec[:, 23]):.3f}; in the charts of the atlas: k {np.max(rec[:, 24]):.3f}, '
-                 f'eigenvalues of G in [{np.min(rec[:, 25]):.5f}, {np.max(rec[:, 26]):.5f}]')
+                 f'{np.max(rec[:, 23]):.3f}')
     # A bound that is NaN fails both tests below: max gives NaN, and it counts as above.
     print(f'done: {len(rec)} boxes, {n_boxes} computed, largest bound {rec[:, 8].max():.4e}, '
           f'{np.sum(~(rec[:, 8] <= args.target))} above the target, largest lam_big '

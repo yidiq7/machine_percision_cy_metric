@@ -19,8 +19,10 @@ Stages:
   eigenvalues of chart b at t. A floor from random points of all charts lets a chart with a
   smaller sup stop early, so each result bounds max(its sup, the floor) and their maximum bounds
   the maximum over the charts, which is what combine takes.
-* combine: the constants of the draft from the records of a run (all parts) and the results
-  of fs and transitions.
+* combine: the constants of the draft from the records of a run (all parts), the results of fs
+  and transitions, and with --metric the records of scripts/cert_metric.py, which give K~,
+  lambda and Lambda in every chart of the atlas and better bounds of C, mu, kappa and K in the
+  chart of F.
 
 The bound of a box of side s and center c comes from Taylor jets at c (exact) and on the box
 (arb balls), so that the growth of the balls enters only the term of s^2:
@@ -40,7 +42,7 @@ Usage, on CPU cores:
     uv run --extra gpu --locked python -u scripts/cert_atlas.py fs --procs 48 --out A.npz
     uv run --extra gpu --locked python -u scripts/cert_atlas.py transitions --procs 48 --out T.npz
     uv run --extra gpu --locked python -u scripts/cert_atlas.py combine --runs P0.npz P1.npz \\
-        --fs A.npz --transitions T.npz
+        --metric M.npz --fs A.npz --transitions T.npz
 """
 import argparse
 import itertools
@@ -752,6 +754,19 @@ def combine(args):
     top = lambda key: float(np.max(rec[:, col[key]]))
     if np.isnan(rec[:, 8:]).any():
         raise SystemExit('a record holds NaN')
+    # Each source of a bound covers F, so the better of the two maxima (or minima) holds.
+    best_up = lambda key: top(key)
+    best_low = lambda key: float(np.min(rec[:, col[key]]))
+    mrec = None
+    if args.metric:
+        mrec, k_target, mcommit, _ = rs.load(args.metric, rs.METRIC_COLUMNS)
+        mcol = {c: k for k, c in enumerate(rs.METRIC_COLUMNS)}
+        if np.isnan(mrec[:, 7:]).any():
+            raise SystemExit('a record of cert_metric holds NaN')
+        mtop = lambda key: float(np.max(mrec[:, mcol[key]]))
+        best_up = lambda key: min(top(key), mtop(key))
+        best_low = lambda key: max(float(np.min(rec[:, col[key]])),
+                                   float(np.min(mrec[:, mcol[key]])))
     fs = np.load(args.fs)
     tr = {}
     for path in args.transitions:
@@ -765,13 +780,18 @@ def combine(args):
     if (routes['c1'] is None and routes['d2'] is None) or (routes['c2'] is None and routes['d3'] is None):
         raise SystemExit(f'the files of the stage transitions miss charts: {routes}')
     x = lambda v: arb(float(v))
-    c_up, mu_min = x(top('mu_up')), x(float(np.min(rec[:, col['mu_low']])))
+    c_up, mu_min = x(best_up('mu_up')), x(best_low('mu_low'))
     # Two bounds of each of lambda and Lambda: from mu and FS, and from the charts of the atlas
-    # in each box (quartic.cert.box.metric_bounds); each one holds, so the better one does.
+    # in each box of cert_metric (quartic.cert.box.metric_bounds); each one holds, so the better
+    # one does.
     lam_fs, big_fs = mu_min * x(fs['lam0_bound']), c_up * x(fs['Lam0_bound'])
-    lam_box, big_box = x(float(np.min(rec[:, col['lam_atlas']]))), x(top('Lam_atlas'))
-    lam = max(lam_fs, lam_box, key=down)
-    big = min(big_fs, big_box, key=up)
+    lam, big = lam_fs, big_fs
+    lam_box = big_box = k_box = None
+    if mrec is not None:
+        lam_box = x(float(np.min(mrec[:, mcol['lam_atlas']])))
+        big_box, k_box = x(mtop('Lam_atlas')), x(mtop('k_atlas'))
+        lam = max(lam_fs, lam_box, key=down)
+        big = min(big_fs, big_box, key=up)
     # With the FS form: abs(Q_a v) <= sqrt(C) abs(Q0_a v) and abs(Q_b^-1 u) <= mu^(-1/2) abs(Q0_b^-1 u).
     # With the norms: abs(Q_a) <= Lambda^(1/2) and abs(Q_b^-1) <= lambda^(-1/2). Each is a bound.
     c1s, c2s = [], []
@@ -786,10 +806,11 @@ def combine(args):
     c1 = min(c1s, key=up)
     c2 = min(c2s, key=up)
     e2, e3 = routes['c1'], routes['c2']
-    k_t, k_box = x(top('k_t')), x(top('k_atlas'))
+    k_t = x(best_up('k_t'))
     k_chain = k_t + 2 * c1
-    kt = min(k_box, k_chain, key=up)
-    kappa = x(top('ric')) / 3
+    kt = k_chain if k_box is None else min(k_box, k_chain, key=up)
+    kappa = x(best_up('ric')) / 3
+    opt = lambda v, f: math.nan if v is None else f(v)
     sup_f = x(top('bound'))
     grad = x(top('grad_g'))
     pi = arb.pi()
@@ -807,13 +828,13 @@ def combine(args):
         ('mu: omega >= mu omega_0', down(mu_min)),
         ('kappa: Ric >= -3 kappa g', up(kappa)),
         ('lambda: lambda I <= G_a', down(lam)),
-        ('lambda from the charts of the atlas', down(lam_box)),
+        ('lambda from the charts of the atlas', opt(lam_box, down)),
         ('lambda = mu lam0', down(lam_fs)),
         ('Lambda: G_a <= Lambda I', up(big)),
-        ('Lambda from the charts of the atlas', up(big_box)),
+        ('Lambda from the charts of the atlas', opt(big_box, up)),
         ('Lambda = C Lam0', up(big_fs)),
         ('K~', up(kt)),
-        ('K~ from the charts of the atlas', up(k_box)),
+        ('K~ from the charts of the atlas', opt(k_box, up)),
         ('K~ from the chart of F + 2 c~1', up(k_chain)),
         ('K in the chart of F', up(k_t)),
         ('c~1', up(c1)),
@@ -829,6 +850,9 @@ def combine(args):
         ('sup abs(D^3 F_a), real (nan if not computed)', math.nan if routes['d3'] is None else routes['d3']),
     ]
     print(f'{len(rec)} records, target {target:.1e}, code {commit}', flush=True)
+    if mrec is not None:
+        print(f'{len(mrec)} records of cert_metric, target of k_atlas {k_target}, code {mcommit}',
+              flush=True)
     for name, v in rows:
         print(f'{name:62s} {v:.6e}', flush=True)
     if args.out:
@@ -857,6 +881,8 @@ def main():
                                 'norms of D^2 F and D^3 F, for c~1 <= Lambda^(1/2) lambda^-1 sup abs(D^2 F)')
     c = sub.add_parser('combine')
     c.add_argument('--runs', nargs='+', required=True)
+    c.add_argument('--metric', nargs='*', default=None,
+                   help='the files of scripts/cert_metric.py: the bounds in the charts of the atlas')
     c.add_argument('--fs', required=True)
     c.add_argument('--transitions', nargs='+', required=True,
                    help='the files of the stage transitions; together they must hold all 11 charts')

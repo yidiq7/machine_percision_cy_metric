@@ -19,8 +19,7 @@ the cells:
    way.
 5. Every record has a finite bound of abs(grad f) in G and in tau above 0, and a finite
    lam_low > 0; a NaN fails. The bounds of quartic.cert.box.metric_bounds (mu_up, mu_low,
-   ric, k_tau, k_t, k_atlas, lam_atlas, Lam_atlas) are finite and not below 0, mu_low > 0,
-   lam_atlas > 0, and k_atlas >= k_t (the chart t is a chart of the atlas).
+   ric, k_tau, k_t) are finite and not below 0, and mu_low > 0.
 6. With --manifest (the file of scripts/cert_local_values.py --manifest) and the files
    --data and --forms that define the potential, the manifest is that of those files,
    and every file of local forms that the run read has the SHA-256 of the manifest and
@@ -28,7 +27,11 @@ the cells:
    from the local forms that hold the certified potential. Records with hashes need
    --manifest, and the code of the run must have had no change that was not committed.
 
---run takes the files of all parts of one run (quartic.cert.records.load).
+--run takes the files of all parts of one run (quartic.cert.records.load). With --metric they
+are the files of scripts/cert_metric.py: then step 3 checks only lam_big, and step 5 needs the
+bounds of METRIC_COLUMNS finite and not below 0, mu_low > 0, lam_atlas > 0 and k_atlas >= k_t
+(the chart t is a chart of the atlas); a box above the target of k_atlas is not a failure.
+--refs limits step 2 to the cover cells of some reference centers, for a pilot run.
 The corners of the records are multiples of s / 2^depth, with the largest depth of the
 records, so they are compared as integers. The exit status is 1 if a check fails. Usage,
 on CPU cores:
@@ -100,7 +103,7 @@ def radii_chunk(rows):
         lo = [mp.mpf(int(v)) * unit for v in corner]
         h = mp.mpf(int(size)) * unit
         delta, hmax = cc.box_radius(lo, h, cc.center(lo, h))
-        d_rec, h_rec = float(G['rec'][j, 7]), float(G['rec'][j, 12])
+        d_rec, h_rec = float(G['rec'][j, G['col']['delta']]), float(G['rec'][j, G['col']['hmax']])
         if not (delta <= d_rec and hmax <= h_rec):
             bad.append(int(j))
             continue
@@ -139,9 +142,16 @@ def main():
                     help='the manifest of scripts/cert_local_values.py for the local forms')
     ap.add_argument('--data', type=str, default='', help='the base of the potential (with --manifest)')
     ap.add_argument('--forms', type=str, default='', help='the forms N_L (with --manifest)')
+    ap.add_argument('--metric', action='store_true',
+                    help='the files are records of scripts/cert_metric.py')
+    ap.add_argument('--refs', type=int, nargs='*', default=None,
+                    help='a pilot: only the cover cells of these reference centers (a full run '
+                         'takes no --refs)')
     args = ap.parse_args()
     t0 = time.perf_counter()
-    rec, target, commit, shas = rs.load(args.run)
+    columns = rs.METRIC_COLUMNS if args.metric else rs.COLUMNS
+    col = {c: k for k, c in enumerate(columns)}
+    rec, target, commit, shas = rs.load(args.run, columns)
     cov = np.load(args.cover)
     side = float(cov['side'])
     depth = int(rec[:, 1].max())
@@ -157,13 +167,14 @@ def main():
         if (c, n) in recs:
             raise SystemExit(f'record {j} repeats the cell of record {recs[(c, n)]}')
         recs[(c, n)] = j
-    G.update(side=side, depth=depth, grid=cc.grid(side), recs=recs, rec=rec,
+    G.update(side=side, depth=depth, grid=cc.grid(side), recs=recs, rec=rec, col=col,
              cells=list(zip(map(tuple, ci.tolist()), si.tolist())),
              kept={tuple(int(v) for v in i) for i in cov['idx']}, idx=cov['idx'],
              centers=cov['centers'])
+    cells = cov['idx'] if args.refs is None else cov['idx'][np.isin(cov['ref'], args.refs)]
     with multiprocessing.get_context('fork').Pool(args.procs) as pool:
         bad = [x for part in pool.map(dropped_slab, range(G['grid'][0])) for x in part]
-        chunks = np.array_split(cov['idx'], 4 * args.procs)
+        chunks = np.array_split(cells, 4 * args.procs)
         res = pool.map(cover_chunk, chunks)
         radii = pool.map(radii_chunk, np.array_split(np.arange(len(rec)), 4 * args.procs))
         bad_cen = [i for part in pool.map(centers_chunk, np.array_split(
@@ -171,16 +182,22 @@ def main():
     used = set().union(*(u for u, _ in res))
     missing = [m for _, ms in res for m in ms]
     unused = sorted(set(range(len(rec))) - used)
-    bounds, lam = rec[:, 8], rec[:, 13]
+    lam = rec[:, col['lam_big']]
     # Each comparison is False for NaN, so a NaN counts as bad.
-    bad_bound = int(np.sum(~((bounds > 0) & (bounds <= target))))
     bad_lam = int(np.sum(~((lam >= 0) & (lam < 1))))
+    bad_bound = 0
+    if not args.metric:
+        bounds = rec[:, col['bound']]
+        bad_bound = int(np.sum(~((bounds > 0) & (bounds <= target))))
     print(f'grid {G["grid"]}: {len(bad)} dropped cells that may meet F', flush=True)
-    print(f'cover: {len(cov["idx"])} cells, depth {depth}; {len(missing)} cells of the '
+    print(f'cover: {len(cells)} cells' + ('' if args.refs is None else
+                                          f' of the reference centers {args.refs}')
+          + f', depth {depth}; {len(missing)} cells of the '
           f'partition without a record; {len(unused)} records outside the partition', flush=True)
-    print(f'records: {len(rec)}; largest bound {np.max(bounds):.4e} (target {target:.1e}), '
-          f'{bad_bound} not in (0, target]; largest lam_big {np.max(lam):.3f}, {bad_lam} not '
-          f'in [0, 1); {time.perf_counter() - t0:.0f}s', flush=True)
+    text = ('' if args.metric else f'largest bound {np.max(bounds):.4e} (target {target:.1e}), '
+            f'{bad_bound} not in (0, target]; ')
+    print(f'records: {len(rec)}; {text}largest lam_big {np.max(lam):.3f}, {bad_lam} not in '
+          f'[0, 1); {time.perf_counter() - t0:.0f}s', flush=True)
     ok = not bad and not missing and not unused and bad_bound == 0 and bad_lam == 0
     rd = max(r[0][0] for r in radii)
     rh = max(r[0][1] for r in radii)
@@ -191,25 +208,31 @@ def main():
           f'whose center is not the center of the cell', flush=True)
     ok = ok and not bad_rad and not bad_cen
     print('the partition check passes' if ok else 'THE PARTITION CHECK FAILS', flush=True)
-    gt, gg, ll = rec[:, 16], rec[:, 17], rec[:, 18]
-    good = np.isfinite(gg) & (gg > 0) & np.isfinite(gt) & (gt > 0) & np.isfinite(ll) & (ll > 0)
-    bad_grad = int(np.sum(~good))
-    print(f'gradient: largest bound in G {np.max(gg):.4e}, in tau {np.max(gt):.4e}; '
-          f'smallest lam_low {np.min(ll):.4e}; {bad_grad} records without a finite bound '
-          f'above 0 or with lam_low not finite and above 0', flush=True)
-    print('the gradient bound holds on every record' if bad_grad == 0 and ok
-          else 'THE GRADIENT CHECK FAILS', flush=True)
-    ok = ok and bad_grad == 0
-    geo = rec[:, 19:27]
-    good_geo = (np.all(np.isfinite(geo) & (geo >= 0), axis=1) & (rec[:, 20] > 0)
-                & (rec[:, 25] > 0) & (rec[:, 24] >= rec[:, 23]))
+    if not args.metric:
+        gt, gg, ll = rec[:, col['grad_tau']], rec[:, col['grad_g']], rec[:, col['lam_low']]
+        good = np.isfinite(gg) & (gg > 0) & np.isfinite(gt) & (gt > 0) & np.isfinite(ll) & (ll > 0)
+        bad_grad = int(np.sum(~good))
+        print(f'gradient: largest bound in G {np.max(gg):.4e}, in tau {np.max(gt):.4e}; '
+              f'smallest lam_low {np.min(ll):.4e}; {bad_grad} records without a finite bound '
+              f'above 0 or with lam_low not finite and above 0', flush=True)
+        print('the gradient bound holds on every record' if bad_grad == 0 and ok
+              else 'THE GRADIENT CHECK FAILS', flush=True)
+        ok = ok and bad_grad == 0
+    m = lambda k: rec[:, col[k]]
+    geo = rec[:, col['mu_up']:]
+    good_geo = np.all(np.isfinite(geo) & (geo >= 0), axis=1) & (m('mu_low') > 0)
+    text = ''
+    if args.metric:
+        good_geo &= (m('lam_atlas') > 0) & (m('k_atlas') >= m('k_t'))
+        text = (f'; in the atlas k {np.max(m("k_atlas")):.4f} ({int(np.sum(m("k_atlas") > target))} '
+                f'above the target {target}), eigenvalues of G in [{np.min(m("lam_atlas")):.6f}, '
+                f'{np.max(m("Lam_atlas")):.6f}]')
     bad_geo = int(np.sum(~good_geo))
-    print(f'metric bounds: mu in [{np.min(rec[:, 20]):.6f}, {np.max(rec[:, 19]):.6f}], largest '
-          f'ric {np.max(rec[:, 21]):.4e}, k_tau {np.max(rec[:, 22]):.4f}, k_t '
-          f'{np.max(rec[:, 23]):.4f}; in the atlas k {np.max(rec[:, 24]):.4f}, eigenvalues of G '
-          f'in [{np.min(rec[:, 25]):.6f}, {np.max(rec[:, 26]):.6f}]; {bad_geo} records with a '
-          f'bound not finite, below 0, with mu_low or lam_atlas not above 0, or with k_atlas '
-          f'below k_t', flush=True)
+    print(f'metric bounds: mu in [{np.min(m("mu_low")):.6f}, {np.max(m("mu_up")):.6f}], largest '
+          f'ric {np.max(m("ric")):.4e}, k_tau {np.max(m("k_tau")):.4f}, k_t '
+          f'{np.max(m("k_t")):.4f}{text}; {bad_geo} records with a bound not finite or below 0, '
+          f'or with mu_low' + (', lam_atlas not above 0 or k_atlas below k_t' if args.metric
+                               else ' not above 0'), flush=True)
     print('the metric bounds hold on every record' if bad_geo == 0 and ok
           else 'THE CHECK OF THE METRIC BOUNDS FAILS', flush=True)
     ok = ok and bad_geo == 0
