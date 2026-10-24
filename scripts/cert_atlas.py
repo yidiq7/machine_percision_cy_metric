@@ -310,10 +310,13 @@ def fs_closed(t0, t1):
     abs(a)^2 = (abs(t_0)^6 + abs(t_1)^6) / abs(u)^(3/2), b_i = conj(t_i) + abs(u)^(1/2) t_i^3 / u,
     abs(a^H b)^2 = abs(sum of conj(t_i^4) + abs(u)^(1/2) abs(t_i)^6 / u)^2 / abs(u)^(3/2).
     lam_min(M) = 2 det / (tr + sqrt(tr^2 - 4 det)) falls with tr and grows with det, and lam_max(M)
-    = (tr + sqrt(tr^2 - 4 det)) / 2 grows with tr and falls with det."""
+    = (tr + sqrt(tr^2 - 4 det)) / 2 grows with tr and falls with det. A second form in the basis
+    a / abs(a) has no cancellation near the corner abs(t_0) ~ abs(t_1) ~ abs(w); each bound is the
+    better of the two."""
     q = [t0 * t0, t1 * t1]
     p = [x * x for x in q]
     r2 = [abs2(t0), abs2(t1)]
+    # r6 and the forms below are those of abs(t_i)^6 = abs(t_i^3)^2.
     r6 = [x * x * x for x in r2]
     u = 1 + p[0] + p[1]
     au = abs(u)
@@ -325,15 +328,37 @@ def fs_closed(t0, t1):
     b2 = sum((abs2(t.conjugate() + su * t * x / u) for t, x in zip((t0, t1), q)), arb(0))
     c = sum((x.conjugate() + su * r / u for x, r in zip(p, r6)), acb(0))
     cc = abs2(c) / (au * su)
+    s_lo, s_hi = down(s), up(s)
+    if not s_lo > 0:
+        return -math.inf, math.inf
+    low, high = -math.inf, math.inf
     tr = 2 + a2 - b2 / s
     det = (1 + a2) * (1 - b2 / s) + cc / s
-    tr_hi, det_lo, s_lo, s_hi = up(tr), down(det), down(s), up(s)
-    if not (s_lo > 0 and det_lo > 0):
-        return -math.inf, math.inf
-    t_hi, d_lo = arb(tr_hi), arb(det_lo)
-    root = arb(up(t_hi * t_hi - 4 * d_lo)).sqrt() if up(t_hi * t_hi - 4 * d_lo) > 0 else arb(0)
-    low = down(2 * d_lo / (t_hi + root) / arb(s_hi) / FS_SCALE)
-    high = up((t_hi + root) / 2 / arb(s_lo) / FS_SCALE)
+    tr_hi, det_lo = up(tr), down(det)
+    if det_lo > 0:
+        t_hi, d_lo = arb(tr_hi), arb(det_lo)
+        root = arb(up(t_hi * t_hi - 4 * d_lo)).sqrt() if up(t_hi * t_hi - 4 * d_lo) > 0 else arb(0)
+        low = down(2 * d_lo / (t_hi + root) / arb(s_hi) / FS_SCALE)
+        high = up((t_hi + root) / 2 / arb(s_lo) / FS_SCALE)
+    # The same matrix in the basis a / abs(a), e_2: M_11 = 1 + P - Q / s, M_22 = 1 - R / s,
+    # abs(M_12)^2 = X = Q R / s^2, with P = abs(a)^2, Q = abs(a^H b)^2 / P and R = abs(a_0 b_1 -
+    # a_1 b_0)^2 / P (Lagrange); then lam = min or max(M_11, M_22) -+ X / (abs(D) + sqrt(D^2 + X)),
+    # D = (M_11 - M_22) / 2, with no cancellation where one eigenvalue is much the larger.
+    r6s = r6[0] + r6[1]
+    if down(r6s) > 0:
+        bb = [t.conjugate() + su * t * x / u for t, x in zip((t0, t1), q)]
+        qq = abs2(c) / r6s
+        rr = abs2(t0 * q[0] * bb[1] - t1 * q[1] * bb[0]) / r6s
+        m11, m22 = 1 + a2 - qq / s, 1 - rr / s
+        x_hi = arb(up(qq * rr / (s * s)))
+        dd = (m11 - m22) / 2
+        d_lo = arb(max(down(abs(dd)), 0.0))
+        shift = x_hi / (d_lo + (d_lo * d_lo + x_hi).sqrt())
+        lam_lo = arb(min(down(m11), down(m22))) - shift
+        lam_hi = arb(max(up(m11), up(m22))) + shift
+        if down(lam_lo) > 0:
+            low = max(low, down(lam_lo / arb(s_hi) / FS_SCALE))
+        high = min(high, up(lam_hi / arb(s_lo) / FS_SCALE))
     return low, high
 
 
