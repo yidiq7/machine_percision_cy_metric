@@ -722,12 +722,12 @@ def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad):
     lam1 = cp.where(pos, lam, 1.0)
     # mu: with any constant P, A = P^T g_FS conj(P) and B = P^T g conj(P), the eigenvalues of
     # g_FS^-1 g lie in [lam_min(B) / lam_max(A), lam_max(B) / lam_min(A)]; P from the center
-    # makes A near I.
+    # makes A near I and B near diagonal.
     sp_m = space(4, min(METRIC_ORDER, sp4.n))
     gm = {k: tm.truncate(sp_m, sp4, tm.restrict(v, d)) for k, v in g.items()}
     fs = {(i, j): tm.truncate(sp_m, sp4, tm.cauchy_mixed(sp4, log_r2, i, 2 + j, d))
           for i in range(2) for j in range(2)}
-    p_fs = _near_inv_sqrt(fs)
+    p_fs = _near_inv_sqrt(fs, gm)
     a_low, a_up = _eig_bounds(sp_m, _congruent(sp_m, fs, p_fs))
     b_low, b_up = _eig_bounds(sp_m, _congruent(sp_m, gm, p_fs))
     ok_mu = (a_low > 0) & (b_low > 0)
@@ -817,29 +817,48 @@ def _congruent(sp, m, p):
 def _eig_bounds(sp, m):
     """Bounds (low, up) of the eigenvalues of the Hermitian 2x2 models m on their polydisc, from
     lam = (a + d -+ sqrt((a - d)^2 + 4 abs(b)^2)) / 2 with the bounds of Re a, Re d, abs(a - d)
-    and abs(b); low <= lam_min and up >= lam_max."""
+    and abs(b), and from Gershgorin's discs; low <= lam_min and up >= lam_max."""
     d = m[0, 0].delta
     r = mag.sqrt(mag.add(mag.powi(tm.bound(sp, tm.sub(sp, m[0, 0], m[1, 1])), 2),
                          mag.mul(4.0, mag.powi(tm.bound(sp, m[0, 1]), 2))))
-    low = mag.mul_down(0.5, mag.sub_down(mag.add_down(_real_low(sp, m[0, 0], d),
-                                                      _real_low(sp, m[1, 1], d)), r))
-    up = mag.mul(0.5, mag.add(tm.bound(sp, m[0, 0]), tm.bound(sp, m[1, 1]), r))
+    a_low, d_low = _real_low(sp, m[0, 0], d), _real_low(sp, m[1, 1], d)
+    a_up, d_up = tm.bound(sp, m[0, 0]), tm.bound(sp, m[1, 1])
+    b_up = tm.bound(sp, m[0, 1])
+    low = mag.mul_down(0.5, mag.sub_down(mag.add_down(a_low, d_low), r))
+    up = mag.mul(0.5, mag.add(a_up, d_up, r))
+    # Gershgorin, tighter when m is near diagonal.
+    low = cp.maximum(low, mag.sub_down(cp.minimum(a_low, d_low), b_up))
+    up = cp.minimum(up, mag.add(cp.maximum(a_up, d_up), b_up))
     return low, up
 
 
-def _near_inv_sqrt(gm):
-    """dd constants p[i][j] (4, B) of P = conj(U) W^(-1/2), g(center) = U W U^H, from the hi
-    limbs of the center coefficients of the 2x2 models gm; I where g(center) is not positive."""
+def _center(gm):
+    """The Hermitian matrices (B, 2, 2) of the hi limbs of the center coefficients of the 2x2
+    models gm, on the host."""
     b = gm[0, 0].c.shape[2]
     m = np.zeros((b, 2, 2), complex)
     for (i, j), x in gm.items():
         c0 = cp.asnumpy(x.c[:, 0, :])
         m[:, i, j] = c0[0] + 1j * c0[2]
-    m = (m + np.conj(np.transpose(m, (0, 2, 1)))) / 2
+    return (m + np.conj(np.transpose(m, (0, 2, 1)))) / 2
+
+
+def _near_inv_sqrt(gm, other=None):
+    """dd constants p[i][j] (4, B) of a P with P^T g(center) conj(P) near I: P = conj(U) W^(-1/2)
+    for g(center) = U W U^H. With `other`, P also makes P^T other(center) conj(P) near diagonal
+    (P times conj(V), with V the eigenvectors of that matrix). I where g(center) is not
+    positive. Any P gives a bound; P only makes it tight."""
+    m = _center(gm)
+    b = m.shape[0]
     w, u = np.linalg.eigh(m)
     good = np.all(w > 0, axis=1)
     pm = np.conj(u) / np.sqrt(np.where(good[:, None], w, 1.0))[:, None, :]
     pm[~good] = np.eye(2)
+    if other is not None:
+        o = _center(other)
+        t = np.transpose(pm, (0, 2, 1)) @ o @ np.conj(pm)
+        _, v = np.linalg.eigh((t + np.conj(np.transpose(t, (0, 2, 1)))) / 2)
+        pm = pm @ np.conj(v)
     zero = np.zeros(b)
     return [[cp.asarray(np.stack([pm[:, i, j].real, zero, pm[:, i, j].imag, zero]))
              for j in range(2)] for i in range(2)]
