@@ -20,6 +20,8 @@
    the chart t at each center lie in [lam_atlas, Lam_atlas]; each output is finite.
 3. quartic.cert.cover.chart_mask (CPU): at random points of X over random cells, each chart
    whose domain holds the point is in the mask of the cell.
+4. The model S of the second form of the bound of k (`_k_square`) at points of the synthetic
+   boxes away from the center equals c k_tau^2 / 8 of the definition within its remainder.
 
 Run on a GPU node: uv run --extra gpu --locked python -u -m tests.test_metric_bounds
 """
@@ -449,6 +451,42 @@ def test_synthetic():
     print(f'test_synthetic: PASS ({time.perf_counter() - t0:.0f}s)', flush=True)
 
 
+def test_k_square():
+    """The model S of `_k_bound` in tau at points of the slice away from the box center: it must
+    equal c k_tau^2 / 8 of the definition within its remainder. The conjugate of a model in
+    (tau, sigma) must exchange tau and sigma; a conjugate of the coefficients alone is right
+    only at the center."""
+    t0 = time.perf_counter()
+    phi, fsp, h, n01, kap = synthetic()
+    ref = Reference(phi, fsp, h, n01, kap)
+    d = cp.asarray(np.array(DELTAS))
+    d_f = d * (1 + A)
+    sp4 = space(4, N_ORDER)
+    phi_m = to_tm(sp4, phi, d_f * (1 + A))
+    g = {(i, j): tm.cauchy_mixed(sp4, phi_m, i, 2 + j, d_f) for i in range(2) for j in range(2)}
+    sp_m = space(4, min(tc.METRIC_ORDER, sp4.n))
+    gf = {k: tm.truncate(sp_m, sp4, v) for k, v in g.items()}
+    keep = {}
+    tc._k_bound(sp_m, gf, None, d, tc.metric_c_low(K0), keep)
+    coef, rem = cp.asnumpy(keep['S'].c), cp.asnumpy(keep['S'].rem)
+    rng = np.random.default_rng(20261025)
+    worst = 0.0
+    for bx, delta in enumerate(DELTAS):
+        cz = [mp.mpc(mp.mpf(coef[0, k, bx]) + mp.mpf(coef[1, k, bx]),
+                     mp.mpf(coef[2, k, bx]) + mp.mpf(coef[3, k, bx])) for k in range(sp_m.size)]
+        for tau in points(delta, rng):
+            x = list(tau) + [mp.conj(v) for v in tau]
+            val = mp.fsum(z * x[0] ** e[0] * x[1] ** e[1] * x[2] ** e[2] * x[3] ** e[3]
+                          for z, e in zip(cz, sp_m.mons))
+            want = ref.c * ref.values(tau)['k_tau'] ** 2 / 8
+            assert abs(val - want) <= rem[bx] + 1e-20 * want, (bx, val, want, rem[bx])
+            if delta > 1e-3:
+                worst = max(worst, float(abs(val - want) / want))
+    print(f'  S against c k_tau^2 / 8 at {POINTS} points of each box: largest relative gap '
+          f'{worst:.1e}; remainders {[f"{r:.1e}" for r in rem]}', flush=True)
+    print(f'test_k_square: PASS ({time.perf_counter() - t0:.0f}s)', flush=True)
+
+
 # ---------------------------------------------------------------- test 2
 
 
@@ -552,5 +590,6 @@ def test_chart_mask():
 if __name__ == '__main__':
     test_chart_mask()
     test_synthetic()
+    test_k_square()
     test_real_box()
     print('RESULT: PASS', flush=True)

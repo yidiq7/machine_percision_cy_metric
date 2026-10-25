@@ -888,7 +888,7 @@ def _eig_g(sp, gm, d):
     return low, up
 
 
-def _k_bound(sp, gm, chart, d, c):
+def _k_bound(sp, gm, chart, d, c, keep=None):
     """A bound of the real norm of DG normalized at each point, on the polydisc d, for the 2x2
     models gm of g (on a larger polydisc) in the chart of the derivative: None for tau, or
     (sp2, J^-1, tau_side) for t, so that d_t_k = sum_a (J^-1)_ak d_tau_a. With a constant
@@ -896,7 +896,7 @@ def _k_bound(sp, gm, chart, d, c):
     P^T g conj(P) and Gamma_P[c] = sum_k P_kc d_k g_P, it is the smaller of
     sqrt(8) abs(Gamma_P)_F / (sqrt(c) lam_min(g_P)^(3/2)), with the sup and the inf on d, and
     sqrt(8 B(S) / c), with S the square of the norm normalized by g_P at each point
-    (`_k_square`). inf where neither has a proof."""
+    (`_k_square`). inf where neither has a proof. With a dict keep, it gets the model S."""
     p = _near_inv_sqrt(gm)
     gp = _congruent(sp, gm, p)
     dgp = [{k: tm.deriv1(sp, v, a, d) for k, v in gp.items()} for a in range(2)]
@@ -922,17 +922,20 @@ def _k_bound(sp, gm, chart, d, c):
     den = mag.mul_down(mag.sqrt_down(c), mag.mul_down(lam, mag.sqrt_down(lam)))
     split = cp.where(ok, mag.div(mag.mul(mag.sqrt(8.0), _norm([tm.bound(sp, x) for x in gam.values()])),
                                  den), cp.inf)
-    one = _k_square(sp, gam, gd, c)
+    s = _k_square(sp, gam, gd)
+    if keep is not None:
+        keep['S'] = s
+    one = mag.sqrt(mag.div(mag.mul(8.0, tm.bound(sp, s)), c))
     # A NaN of the one-model bound (inf times 0 after a series with no proof) gives no bound.
     return cp.minimum(split, cp.where(one >= 0, one, cp.inf))
 
 
-def _k_square(sp, gam, gd, c):
-    """sqrt(8 B(S) / c) for the models gam[c, (i, j)] of Gamma_P and gd of g_P on one polydisc:
-    S = sum Gamma[c', (i', j')] conj(Gamma[c'', (i'', j'')]) M[c'', c'] M[i'', i'] M[j', j''] with
-    M = g_P^-1 (the adjugate and `_recip` of det g_P), the square of the complex norm of
-    Gamma_P with each slot normalized by g_P at the point. inf where the series of 1 / det has
-    no proof."""
+def _k_square(sp, gam, gd):
+    """The model S = sum Gamma[c', (i', j')] conj(Gamma[c'', (i'', j'')]) M[c'', c'] M[i'', i']
+    M[j', j''] for the models gam[c, (i, j)] of Gamma_P and gd of g_P on one polydisc, with
+    M = g_P^-1 (the adjugate and `_recip` of det g_P): on the slice sigma = conj(tau) it is the
+    square of the complex norm of Gamma_P with each slot normalized by g_P at the point. Its
+    remainder is inf where the series of 1 / det has no proof."""
     b = gd[0, 0].delta.shape[0]
     det = tm.sub(sp, tm.mul(sp, gd[0, 0], gd[1, 1]), tm.mul(sp, gd[0, 1], gd[1, 0]))
     idet = _recip(sp, det)
@@ -940,14 +943,30 @@ def _k_square(sp, gam, gd, c):
     m = {(0, 0): tm.mul(sp, gd[1, 1], idet), (1, 1): tm.mul(sp, gd[0, 0], idet),
          (0, 1): tm.scale(sp, tm.mul(sp, gd[0, 1], idet), minus),
          (1, 0): tm.scale(sp, tm.mul(sp, gd[1, 0], idet), minus)}
-    gc = {key: conj(v) for key, v in gam.items()}
+    gc = {key: _conj_mixed(sp, v) for key, v in gam.items()}
     s = None
     for c1, c2, i1, i2 in itertools.product(range(2), repeat=4):
         mm = tm.mul(sp, m[c2, c1], m[i2, i1])
         for j1, j2 in itertools.product(range(2), repeat=2):
             t = tm.mul(sp, tm.mul(sp, gam[c1, (i1, j1)], gc[c2, (i2, j2)]), tm.mul(sp, mm, m[j1, j2]))
             s = t if s is None else tm.add(sp, s, t)
-    return mag.sqrt(mag.div(mag.mul(8.0, tm.bound(sp, s)), c))
+    return s
+
+
+_SWAP = {}
+
+
+def _conj_mixed(sp, x):
+    """The model of conj(x) on the slice sigma = conj(tau), for a model x in the four variables
+    (tau_0, tau_1, sigma_0, sigma_1): y(tau, sigma) = conj(x(conj(sigma), conj(tau))), so the
+    coefficient of tau^a sigma^b is the conjugate of that of tau^b sigma^a. The map
+    (tau, sigma) -> (conj(sigma), conj(tau)) keeps the polydisc, so the remainder stays."""
+    key = (sp.nvars, sp.n)
+    if key not in _SWAP:
+        _SWAP[key] = cp.asarray([sp.index[(e[2], e[3], e[0], e[1])] for e in sp.mons], cp.int64)
+    c = x.c[:, _SWAP[key], :]
+    c[2:] = -c[2:]
+    return tm.TM(c, x.rem.copy(), x.delta)
 
 
 def _congruent(sp, m, p):
