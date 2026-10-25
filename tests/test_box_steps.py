@@ -2,14 +2,12 @@
 
 1. A call of box_f with a dict `keep` gives the same bits as a call with no dict, and the
    dict holds each key of the hooks.
-2. The box B6 of the run at the factor 1: the replay gives the sup and grad_g of its record bit
-   for bit, 4 points pass R1 for each model of the steps 1 to 9, and the test detects the part
-   `residual` of h (R2 above 1 at a point, and no R2 of it NaN).
+2. The box B6 of the run v3 at the factor 1: the replay gives the sup and grad_g of its record
+   bit for bit, 4 points pass R1 for each model of the steps 1 to 9, and the test detects the
+   part `residual` of h (R2 above 1 at a point, and no R2 of it NaN).
 
-The bit check of the replay against the record of the old run fails by design after the change
-of the bounds, until the new full run gives new records.
-
-Run on a GPU node, with the cover and the local forms of the reference center 297:
+Run on a GPU node, with the cover v3, the local forms v3 of the reference center 297 and the
+records of the run v3:
     uv run --extra gpu --locked python -u -m tests.test_box_steps
 """
 import math
@@ -31,10 +29,10 @@ import cert_run                                             # noqa: E402
 import cert_steps as cs                                     # noqa: E402
 from quartic.cert import records as rs                      # noqa: E402
 
-COVER = ROOT / 'runs_tm' / 'cover_s0.03_c6_v2.npz'
-LOCAL = Path('/n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td/center_297.npz')
+COVER = ROOT / 'runs_tm' / 'cover_s0.03_c6_v3.npz'
+LOCAL = Path('/n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td_v3/center_297.npz')
 REF = 297
-RUN = ROOT / 'runs_tm' / 'run_f6t_v2.npz'
+RUN = [ROOT / 'runs_tm' / 'full_f6t_v3' / f'run_{g}.npz' for g in range(4)]
 DATA = ROOT / 'runs_tm' / 'f6t_data.npz'
 FORMS = ROOT / 'runs_tm' / 'f6t_forms.npz'
 POINTS = 4
@@ -86,11 +84,10 @@ def test_keep_same_bits():
 
 
 def test_steps_b6():
-    """The box B6 of the record file RUN. The replay of its sup and grad_g must equal the record
-    bit for bit. This check fails by design after the change of the bounds, until the new full
-    run gives new records."""
+    """The box B6 of the records RUN (the four parts of the run v3). The replay of its sup and
+    grad_g must equal the record bit for bit."""
     cs._gpu_imports()
-    rec, _, _, _ = rs.load([str(RUN)])
+    rec, _, _, _ = rs.load([str(p) for p in RUN])
     row_index = cs.select_boxes(rec)['B6']
     row = rec[row_index]
     assert int(row[cs.COL['ref']]) == REF
