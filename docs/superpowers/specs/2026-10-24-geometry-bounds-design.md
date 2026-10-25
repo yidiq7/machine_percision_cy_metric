@@ -109,8 +109,8 @@ The full pass (2026-10-25, commit fc16d26, target 60, depth up to 3, 4 parts of 
 on one H200 each, `runs_tm/metric_f6t_v2`): 295,730 boxes computed, 261,373 final, none deeper
 than 2; k_atlas ≤ 59.9991; `cert_partition --metric` with the manifest of the local forms v3
 passes. With the run v3, combine gives C ≤ 2.1765, μ_min ≥ 0.59669, κ ≤ 4.4449e-13,
-λ ≥ 0.016109, Λ ≤ 0.64047, K̃ ≤ 59.999, c̃1 ≤ 2,199 and c̃2 ≤ 3.453e5
-(`runs_tm/atlas_combine_v3.npz`). Its records (`records.METRIC_COLUMNS`) do not bound abs(f); their ric is useless, because f at these
+λ ≥ 0.016109, Λ ≤ 0.64047, K̃ ≤ 59.999, and for all pairs of charts (item 7 of the next
+section) c̃1 ≤ 4,396.5 and c̃2 ≤ 2.969e7 (`runs_tm/atlas_combine_v3.npz`, commit 4e35cbd). Its records (`records.METRIC_COLUMNS`) do not bound abs(f); their ric is useless, because f at these
 orders has a large remainder, and combine takes the ric of the run.
 `cert_partition --metric` checks that they make a partition of each cell of the cover, their
 radii and lam_big, that each bound is finite and not below 0, that mu_low > 0 and lam_atlas > 0,
