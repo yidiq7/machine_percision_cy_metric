@@ -50,9 +50,11 @@ products take g and g_FS at the order METRIC_ORDER = 10 (the rest goes to the re
    form (`_k_square`) bounds S = Σ Γ[c′, (i′, j′)] conj(Γ[c″, (i″, j″)]) M[c″, c′] M[i″, i′] M[j′, j″]
    with M = g_P⁻¹ (the adjugate and a series for 1 ÷ det) as one model: S is the square of the
    norm with each slot normalized by g_P at the point, so the bound is √(8 B(S) ÷ c). `_k_bound`
-   takes the smaller of the two. The second form is about 2 times better on the cells of half
-   the side of a box of the run, and much worse on some full boxes, where the series of 1 ÷ det
-   has large terms. Column `k_tau` (in τ).
+   takes the smaller of the two. The conjugate of a model in (τ, σ) on the slice σ = τ̄ exchanges
+   the exponents of τ and σ (`_conj_mixed`); `tools.conj` conjugates only the coefficients, which
+   is right for a model in τ alone. `test_k_square` evaluates S at points away from the center,
+   and a conjugate of the coefficients alone fails it. The second form is much worse on some full
+   boxes, where the series of 1 ÷ det has large terms. Column `k_tau` (in τ).
 4. **In the chart t.** t = p₀₁ + τ + n₀₁ h(τ), J = dt/dτ = I + n₀₁ ∇hᵀ, J⁻¹ = I − n₀₁ ∇hᵀ ÷
    (1 + ∇h·n₀₁) (a series in sp2), g_t = J⁻ᵀ g J̄⁻¹ as models, and ∂_t = J⁻ᵀ ∂_τ, so that
    Γ_P[c] = Σ_a (J⁻¹ P)_ac ∂_τa g_t,P. The same bound as in 3 gives column `k_t`.
@@ -98,24 +100,17 @@ order is enough:
 So the cells of the cover run at --order 20 and the smaller cells at --order-split 12.
 
 The pilot (jobs 55135390 to 55135399, the 2,789 cells of the references 139, 243, 231, 0 and 297,
-depth 2, both forms of 3) and its trace give the cost of each target of k_atlas:
+depth 2) gave the relative cost 1.8 for the target 60 against 1.0 for 80. It and the first full
+pass (commit c21ea74) took the second form of 3 with the conjugate of the coefficients alone, so
+their bounds are not proved; their files are in `runs_tm/equiv/*_wrong_conj*`. A box takes 57 to
+70 ms at order 12 and about 90 ms at order 20 on one H200.
 
-| target | boxes computed | largest k_atlas |
-|---|---|---|
-| 60 | 29,020 | 60.00 |
-| 70 | 18,533 | 69.97 |
-| 80 | 16,094 | 80.00 |
-| 100 | 14,302 | 99.98 |
-
-A box takes 57 to 70 ms at order 12 and about 90 ms at order 20 on one H200. The full pass takes
-the target 60.
-
-The full pass (2026-10-25, commit c21ea74, target 60, depth up to 3, 4 parts of 1.5 to 1.9 h on
-one H200 each): 314,785 boxes computed, 277,846 final, none deeper than 2; k_atlas ≤ 59.9994;
-`cert_partition --metric` with the manifest of the local forms v3 passes. With the run v3,
-combine gives C ≤ 2.1765, μ_min ≥ 0.5967, κ ≤ 4.4449e-13, λ ≥ 0.016109, Λ ≤ 0.57563,
-K̃ ≤ 59.999, c̃1 ≤ 2,084 and c̃2 ≤ 3.273e5 (`runs_tm/atlas_combine_v2.npz`). Its
-records (`records.METRIC_COLUMNS`) do not bound abs(f); their ric is useless, because f at these
+The full pass (2026-10-25, commit fc16d26, target 60, depth up to 3, 4 parts of 1.45 to 1.73 h
+on one H200 each, `runs_tm/metric_f6t_v2`): 295,730 boxes computed, 261,373 final, none deeper
+than 2; k_atlas ≤ 59.9991; `cert_partition --metric` with the manifest of the local forms v3
+passes. With the run v3, combine gives C ≤ 2.1765, μ_min ≥ 0.5967, κ ≤ 4.4449e-13,
+λ ≥ 0.016109, Λ ≤ 0.64047, K̃ ≤ 59.999, c̃1 ≤ 2,198 and c̃2 ≤ 3.453e5
+(`runs_tm/atlas_combine_v3.npz`). Its records (`records.METRIC_COLUMNS`) do not bound abs(f); their ric is useless, because f at these
 orders has a large remainder, and combine takes the ric of the run.
 `cert_partition --metric` checks that they make a partition of each cell of the cover, their
 radii and lam_big, that each bound is finite and not below 0, that mu_low > 0 and lam_atlas > 0,
