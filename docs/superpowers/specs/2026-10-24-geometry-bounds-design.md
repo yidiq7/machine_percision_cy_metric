@@ -108,7 +108,13 @@ depth 2, both forms of 3) and its trace give the cost of each target of k_atlas:
 | 100 | 14,302 | 99.98 |
 
 A box takes 57 to 70 ms at order 12 and about 90 ms at order 20 on one H200. The full pass takes
-the target 60. Its
+the target 60.
+
+The full pass (2026-10-25, commit c21ea74, target 60, depth up to 3, 4 parts of 1.5 to 1.9 h on
+one H200 each): 314,785 boxes computed, 277,846 final, none deeper than 2; k_atlas ≤ 59.9994;
+`cert_partition --metric` with the manifest of the local forms v3 passes. With the run v3,
+combine gives C ≤ 2.1765, μ_min ≥ 0.5967, κ ≤ 4.4449e-13, λ ≥ 0.016109, Λ ≤ 0.57563,
+K̃ ≤ 59.999, c̃1 ≤ 2,084 and c̃2 ≤ 3.273e5 (`runs_tm/atlas_combine_v2.npz`). Its
 records (`records.METRIC_COLUMNS`) do not bound abs(f); their ric is useless, because f at these
 orders has a large remainder, and combine takes the ric of the run.
 `cert_partition --metric` checks that they make a partition of each cell of the cover, their
