@@ -805,6 +805,11 @@ def combine(args):
         c2s.append(big.sqrt() / (lam * lam.sqrt()) * x(routes['d3']))
     c1 = min(c1s, key=up)
     c2 = min(c2s, key=up)
+    # These bound the pairs with the chart b = (3, 2). The draft bounds every pair (a, a'): the
+    # symmetry moves x over F, F_aa' = F_ab o F_ba', and with the normalization at the same point
+    # each first derivative is an isometry, so c~1 <= 2 c~1(b) and c~2 <= 2 c~2(b) + 6 c~1(b)^2.
+    c1_all = 2 * c1
+    c2_all = 2 * c2 + 6 * c1 * c1
     e2, e3 = routes['c1'], routes['c2']
     k_t = x(best_up('k_t'))
     k_chain = k_t + 2 * c1
@@ -837,8 +842,10 @@ def combine(args):
         ('K~ from the charts of the atlas', opt(k_box, up)),
         ('K~ from the chart of F + 2 c~1', up(k_chain)),
         ('K in the chart of F', up(k_t)),
-        ('c~1', up(c1)),
-        ('c~2', up(c2)),
+        ('c~1', up(c1_all)),
+        ('c~2', up(c2_all)),
+        ('c~1 of the pairs with the chart of F', up(c1)),
+        ('c~2 of the pairs with the chart of F', up(c2)),
         ('[f o psi_a^-1]_{1,0;V_a} <= sqrt(Lambda) sup abs(grad f)_G', up(big.sqrt() * grad)),
         ('diam(M, omega) <= sqrt(C) diam(M, omega_0)', up(diam_m)),
         ('diam(M/G, omega) <= sqrt(C) diam(M/G, omega_0)', up(diam_g)),

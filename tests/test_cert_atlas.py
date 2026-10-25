@@ -317,11 +317,14 @@ def test_combine():
             z = np.load(out)
             got[name] = dict(zip([str(s) for s in z['names']], z['values']))
     # The run alone: C 2.0, mu 0.5, lambda = mu lam0 = 0.05, Lambda = C Lam0 = 2.0, K~ = 30 + 2 c~1.
+    # c~1 and c~2 of the pairs with the chart of F, and of all pairs through that chart.
     c1 = math.sqrt(2.0) / 0.5 * 3.0
+    c2 = math.sqrt(2.0) / 0.5 ** 1.5 * 5.0
     want = {'run': {'C: omega <= C omega_0': 2.0, 'mu: omega >= mu omega_0': 0.5,
                     'kappa: Ric >= -3 kappa g': 2e-14, 'lambda: lambda I <= G_a': 0.05,
-                    'Lambda: G_a <= Lambda I': 2.0, 'c~1': c1,
-                    'c~2': math.sqrt(2.0) / 0.5 ** 1.5 * 5.0, 'K~': 30 + 2 * c1,
+                    'Lambda: G_a <= Lambda I': 2.0, 'c~1': 2 * c1, 'c~2': 2 * c2 + 6 * c1 ** 2,
+                    'c~1 of the pairs with the chart of F': c1,
+                    'c~2 of the pairs with the chart of F': c2, 'K~': 30 + 2 * c1,
                     '[f o psi_a^-1]_{1,0;V_a} <= sqrt(Lambda) sup abs(grad f)_G':
                         math.sqrt(2.0) * 3e-16}}
     # With cert_metric: C min(2.0, 2.2), mu max(0.5, 0.55), kappa min(6e-14, 5e-14) / 3, lambda
@@ -329,7 +332,7 @@ def test_combine():
     c1 = math.sqrt(2.0) / 0.55 * 3.0
     want['metric'] = {'C: omega <= C omega_0': 2.0, 'mu: omega >= mu omega_0': 0.55,
                       'kappa: Ric >= -3 kappa g': 5e-14 / 3, 'lambda: lambda I <= G_a': 0.08,
-                      'Lambda: G_a <= Lambda I': 2.0, 'c~1': c1, 'K~': 28.0,
+                      'Lambda: G_a <= Lambda I': 2.0, 'c~1': 2 * c1, 'K~': 28.0,
                       'K in the chart of F': 25.0, 'K~ from the chart of F + 2 c~1': 25 + 2 * c1,
                       'lambda from the charts of the atlas': 0.08,
                       'Lambda from the charts of the atlas': 3.0}

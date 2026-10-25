@@ -108,8 +108,8 @@ their bounds are not proved; their files are in `runs_tm/equiv/*_wrong_conj*`. A
 The full pass (2026-10-25, commit fc16d26, target 60, depth up to 3, 4 parts of 1.45 to 1.73 h
 on one H200 each, `runs_tm/metric_f6t_v2`): 295,730 boxes computed, 261,373 final, none deeper
 than 2; k_atlas ≤ 59.9991; `cert_partition --metric` with the manifest of the local forms v3
-passes. With the run v3, combine gives C ≤ 2.1765, μ_min ≥ 0.5967, κ ≤ 4.4449e-13,
-λ ≥ 0.016109, Λ ≤ 0.64047, K̃ ≤ 59.999, c̃1 ≤ 2,198 and c̃2 ≤ 3.453e5
+passes. With the run v3, combine gives C ≤ 2.1765, μ_min ≥ 0.59669, κ ≤ 4.4449e-13,
+λ ≥ 0.016109, Λ ≤ 0.64047, K̃ ≤ 59.999, c̃1 ≤ 2,199 and c̃2 ≤ 3.453e5
 (`runs_tm/atlas_combine_v3.npz`). Its records (`records.METRIC_COLUMNS`) do not bound abs(f); their ric is useless, because f at these
 orders has a large remainder, and combine takes the ric of the run.
 `cert_partition --metric` checks that they make a partition of each cell of the cover, their
@@ -117,6 +117,52 @@ radii and lam_big, that each bound is finite and not below 0, that mu_low > 0 an
 and that k_atlas ≥ k_t. The run of f keeps the 24 columns of v3, so the run v3 stays the run of
 the bound. With the second form of 3, a new cert_run equals v3 bit for bit in the columns before
 k_tau, and its k_tau and k_t are at most those of v3.
+
+## The bounds of FS and of the chart maps (CPU, `scripts/cert_atlas.py`, arb)
+
+Chart b = (3, 2): z = (t₀, t₁, w, 1), w⁴ = −(1 + t₀⁴ + t₁⁴). Its domain is
+D = {1 > 0.99 max(abs(t₀), abs(t₁), abs(w)), abs(w) > 0.98 max(abs(t₀), abs(t₁))}, with no window
+of the argument (a superset of each V_a). The symmetry reduces it to arg t₀ ∈ [0, π/4] and
+arg t₁ ∈ [0, π/2].
+
+1. `fs`: λ₀ = inf over D of λ_min(g_FS) ÷ (π√2) and Λ₀ = sup of λ_max(g_FS) ÷ (π√2). The values
+   do not depend on the branch of w.
+2. `transitions`: for each chart a = (i, j) ≠ (3, 2), F_a(t) = (z_k ÷ z_i, z_l ÷ z_i), and the
+   sups c̃1⁰ and c̃2⁰ over D ∩ D(i, j) of the real norm of Q₀_a DⁿF_a[Q₀_b⁻¹ ·] (n = 2, 3) with
+   the FS forms at the same point. FS is one metric, so abs(Q₀_a w) = abs(Q₀_b DF⁻¹ w), and the
+   norm is at most √λ_max λ_min^(−n/2) abs(DF⁻¹ DⁿF) with the FS eigenvalues of chart b.
+   D(i, j) = {abs(z_i) > 0.99 max of the others, abs(z_j) > 0.98 max of the other two}.
+3. **The bound of a box** of side s and center c (abs(x − c)₂ ≤ s) is the better of the ball
+   value and a second-order Taylor form from jets at c and on the box:
+   * E = DF⁻¹ DⁿF from holomorphic jets of F of degree 5: abs(E(x)) ≤ abs(E(c)) +
+     abs(DE(c)) s + sup abs(D²E) s² ÷ 2;
+   * the FS eigenvalues: the potential log(1 + t·σ + w(t) w̃(σ)) in (t, σ), σ = conj(t) on the
+     slice, as jets of degree 4. abs(g(x) − g(c))_F is at most the linear terms at c plus the
+     terms of degree 2 on the box, with abs(xᵢ − cᵢ) ≤ s ÷ √2, and Weyl's inequality moves each
+     eigenvalue by at most that.
+   The first-order forms (ball partials) left gaps of 5 to 34 percent at the side R/256, because
+   the partials on a box grow as much as the values.
+4. A branch-and-bound on boxes of (Re t₀, Im t₀, Re t₁, Im t₁), in rounds of one side so that each
+   round knows the best point value: a box that cannot meet the domain goes out; a box whose
+   bound is within the tolerance of the best point value, or of the smallest side, gives its
+   bound. The result is the largest (smallest) bound of a box. For the transitions a floor from
+   random points of all 11 charts lets a chart stop early, since combine takes only the maximum.
+5. The FS eigenvalues of a ball also come from two closed forms with no root of a ball (s g =
+   I + a aᴴ − b bᴴ / s, and the same in the basis a / abs(a), which has no cancellation near the
+   corner abs(t₀) ≈ abs(t₁) ≈ abs(w) ≈ 0.8).
+6. Two routes for the transitions: `c1 c2` (the FS form at the same point, normalized at the box
+   center by S = Q_c⁻¹) and `d2 d3` (the plain real norms of D²F and D³F, with the factors
+   Λ^(1/2) λ⁻¹ and Λ^(1/2) λ^(−3/2)). combine takes the smaller valid bound. On 2026-10-24 only
+   `d2 d3` converged in the time of a run: near the overlaps of near-equal moduli the jets on
+   balls lose the cancellations of the formulas, so `c1 c2` needs the side R/512 there.
+7. **All pairs of charts.** The draft bounds Q_a D²F_ab [Q_b⁻¹ ·, Q_b⁻¹ ·] and the same with D³ for
+   every pair (a, b) and x ∈ U_a ∩ U_b. The symmetry moves x over F, where the chart c = (3, 2)
+   holds it, and F_ab = F_ac ∘ F_cb. With the metric normalization at the same point, each
+   Q DF Q⁻¹ is an isometry, so the normalized norms satisfy N₂(a, b) ≤ N₂(a, c) + N₂(c, b),
+   N₂(c, b) = N₂(b, c) (the inverse), and N₃(a, b) ≤ N₃(a, c) + N₃(b, c) + 3 N₂(a, c) N₂(b, c)
+   + 3 N₂(b, c)². So c̃1 ≤ 2 c̃1(c) and c̃2 ≤ 2 c̃2(c) + 6 c̃1(c)², with c̃1(c) and c̃2(c) the bounds
+   of the pairs with the chart c that `transitions` computes. Before 2026-10-25 combine gave
+   c̃1(c) and c̃2(c) as c̃1 and c̃2.
 
 ## The combination (`scripts/cert_atlas.py combine`)
 
@@ -128,7 +174,8 @@ in arb with outward rounding:
 * λ = the larger of μ_min λ₀ and min lam_atlas; Λ = the smaller of C Λ₀ and max Lam_atlas;
 * c̃1 = √C c̃1⁰ ÷ μ_min and c̃2 = √C c̃2⁰ ÷ μ_min^(3/2), from abs(Q_a v) ≤ √C abs(Q₀_a v) and
   abs(Q₀_b Q_b⁻¹) ≤ μ_min^(−1/2); or c̃1 = Λ^(1/2) λ⁻¹ sup abs(D²F) and c̃2 = Λ^(1/2) λ^(−3/2)
-  sup abs(D³F); the smaller of the two;
+  sup abs(D³F); the smaller of the two, for the pairs with the chart b = (3, 2); then
+  c̃1 ≤ 2 c̃1(b) and c̃2 ≤ 2 c̃2(b) + 6 c̃1(b)² for all pairs (item 7 above);
 * K̃ = the smaller of max k_atlas and max k_t + 2 c̃1 (the chain rule from the chart of F to any
   chart, with the term of c̃1). In the v3 run the second gave 9,341 (c̃1 = 4,451 from the plain
   norms), so the first route is the one that counts;
