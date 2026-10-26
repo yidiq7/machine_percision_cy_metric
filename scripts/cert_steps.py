@@ -39,10 +39,11 @@ export imports CuPy and quartic.cert.box; R4 imports quartic.cert.frame and tmgp
 
 Usage, on one GPU node:
     uv run --extra gpu --locked python -u scripts/cert_steps.py export \\
-        --run runs_tm/run_f6t_v2.npz --cover runs_tm/cover_s0.03_c6_v2.npz \\
-        --local <directory of the local forms> --data runs_tm/f6t_data.npz \\
-        --forms runs_tm/f6t_forms.npz --manifest runs_tm/f6t_local_manifest.txt \\
-        --boxes B1 --factors 1 --out runs_tm/steps_b1
+        --run runs_tm/full_f6t_v3/run_0.npz ... runs_tm/full_f6t_v3/run_3.npz \\
+        --cover runs_tm/cover_s0.03_c6_v3.npz --local <directory of the local forms> \\
+        --data runs_tm/f6t_data.npz --forms runs_tm/f6t_forms.npz \\
+        --manifest runs_tm/full_f6t_v3/local_manifest.txt --boxes B1 --factors 1 \\
+        --out runs_tm/steps_b1
 Usage, on a CPU node with 16 cores:
     uv run --extra gpu --locked python -u scripts/cert_steps.py compare \\
         --steps runs_tm/steps_b1 --data runs_tm/f6t_data.npz --forms runs_tm/f6t_forms.npz \\
@@ -296,7 +297,7 @@ def export(args):
     if sha_data != SHA_DATA or sha_forms != SHA_FORMS:
         raise SystemExit(f'the SHA-256 of --data or --forms differs: {sha_data} {sha_forms}')
     manifest = rs.read_manifest(args.manifest)
-    rec, _, run_commit, run_shas = rs.load([args.run])
+    rec, _, run_commit, run_shas = rs.load(args.run)
     rows = select_boxes(rec)
     for name in args.boxes:
         if name not in rows:
@@ -319,8 +320,9 @@ def export(args):
         locals_[r] = (tc.local_on_gpu(io.BytesIO(raw)), digest)
     out_dir.mkdir(parents=True)
     commit = git_commit()
-    shas = dict(sha_data=sha_data, sha_forms=sha_forms, sha_run=rs.sha256(args.run),
-                sha_cover=rs.sha256(args.cover))
+    # The SHA-256 of each part of the run, in the order of --run.
+    shas = dict(sha_data=sha_data, sha_forms=sha_forms,
+                sha_run=' '.join(rs.sha256(p) for p in args.run), sha_cover=rs.sha256(args.cover))
     for name in args.boxes:
         row = rec[rows[name]]
         local, digest = locals_[int(row[COL['ref']])]
@@ -1011,7 +1013,9 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='stage', required=True)
     ex = sub.add_parser('export', help='write the models of the test boxes')
-    for opt in ('run', 'cover', 'local', 'data', 'forms', 'manifest', 'out'):
+    ex.add_argument('--run', type=str, nargs='+', required=True,
+                    help='the record files of all parts of one run (quartic.cert.records.load)')
+    for opt in ('cover', 'local', 'data', 'forms', 'manifest', 'out'):
         ex.add_argument(f'--{opt}', type=str, required=True)
     ex.add_argument('--boxes', nargs='+', required=True, help='names B1 to B8')
     ex.add_argument('--factors', nargs='+', type=float, default=[1.0])
