@@ -6,7 +6,7 @@
 #   pass, with the manifest of the local forms; the constants of cert_atlas.py combine against
 #   the published atlas_combine_v3.npz; and the cover of F by the boxes, at random points.
 # Hardware: CPU cores. tmgpu: necessary, except for the first two checks.
-# Time: about 30 min on 16 CPU cores.
+# Time: 2.5 min on 8 CPU cores with POINTS=300; the cover check takes longer with more points.
 # Variables (default):
 #   DATA_DIR (runs/zenodo)    the directory of the files of the record
 #   ZENODO_URL (<ZENODO-URL>) the URL of the record
