@@ -44,6 +44,7 @@ is_cert() {
 tmgpu=1
 $RUN -c "import tmgpu" > /dev/null 2>&1 || tmgpu=0
 failed=() skipped=() passed=()
+nofile=0
 for t in $SUITES; do
     if is_cert "$t" && [ $tmgpu = 0 ]; then
         skipped+=("$t (no tmgpu)")
@@ -55,6 +56,7 @@ for t in $SUITES; do
     done
     if [ -n "$lack" ]; then
         skipped+=("$t (no file$lack)")
+        nofile=1
         continue
     fi
     echo "=== $t"
@@ -70,7 +72,7 @@ done
 echo
 echo "passed: ${#passed[@]}"
 for s in ${skipped[@]+"${skipped[@]}"}; do echo "skipped: $s"; done
-if [ ${#skipped[@]} -gt 0 ]; then echo "$HOW"; fi
+if [ $nofile = 1 ]; then echo "$HOW"; fi
 for s in ${failed[@]+"${failed[@]}"}; do echo "failed: $s"; done
 if [ ${#failed[@]} -gt 0 ]; then exit 1; fi
 echo "RESULT: PASS"
