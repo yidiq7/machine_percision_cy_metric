@@ -11,6 +11,7 @@ records of the run v3:
     uv run --extra gpu --locked python -u -m tests.test_box_steps
 """
 import math
+import os
 import sys
 import tempfile
 from argparse import Namespace
@@ -30,7 +31,8 @@ import cert_steps as cs                                     # noqa: E402
 from quartic.cert import records as rs                      # noqa: E402
 
 COVER = ROOT / 'runs_tm' / 'cover_s0.03_c6_v3.npz'
-LOCAL = Path('/n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td_v3/center_297.npz')
+LOCAL_DIR = Path(os.environ.get('QUARTIC_LOCAL_FORMS', ROOT / 'runs_tm' / 'tm_local_f6t_td_v3'))
+LOCAL = LOCAL_DIR / 'center_297.npz'
 REF = 297
 RUN = [ROOT / 'runs_tm' / 'full_f6t_v3' / f'run_{g}.npz' for g in range(4)]
 DATA = ROOT / 'runs_tm' / 'f6t_data.npz'
@@ -44,6 +46,14 @@ KEEP_KEYS = ['d', 'd_f', 'd_phi', 'h_td', 'h_dd', 'ys', 'delta', 'p0', 'r2', 'ir
              'batch', 'fr', 'info', 'sup', 'a', 'hmaxs', 'deltas']
 
 
+def local_forms():
+    """The file of the local forms of the reference 297; stop with a clear message if it is missing."""
+    if not LOCAL.exists():
+        raise SystemExit('the local forms of the reference 297 are missing: set QUARTIC_LOCAL_FORMS '
+                         'to their directory (examples/03_local_forms.sh makes them)')
+    return LOCAL
+
+
 def same(x, y):
     """True if the host arrays are equal bit for bit, with NaN at the same places."""
     x, y = np.asarray(cp.asnumpy(x)), np.asarray(cp.asnumpy(y))
@@ -52,7 +62,7 @@ def same(x, y):
 
 def test_keep_same_bits():
     cov = np.load(COVER)
-    local = tc.local_on_gpu(str(LOCAL))
+    local = tc.local_on_gpu(str(local_forms()))
     args = Namespace(order=28, order_high=32, rho_high=0.3, target=5e-20, depth=2, batch=64,
                      verbose=False)
     settings = {28: 0.35, 32: 0.12}
@@ -93,7 +103,7 @@ def test_steps_b6():
     assert int(row[cs.COL['ref']]) == REF
     cover_file = np.load(COVER)
     cov = {k: cover_file[k] for k in cover_file.files}
-    local = tc.local_on_gpu(str(LOCAL))
+    local = tc.local_on_gpu(str(local_forms()))
     shas = dict(sha_data=cs.SHA_DATA, sha_forms=cs.SHA_FORMS, sha_run='', sha_cover='')
     with tempfile.TemporaryDirectory() as tmp:
         # export_box raises SystemExit if the replay differs from the record in sup or grad_g.

@@ -1,5 +1,5 @@
 """The bounds of quartic.cert.box.metric_bounds on the cells of a cover, in every chart of the
-atlas that can meet a cell, for the constants of notes/draft-main.tex (scripts/cert_atlas.py
+atlas that can meet a cell, for the constants of the paper (scripts/cert_atlas.py
 combine --metric).
 
 Input: a cover of scripts/cert_cover.py and the directory of the local forms of its reference
@@ -18,7 +18,7 @@ scripts/cert_partition.py --metric checks it.
 
 Usage, on one GPU node:
     uv run --extra gpu --locked python -u scripts/cert_metric.py \\
-        --cover runs_tm/cover_s0.03_c6_v3.npz --local /n/netscratch/.../tm_local_f6t_td_v3 \\
+        --cover runs_tm/cover_s0.03_c6_v3.npz --local <directory of the local forms> \\
         --out runs_tm/metric_f6t.npz
 """
 import argparse

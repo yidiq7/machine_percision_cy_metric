@@ -16,9 +16,6 @@ CLAUDE.md
 # Repositories that this project uses but does not contain.
 # MLGeometry comes from PyPI as MLGeometry-JAX. See scripts/setup.sh.
 MLGeometry/
-SLagSearch/
-draft/
-notes/symmetry_param_counts.py
 
 # pyproject.toml and uv.lock define the environment, so no requirements file
 # must exist. Two sources of versions give two different environments.

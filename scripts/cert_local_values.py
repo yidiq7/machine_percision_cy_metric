@@ -25,7 +25,7 @@ points of random cells of that center. The script also gives the SHA-256 of --da
 Usage, on CPU cores (about 20 s for each point and file on one core):
     uv run --extra gpu python -u \\
         scripts/cert_local_values.py --cover runs_tm/cover_s0.03_c6_v2.npz \\
-        --local /n/netscratch/.../tm_local_f6t_td --data runs_tm/f6t_data.npz \\
+        --local <directory of the local forms> --data runs_tm/f6t_data.npz \\
         --forms runs_tm/f6t_forms.npz --points 2 --procs 16 --manifest <file>
 """
 import argparse

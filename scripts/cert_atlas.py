@@ -1,4 +1,4 @@
-"""The bounds of the atlas of notes/draft-main.tex that need no potential, and their
+"""The bounds of the atlas of the paper that need no potential, and their
 combination with the records of a run.
 
 The chart b = (3, 2) has z = (t_0, t_1, w, 1) with w^4 = -(1 + t_0^4 + t_1^4). A chart a = (i, j) has

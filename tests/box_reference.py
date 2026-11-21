@@ -1,7 +1,7 @@
 """An independent reference in arb for the steps 1 to 12 of the box code of the strict bound.
 
 The values start from the two files of the certified potential (f6t_data.npz and
-f6t_forms.npz) and from the definitions of notes/strict_bound_proof.tex. This module does
+f6t_forms.npz) and from the mathematical definition of each step. This module does
 not use the local forms, the shift, the split in Delta or the re-expansion in zeta of the
 box code. Each value is an acb ball at 320 bits. The steps 10 to 12 (the metric, f and its
 gradient on the slice) take g_t, f and df/dt from scripts/tm_box.py, which the caller

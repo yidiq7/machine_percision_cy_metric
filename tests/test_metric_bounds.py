@@ -25,6 +25,7 @@
 
 Run on a GPU node: uv run --extra gpu --locked python -u -m tests.test_metric_bounds
 """
+import os
 import sys
 import time
 from pathlib import Path
@@ -42,7 +43,8 @@ from quartic.cert import box as tc                           # noqa: E402
 from quartic.cert import cover as cc                         # noqa: E402
 
 COVER = ROOT / 'runs_tm' / 'cover_s0.03_c6_v3.npz'
-LOCAL = Path('/n/netscratch/mweber_lab/Lab/yidqi/tm_local_f6t_td_v3/center_297.npz')
+LOCAL_DIR = Path(os.environ.get('QUARTIC_LOCAL_FORMS', ROOT / 'runs_tm' / 'tm_local_f6t_td_v3'))
+LOCAL = LOCAL_DIR / 'center_297.npz'
 RNG = np.random.default_rng(20261024)
 K0 = 2
 N_ORDER, NY = 12, 14
@@ -64,6 +66,14 @@ mp.mp.dps = 40
 
 
 # ---------------------------------------------------------------- polynomials as dicts
+
+
+def local_forms():
+    """The file of the local forms of the reference 297; stop with a clear message if it is missing."""
+    if not LOCAL.exists():
+        raise SystemExit('the local forms of the reference 297 are missing: set QUARTIC_LOCAL_FORMS '
+                         'to their directory (examples/03_local_forms.sh makes them)')
+    return LOCAL
 
 
 def deriv(poly, v):
@@ -493,7 +503,7 @@ def test_k_square():
 def test_real_box():
     t0 = time.perf_counter()
     cov = np.load(COVER)
-    local = tc.local_on_gpu(str(LOCAL))
+    local = tc.local_on_gpu(str(local_forms()))
     k0 = int(local['k0'])
     idx = np.flatnonzero(cov['ref'] == 297)[:4]
     centers = [[list(x) for x in cov['centers'][i]] for i in idx]

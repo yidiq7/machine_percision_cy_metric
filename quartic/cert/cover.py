@@ -56,7 +56,7 @@ def may_meet_f(lo, s):
     return True
 
 
-# The charts (i, j) of the atlas of notes/draft-main.tex: z_i = 1, z_j solved from P = 0, and
+# The charts (i, j) of the atlas of the paper: z_i = 1, z_j solved from P = 0, and
 # the other two coordinates over z_i in their order. The chart of F is (3, 2).
 CHARTS = tuple((i, j) for i in range(4) for j in range(4) if i != j)
 

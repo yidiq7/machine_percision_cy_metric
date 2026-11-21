@@ -23,7 +23,7 @@ commit of the code and the SHA-256 of each file of local forms (quartic.cert.rec
 Usage, on one GPU node:
     uv run --extra gpu python -u \\
         scripts/cert_run.py --cover runs_tm/cover_s0.03_c6_v2.npz \\
-        --local /n/netscratch/.../tm_local_f6t_td --target 5e-20 --out runs_tm/run_f6t.npz
+        --local <directory of the local forms> --target 5e-20 --out runs_tm/run_f6t.npz
 """
 import argparse
 import hashlib
