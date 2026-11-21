@@ -8,7 +8,7 @@ takes the place of the function closest to it, so its coefficient carries the
 almost constant direction alone.
 
 Usage, on the GPU node:
-    uv run --extra gpu python -u scripts/vpa_dd_fit.py --k0 28 \\
+    uv run --extra gpu python -u scripts/studies/vpa_dd_fit.py --k0 28 \\
         --theta runs_full/theta_k28_seed20260813.npy --k1 36 --null-degree 9
 """
 import argparse
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'scripts'))
 

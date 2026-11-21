@@ -7,7 +7,7 @@ error of q for each degree, on random points and on points with a small
 coordinate, where the functions of a level are largest.
 
 Usage, on a node:
-    uv run python -u scripts/vpa_oracle.py runs_vpa36dd/vpa_basis_k0_28_k1_36.npz
+    uv run python -u scripts/studies/vpa_oracle.py runs_vpa36dd/vpa_basis_k0_28_k1_36.npz
 """
 import argparse
 import sys
@@ -16,7 +16,7 @@ from pathlib import Path
 import mpmath as mp
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import MLGeometry as mlg                                    # noqa: E402
 mlg.set_precision(64)

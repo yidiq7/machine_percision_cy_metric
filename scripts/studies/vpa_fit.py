@@ -11,7 +11,7 @@ loss in each decade, and the solution for each cutoff. Each solution is then
 evaluated with the dd base and psi in FP64, on the fit set and the hold-out.
 
 Usage, on the GPU node:
-    uv run --extra gpu python -u scripts/vpa_fit.py --k0 28 \\
+    uv run --extra gpu python -u scripts/studies/vpa_fit.py --k0 28 \\
         --theta runs_full/theta_k28_seed20260813.npy --k1 36
 Without --theta, an HN fit at k0 in FP64 on the fit set is the base.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'scripts'))
 

@@ -9,7 +9,7 @@ different limits:
     chunks, and the standard error of `mean abs(f)` falls as 1/sqrt(N).
 
 Usage:
-    uv run python -u scripts/run_fit.py --k 12 --n-train 100000 --n-eval 8000000
+    uv run python -u scripts/studies/run_fit.py --k 12 --n-train 100000 --n-eval 8000000
 """
 import argparse
 import json
@@ -21,14 +21,14 @@ from pathlib import Path
 import numpy as np
 import jax.numpy as jnp
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import MLGeometry as mlg                                    # noqa: E402
 mlg.set_precision(64)
 
 from quartic import analytic, data, dd_metric, fit, metric, sections, whiten  # noqa: E402
 
-# sigma = mean abs(f) from the earlier fits, for comparison. CLAUDE.md holds them.
+# sigma = mean abs(f) of the earlier HN fits at each degree k, for comparison.
 KNOWN_SIGMA = {2: 1.90e-2, 4: 1.68e-3, 6: 1.60e-4, 8: 1.69e-5,
                10: 1.85e-6, 12: 2.96e-7, 16: 8.5e-9, 20: 6.3e-10}
 
@@ -196,7 +196,7 @@ def main():
             f"--require-gpu, but JAX is on {dev.platform!r}. `uv run` syncs "
             f"before it runs, and without `--extra gpu` it removes "
             f"jax[cuda12]. Use `uv run --extra gpu ...`, or "
-            f"`./scripts/setup.sh` and then `./scripts/run_cluster.sh`.")
+            f"`./scripts/setup.sh` first.")
 
     analytic.GRAM_DD = {'off': False, 'inner': 'inner', 'on': True}[args.gram_dd]
     analytic.SECTION_DD = args.section_dd

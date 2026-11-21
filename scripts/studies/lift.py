@@ -14,7 +14,7 @@ in dd on a hold-out set, so a least-squares solve in FP64 cannot give a false
 number.
 
 Usage, on the GPU node:
-    uv run --extra gpu python -u scripts/lift.py --k-low 28 --k-high 32 \\
+    uv run --extra gpu python -u scripts/studies/lift.py --k-low 28 --k-high 32 \\
         --theta runs_end/theta_k28_seed20260813.npy --points 200000
 """
 import argparse
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import MLGeometry as mlg                                    # noqa: E402
 mlg.set_precision(64)
