@@ -80,7 +80,7 @@ The Zenodo record <ZENODO-URL> holds the files that the proof used (license CC-B
 
 The local forms of the 332 reference centers (211 GB) are not in the record.
 `examples/03_local_forms.sh` makes them again from `f6t_data.npz` and `f6t_forms.npz`.
-The manifest `f6t_local_manifest_v3.txt` gives the SHA-256 of each file of the paper.
+A new build of the reference centers 0, 243 and 297 gave the SHA-256 values of the manifest.
 
 ## Reproduce
 
