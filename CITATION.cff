@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this code, cite the paper in preferred-citation."
+title: "Code for: A constructive computer-assisted existence proof for a Calabi–Yau metric"
+authors:
+  - family-names: Douglas
+    given-names: Michael R.
+  - family-names: Gómez-Serrano
+    given-names: Javier
+  - family-names: Lehmann
+    given-names: Fabian
+  - family-names: Platt
+    given-names: Daniel
+  - family-names: Qi
+    given-names: Yidi
+license: MIT
+repository-code: "https://github.com/yidiq7/machine_percision_cy_metric"
+preferred-citation:
+  type: article
+  title: "A constructive computer-assisted existence proof for a Calabi–Yau metric"
+  authors:
+    - family-names: Douglas
+      given-names: Michael R.
+    - family-names: Gómez-Serrano
+      given-names: Javier
+    - family-names: Lehmann
+      given-names: Fabian
+    - family-names: Platt
+      given-names: Daniel
+    - family-names: Qi
+      given-names: Yidi
+  year: 2026
