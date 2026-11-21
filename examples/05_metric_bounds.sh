@@ -5,7 +5,8 @@
 #   NPARTS parts, with the lists of reference centers of 04. cert_partition.py --metric checks the
 #   records. cert_atlas.py fs and transitions give the bounds that need no potential, and
 #   cert_atlas.py combine gives the constants from the records of 04 and of this script.
-#   The paper: C <= 2.1765, kappa <= 4.4449e-13, lambda >= 0.016109, Lambda <= 0.64047, K~ <= 59.999.
+#   The run of the paper: C <= 2.17652, kappa <= 4.4450e-13, lambda >= 0.016109, Lambda <= 0.64047,
+#   K~ <= 59.9992.
 # Hardware: GPUs, then CPU cores. tmgpu: necessary.
 # Time for the paper: 1.5 to 1.7 h for each of 4 parts on one H200; on 48 CPU cores, 52 min for
 #   fs and 25 min for transitions.

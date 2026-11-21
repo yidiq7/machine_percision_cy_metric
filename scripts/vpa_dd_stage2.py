@@ -516,7 +516,7 @@ def main():
     args.gram, args.entries_from = False, None
 
     if jax.devices()[0].platform != 'gpu':
-        raise SystemExit('no GPU. Run with `uv run --extra gpu`.')
+        raise SystemExit('no GPU. Run on a CUDA GPU with `uv run --extra cuda` or `--extra gpu`.')
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
     lay0 = sections.layout(args.k0)

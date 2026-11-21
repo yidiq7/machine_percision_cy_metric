@@ -7,17 +7,17 @@ This repository holds the code of the paper
 
 The code fits approximate Calabi–Yau metrics on the Fermat quartic M = {Σ_a z_a⁴ = 0} in CP³.
 Each fit is a Kähler potential, which the code evaluates in double-double (dd) arithmetic. For
-the fit f6t, the code also proves strict bounds of the residual f = η − 1 and of its gradient on
-all of M, with Taylor models on a graphics processing unit (GPU), and the bounds of the metric
-that the proof needs. The files of the proof are in the Zenodo record <ZENODO-URL>.
+the fit f6t, the code proves strict bounds of η − 1 and of ∇η on all of M (η as in the paper),
+with Taylor models on a graphics processing unit (GPU), and the bounds of the metric that the
+proof needs. The files of the proof are in the Zenodo record <ZENODO-URL>.
 
 ## Results
 
-The bounds for f6t on all of M are sup abs(f) ≤ 4.9985e-20 and sup abs(grad f) ≤ 3.3654e-16 (in
-the metric of volume 1). The bounds of its metric, from `atlas_combine_v3.npz`, are C ≤ 2.1765,
-ω ≥ 0.59669 ω₀, κ ≤ 4.4449e-13, λ ≥ 0.016109, Λ ≤ 0.64047, K̃ ≤ 59.999, c̃₁ ≤ 4,396.5,
-c̃₂ ≤ 2.969e7, diam(M, ω) ≤ 3.1638, diam(M/G, ω) ≤ 1.4712 and λ₁,G ≥ 4.5605. The paper rounds
-each value in the safe direction, for example K̃ ≤ 60 and diam(M, ω) ≤ 3.165.
+The bounds for f6t on all of M are sup abs(η − 1) ≤ 4.9985e-20 and sup abs(∇η)_g ≤ 3.3654e-16
+(in the metric of volume 1). The bounds of its metric, from `atlas_combine_v3.npz`, are
+C ≤ 2.17652, ω ≥ 0.59669 ω₀, κ ≤ 4.4450e-13, λ ≥ 0.016109, Λ ≤ 0.64047, K̃ ≤ 59.9992,
+c̃₁ ≤ 4,396.5, c̃₂ ≤ 2.969e7, diam(M, ω) ≤ 3.1638, diam(M/G, ω) ≤ 1.4712 and λ₁,G ≥ 4.5605.
+The paper rounds each value in the safe direction, for example K̃ ≤ 60 and diam(M, ω) ≤ 3.165.
 
 The mean of abs(f) on samples of points:
 
@@ -45,12 +45,13 @@ checks, the jets, the export of the potential (`level_oracle.py`, `level_matrice
 Install [uv](https://docs.astral.sh/uv/) and Python 3.12. `uv.lock` fixes the version of each package.
 
 ```
-uv sync --locked                 # no GPU: the fits run on the CPU, slowly
+uv sync --locked                 # no GPU: tm_box.py, level_matrices.py, check_file_symmetry.py
 uv sync --locked --extra cuda    # a GPU with CUDA 12, no tmgpu
 uv sync --locked --extra gpu     # all steps, with CuPy and tmgpu
 ```
 
-The examples take the extra from `UV_EXTRA` (`gpu`, `cuda` or `none`). CuPy compiles its kernels
+The fits need a GPU. The examples take the extra from `UV_EXTRA` (`gpu`, `cuda` or `none`). The
+default `gpu` needs access to tmgpu: without it, set `UV_EXTRA=cuda`. CuPy compiles its kernels
 with the CUDA toolkit: set `CUDA_PATH`, and the examples add `$CUDA_PATH/lib64` to
 `LD_LIBRARY_PATH`. The runs of the paper used NVIDIA H200 GPUs with 141 GB of memory.
 
@@ -97,9 +98,9 @@ Each script of `examples/` gives its hardware, its time for the paper and its va
 | `07_fit_two_stage.sh` | a fit of two stages with the top degree 36, 40 or 44 |
 | `08_check_fit.sh` | the checks of a fit: hold-out, second chart, mpmath references |
 | `09_jets.sh` | the derivatives of f from Taylor jets |
-`examples/run_tests.sh` runs all test suites. Without `tmgpu`, it runs the 15 suites of the fits
-and names the 9 suites of the bound as skipped. `scripts/studies/` holds the scripts of the other
-numbers of the paper.
+
+`examples/run_tests.sh` runs all test suites. With no `tmgpu`, it skips the 9 suites of the bound.
+`scripts/studies/` holds the scripts of the other numbers of the paper.
 
 ## Layout
 

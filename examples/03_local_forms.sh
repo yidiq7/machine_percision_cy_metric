@@ -9,22 +9,29 @@
 # Time for the paper: about 1.5 h on 48 CPU cores.
 # Variables (default):
 #   DATA_DIR (runs_tm)    the directory of f6t_data.npz and f6t_forms.npz (02, or the Zenodo record)
-#   COVER ($DATA_DIR/cover_s0.03_c6_v3.npz), QUARTIC_LOCAL_FORMS ($DATA_DIR/tm_local_f6t_td_v3)
+#   COVER ($DATA_DIR/cover_s0.03_c6_v3.npz)
 #   MANIFEST ($DATA_DIR/f6t_local_manifest_v3.txt)   the manifest of the paper, for the comparison
-#   NEW_MANIFEST ($QUARTIC_LOCAL_FORMS/manifest.txt)  the manifest that this script writes
+#   NEW_LOCAL (runs/local_forms)   a new directory for the local forms; for 04 and 05, set
+#                         QUARTIC_LOCAL_FORMS to it and MANIFEST to NEW_MANIFEST
+#   NEW_MANIFEST ($NEW_LOCAL/manifest.txt)   the manifest that this script writes
 #   ONLY (all)            only these reference centers, for a test, for example ONLY=297
 #   PROCS (48)            CPU processes
 source "$(dirname "$0")/common.sh"
-NEW_MANIFEST=${NEW_MANIFEST:-$QUARTIC_LOCAL_FORMS/manifest.txt}
+NEW_LOCAL=${NEW_LOCAL:-runs/local_forms}
+NEW_MANIFEST=${NEW_MANIFEST:-$NEW_LOCAL/manifest.txt}
 PROCS=${PROCS:-48}
 need_tmgpu
+if [ -e "$NEW_LOCAL" ]; then
+    echo "$NEW_LOCAL exists. Set NEW_LOCAL to a new directory." >&2
+    exit 1
+fi
 
 if [ ! -e "$COVER" ]; then
     $RUN scripts/cert_cover.py --side 0.03 --coarse 6 --out "$COVER" --procs "$PROCS"
 fi
 $RUN scripts/tm_local_forms.py --data "$DATA_DIR/f6t_data.npz" --forms "$DATA_DIR/f6t_forms.npz" \
-    --centers "$COVER" --out "$QUARTIC_LOCAL_FORMS" --procs "$PROCS" ${ONLY:+--only $ONLY}
-$RUN scripts/cert_local_values.py --cover "$COVER" --local "$QUARTIC_LOCAL_FORMS" \
+    --centers "$COVER" --out "$NEW_LOCAL" --procs "$PROCS" ${ONLY:+--only $ONLY}
+$RUN scripts/cert_local_values.py --cover "$COVER" --local "$NEW_LOCAL" \
     --data "$DATA_DIR/f6t_data.npz" --forms "$DATA_DIR/f6t_forms.npz" --points 2 --procs "$PROCS" \
     --manifest "$NEW_MANIFEST" ${ONLY:+--refs $ONLY}
 

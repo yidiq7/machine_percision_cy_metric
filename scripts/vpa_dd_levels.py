@@ -422,7 +422,7 @@ def main():
     args = ap.parse_args()
 
     if jax.devices()[0].platform != 'gpu':
-        raise SystemExit('no GPU. Run with `uv run --extra gpu`.')
+        raise SystemExit('no GPU. Run on a CUDA GPU with `uv run --extra cuda` or `--extra gpu`.')
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
     subsets = [sorted(int(x) for x in s.split(',')) for s in
