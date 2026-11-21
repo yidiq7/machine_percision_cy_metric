@@ -13,7 +13,8 @@
 #   cores; 680 to 709 s at D = 40, and 1,740 s at D = 44.
 # Variables (default): D, BASE, S1, OUT, LEVELS1 as in 07; STEPS; PROCS (16);
 #   NHOLD (8000000), NSEAM (131072), NSAMPLE (256)   the points of holdout, chart and sample;
-#   FIT1_BASE (runs/f6) and FIT1 (runs/f6t), the directories of 01 for seam1
+#   MP (RUN with gmpy2)   the command of the mpmath stages
+#   FIT1_BASE (runs/f6), FIT1 (runs/f6t), K0F (16), K1F (24 ... 13)   the fit of 01, for seam1
 source "$(dirname "$0")/common.sh"
 D=${D:-36}
 BASE=${BASE:-runs/f2r}
@@ -32,8 +33,11 @@ NSAMPLE=${NSAMPLE:-256}
 FIT="--k0 12 --theta $BASE/theta_k0_12.npy --stage1 $S1 --stage1-k1 $LEVELS1 --k1 $K1 --exact-mul"
 SAVED="--load $LOAD --load-joint $OUT/joint_map_$TAG.npz --coeffs $OUT/vpa_stage2_coeffs_$TAG.npy
        --record $OUT/vpa_stage2_$TAG.json"
-MP="uv run --extra $UV_EXTRA --locked --with gmpy2 python -u"
-[ "$UV_EXTRA" = none ] && MP="uv run --locked --with gmpy2 python -u"
+# The mpmath stages run faster with gmpy2, which uv adds for them.
+if [ -z "${MP:-}" ]; then
+    MP="uv run --extra $UV_EXTRA --locked --with gmpy2 python -u"
+    [ "$UV_EXTRA" = none ] && MP="uv run --locked --with gmpy2 python -u"
+fi
 
 for step in $STEPS; do
     case $step in
@@ -60,9 +64,10 @@ for step in $STEPS; do
     seam1)
         FIT1_BASE=${FIT1_BASE:-runs/f6}
         FIT1=${FIT1:-runs/f6t}
+        K0F=${K0F:-16}
         K1F=${K1F:-24 23 22 21 20 19 18 17 16 15 14 13}
-        T1="k0_16_$(echo $K1F | tr ' ' '_')"
-        $RUN scripts/seam_levels.py --k0 16 --theta "$FIT1_BASE/theta_k0_16.npy" --k1 $K1F \
+        T1="k0_${K0F}_$(echo $K1F | tr ' ' '_')"
+        $RUN scripts/seam_levels.py --k0 "$K0F" --theta "$FIT1_BASE/theta_k0_$K0F.npy" --k1 $K1F \
             --load "$FIT1_BASE" --load-joint "$FIT1/joint_map_$T1.npz" \
             --coeffs "$FIT1/vpa_levels_coeffs_$T1.npy" --exact-mul ;;
     *) echo "unknown step $step" >&2; exit 1 ;;

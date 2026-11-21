@@ -17,6 +17,7 @@
 #   BASE (runs/f2r), S1 (runs/s1b), OUT (runs/s2_D)   the output directories of the steps
 #   NFIT (200000), NBUILD (60000), NBL (20000), NEVAL (400000)
 #   LEVELS0 (36 35 ... 29), LEVELS1 (24 23 ... 17)   the levels of the steps 1 and 2
+#   PREFIXES0 (1 2 4 8), PREFIXES1 (4 8)             the solutions of the steps 1 and 2
 source "$(dirname "$0")/common.sh"
 D=${D:-36}
 TOL=${TOL:-1e-20}
@@ -30,17 +31,19 @@ NBL=${NBL:-20000}
 NEVAL=${NEVAL:-400000}
 LEVELS0=${LEVELS0:-36 35 34 33 32 31 30 29}
 LEVELS1=${LEVELS1:-24 23 22 21 20 19 18 17}
+PREFIXES0=${PREFIXES0:-1 2 4 8}
+PREFIXES1=${PREFIXES1:-4 8}
 K1=$(seq "$D" -1 $((D - 7)) | tr '\n' ' ')
 COMMON="--seed 20261001 --n-eval $NEVAL --eval-seed 20261813 --n-build $NBUILD --exact-mul"
 mkdir -p "$(dirname "$BASE")" "$(dirname "$S1")" "$(dirname "$OUT")"
 
 if [ ! -e "$BASE/theta_k0_12.npy" ]; then
     $RUN scripts/vpa_dd_levels.py --k0 12 --k1 $LEVELS0 --joint-basis --joint-tol 1e-15 --refine 3 \
-        --prefixes 1 2 4 8 --n-fit "$NFIT" $COMMON --out "$BASE"
+        --prefixes $PREFIXES0 --n-fit "$NFIT" $COMMON --out "$BASE"
 fi
 if [ ! -e "$S1/vpa_levels_coeffs_k0_12_$(echo $LEVELS1 | tr ' ' '_').npy" ]; then
     $RUN scripts/vpa_dd_levels.py --k0 12 --theta "$BASE/theta_k0_12.npy" --k1 $LEVELS1 \
-        --joint-basis --joint-tol 1e-20 --refine 3 --prefixes 4 8 --n-fit "$NFIT" $COMMON --out "$S1"
+        --joint-basis --joint-tol 1e-20 --refine 3 --prefixes $PREFIXES1 --n-fit "$NFIT" $COMMON --out "$S1"
 fi
 # OUT holds the bases of all 8 levels: links to those of BASE, and the bases that step 3 builds.
 mkdir -p "$OUT"
