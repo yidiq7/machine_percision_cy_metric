@@ -26,19 +26,21 @@ dependencies = [
     # Ball arithmetic (Arb) for the strict bound. The host numbers of the bound depend on its
     # rounding to FP64, so the version is fixed: the full run of 2026-10-10 used 0.9.0.
     "python-flint==0.9.0",
-    # Taylor models with strict bounds on the GPU, from the repository yidiq7/tmgpu.
-    "tmgpu",
 ]
 
 [project.optional-dependencies]
-# The GPU build of JAX, for the cluster. The cuda12 wheels are Linux only, so the
-# laptop must not install them.
-#   cluster:  uv sync --extra gpu
-#   laptop:   uv sync
+# The CUDA wheels are for Linux only. A machine with no NVIDIA GPU installs no extra.
+#   the fits and the jets on a GPU:  uv sync --extra cuda
+#   all runs, the strict bound too:  uv sync --extra gpu
+# The extra cuda is the CUDA build of JAX alone.
+cuda = ["jax[cuda12]>=0.11,<0.12"]
+# The extra gpu is the full set of the runs. It needs access to the repository of tmgpu.
 gpu = [
     "jax[cuda12]>=0.11,<0.12",
     # CuPy for the kernels of tmgpu. The full run of 2026-10-10 used 14.2.0.
     "cupy-cuda12x==14.2.0; sys_platform == 'linux'",
+    # Taylor models with strict bounds on the GPU, from the repository yidiq7/tmgpu.
+    "tmgpu",
 ]
 
 [tool.uv]
