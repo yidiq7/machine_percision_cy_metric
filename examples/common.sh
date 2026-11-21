@@ -4,8 +4,11 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # UV_EXTRA: gpu (all steps, with tmgpu), cuda (the fits on a GPU, no tmgpu) or none (no GPU).
+# RUN: the command that starts Python. Set it to use an environment of your own.
 UV_EXTRA=${UV_EXTRA:-gpu}
-if [ "$UV_EXTRA" = none ]; then
+if [ -n "${RUN:-}" ]; then
+    :
+elif [ "$UV_EXTRA" = none ]; then
     RUN="uv run --locked python -u"
 else
     RUN="uv run --extra $UV_EXTRA --locked python -u"

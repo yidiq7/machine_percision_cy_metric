@@ -5,7 +5,7 @@
 #   (the paper), so use D = 36.
 # Hardware: one GPU. tmgpu: not necessary.
 # Time for the paper: 50 min for each sample of 32,768 points on one H200.
-# Variables (default): D (36), BASE, S1, OUT as in 07; JETS (runs/jets_D), NPARTS (4), PART,
+# Variables (default): D (36), BASE, S1, OUT, LEVELS1 as in 07; JETS (runs/jets_D), NPARTS (4), PART,
 #   N (32768); the seed of part G is 20271001 + G.
 source "$(dirname "$0")/common.sh"
 D=${D:-36}
@@ -17,8 +17,7 @@ NPARTS=${NPARTS:-4}
 N=${N:-32768}
 LEVELS1=${LEVELS1:-24 23 22 21 20 19 18 17}
 K1=$(seq "$D" -1 $((D - 7)) | tr '\n' ' ')
-LOAD=$BASE
-[ "$D" -gt 36 ] && LOAD=$OUT
+LOAD=$OUT
 mkdir -p "$JETS"
 
 jets_part() {

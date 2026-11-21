@@ -11,7 +11,8 @@
 # Hardware: one GPU; CPU cores for the mpmath stages. tmgpu: not necessary.
 # Time for the paper at D = 36: 293 s of one core for each mpmath point of the sample, with 16
 #   cores; 680 to 709 s at D = 40, and 1,740 s at D = 44.
-# Variables (default): D, BASE, S1, OUT as in 07; STEPS; PROCS (16);
+# Variables (default): D, BASE, S1, OUT, LEVELS1 as in 07; STEPS; PROCS (16);
+#   NHOLD (8000000), NSEAM (131072), NSAMPLE (256)   the points of holdout, chart and sample;
 #   FIT1_BASE (runs/f6) and FIT1 (runs/f6t), the directories of 01 for seam1
 source "$(dirname "$0")/common.sh"
 D=${D:-36}
@@ -22,11 +23,12 @@ STEPS=${STEPS:-holdout chart ref12 sample basis}
 PROCS=${PROCS:-16}
 LEVELS1=${LEVELS1:-24 23 22 21 20 19 18 17}
 K1=$(seq "$D" -1 $((D - 7)) | tr '\n' ' ')
-S1TAG="k0_12_$(echo $LEVELS1 | tr ' ' '_')"
 TAG="k0_12_s1_$(echo $LEVELS1 | tr ' ' '_')_s2_$(echo $K1 | tr ' ' '_' | sed 's/_$//')"
-# The level bases above 36 are in OUT (07 builds them there); the others are in BASE.
-LOAD=$BASE
-[ "$D" -gt 36 ] && LOAD=$OUT
+# 07 puts the bases of all 8 levels into OUT.
+LOAD=$OUT
+NHOLD=${NHOLD:-8000000}
+NSEAM=${NSEAM:-131072}
+NSAMPLE=${NSAMPLE:-256}
 FIT="--k0 12 --theta $BASE/theta_k0_12.npy --stage1 $S1 --stage1-k1 $LEVELS1 --k1 $K1 --exact-mul"
 SAVED="--load $LOAD --load-joint $OUT/joint_map_$TAG.npz --coeffs $OUT/vpa_stage2_coeffs_$TAG.npy
        --record $OUT/vpa_stage2_$TAG.json"
@@ -36,13 +38,13 @@ MP="uv run --extra $UV_EXTRA --locked --with gmpy2 python -u"
 for step in $STEPS; do
     case $step in
     holdout)
-        for offset in 0 2000000 4000000 6000000; do
-            $RUN scripts/vpa_dd_stage2.py $FIT $SAVED --eval-only --eval-offset $offset \
-                --eval-total 8000000 --n-eval 2000000 --out "$OUT"
+        for part in 0 1 2 3; do
+            $RUN scripts/vpa_dd_stage2.py $FIT $SAVED --eval-only --eval-offset $((part * NHOLD / 4)) \
+                --eval-total "$NHOLD" --n-eval $((NHOLD / 4)) --out "$OUT"
         done
         $RUN scripts/vpa_levels_combine.py "$OUT"/vpa_levels_v_${TAG}_*.npz --k0 12 ;;
     chart)
-        $RUN scripts/vpa_dd_stage2.py $FIT $SAVED --seam 131072 --out "$OUT" ;;
+        $RUN scripts/vpa_dd_stage2.py $FIT $SAVED --seam "$NSEAM" --out "$OUT" ;;
     ref12)
         $RUN scripts/stage2_oracle.py export $FIT --load "$LOAD" --run "$OUT" --seed 20264814 \
             --ratios 0.95 0.85 0.75 0.65 0.55 0.45 0.35 0.25 0.20 0.15 0.08 0.05 \
@@ -50,8 +52,8 @@ for step in $STEPS; do
         $MP scripts/stage2_oracle.py reference --data "$OUT/oracle_data12.npz" --procs "$PROCS" ;;
     sample)
         $RUN scripts/stage2_oracle.py export $FIT --load "$LOAD" --run "$OUT" --seed 20265001 \
-            --n 256 --sample --data "$OUT/sample_256_20265001.npz"
-        $MP scripts/stage2_oracle.py sample --data "$OUT/sample_256_20265001.npz" --procs "$PROCS" ;;
+            --n "$NSAMPLE" --sample --data "$OUT/sample_${NSAMPLE}_20265001.npz"
+        $MP scripts/stage2_oracle.py sample --data "$OUT/sample_${NSAMPLE}_20265001.npz" --procs "$PROCS" ;;
     basis)
         JAX_PLATFORMS=cpu $RUN scripts/vpa_dd_oracle.py "$LOAD/vpa_dd_basis_k0_12_k1_$D.npz" \
             "$LOAD/vpa_dd_hlo_k0_12_k1_$D.npy" --points 3 ;;
