@@ -30,7 +30,7 @@ from mpmath import mp, mpc, mpf                             # noqa: E402
 mp.dps = 60
 
 from quartic import analytic, data, dd, dd_metric, metric, sections   # noqa: E402
-from oracle_precision import phi_exact                      # noqa: E402
+from quartic.mpref import phi_exact  # noqa: E402
 
 BATCH = data.make(20, 11)
 

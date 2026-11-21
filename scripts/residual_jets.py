@@ -48,7 +48,7 @@ def load_model(args):
     import jax.numpy as jnp
     import vpa_dd_levels as vl
     import vpa_dd_stage2 as st
-    import vpa_fit as vf
+    from quartic import levelfit as vf
     from quartic import analytic, joint_dd, sections
 
     lay0 = sections.layout(args.k0)
@@ -179,7 +179,7 @@ def compute(args):
     model = load_model(args)
     import jax
     import jax.numpy as jnp
-    import correction_fit as cf
+    from quartic import samples as cf
     say(f"model: k0 = {args.k0}, first stage {args.stage1_k1}, second stage {args.k1}; "
         f"effective weights of {len(model['what1'])} + {len(model['what2'])} levels")
     program = jet_program(model, args.k0, args.chunk)
@@ -216,7 +216,7 @@ def check(args):
     model = load_model(args)
     import jax
     import jax.numpy as jnp
-    import correction_fit as cf
+    from quartic import samples as cf
     import vpa_dd_levels as vl
     import vpa_dd_stage2 as st
     from quartic import (analytic, arnoldi_dd, correction, dd, dd_metric, tjets as tj,
@@ -280,7 +280,7 @@ def check(args):
     f_jets = np.asarray(program(inputs)[0])                       # (n, 3)
     joint = (model['jm2'], None, tuple(int(x) for x in model['prefix2']))
     res = st.residual_program(lay0, parts0, model['s1'], model['levels2'], args.chunk, joint)
-    import vpa_fit as vf
+    from quartic import levelfit as vf
     v = res(vf.point_inputs(batch), jnp.asarray(model['coeffs']))
     f_old = np.asarray(analytic.residual_from_volumes(v, None, mean=volume.mean_v_dd(args.k0)))
     for col, name in ((0, 'first stage'), (1, 'final fit')):

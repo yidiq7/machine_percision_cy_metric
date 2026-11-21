@@ -24,22 +24,7 @@ mlg.set_precision(64)
 import jax.numpy as jnp                                     # noqa: E402
 
 from quartic import arnoldi, data, sections                 # noqa: E402
-
-
-def mp_multipliers(entries, z):
-    """dictionary_values at one point in mpmath."""
-    r2 = sum(abs(c) ** 2 for c in z)
-    out = []
-    for d, a_exp, b_exp in entries:
-        total = mp.mpc(0)
-        for perm in arnoldi.PERMS:
-            term = mp.mpc(1)
-            for c in range(4):
-                w = z[perm[c]]
-                term *= w ** int(a_exp[c]) * mp.conj(w) ** int(b_exp[c])
-            total += term
-        out.append(mp.re(total) / r2 ** d)
-    return out
+from quartic.mpref import mp_multipliers                   # noqa: E402
 
 
 def mp_potential(lay, mats, z):

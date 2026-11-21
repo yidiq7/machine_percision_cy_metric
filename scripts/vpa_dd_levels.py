@@ -33,9 +33,9 @@ mlg.set_precision(64)
 import jax                                                  # noqa: E402
 import jax.numpy as jnp                                     # noqa: E402
 
-import correction_fit as cf                                 # noqa: E402
-import vpa_dd_fit as vdf                                    # noqa: E402
-import vpa_fit as vf                                        # noqa: E402
+from quartic import samples as cf  # noqa: E402
+from quartic import levelfit_dd as vdf  # noqa: E402
+from quartic import levelfit as vf  # noqa: E402
 from quartic import (analytic, arnoldi, arnoldi_dd, correction, data, dd,  # noqa: E402
                      dd_metric, fit, joint_dd, metric, sections, volume, vpa_dd)
 

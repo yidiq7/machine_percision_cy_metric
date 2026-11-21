@@ -18,7 +18,7 @@ mlg.set_precision(64)
 import jax                                                  # noqa: E402
 import jax.numpy as jnp                                     # noqa: E402
 from quartic import analytic, arnoldi, arnoldi_dd, correction, data, dd, sections  # noqa: E402
-import vpa_oracle as vo                                     # noqa: E402
+from quartic import mpref as vo  # noqa: E402
 
 analytic.GRAM_DD, analytic.SECTION_DD = False, False
 sections.PREPARE_DD = False

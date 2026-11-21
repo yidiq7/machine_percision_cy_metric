@@ -42,10 +42,10 @@ def export(args):
     mlg.set_precision(64)
     import jax
     import jax.numpy as jnp
-    import correction_fit as cf
+    from quartic import samples as cf
     import seam_levels as sl
     import vpa_dd_levels as vl
-    import vpa_fit as vf
+    from quartic import levelfit as vf
     from quartic import analytic, arnoldi, joint_dd, sections
 
     lay0 = sections.layout(args.k0)

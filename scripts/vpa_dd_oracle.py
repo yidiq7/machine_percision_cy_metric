@@ -29,7 +29,7 @@ mlg.set_precision(64)
 import jax                                                  # noqa: E402
 import jax.numpy as jnp                                     # noqa: E402
 
-import vpa_oracle as vo                                     # noqa: E402
+from quartic import mpref as vo  # noqa: E402
 from quartic import arnoldi, arnoldi_dd, data, dd, vpa_dd   # noqa: E402
 
 
