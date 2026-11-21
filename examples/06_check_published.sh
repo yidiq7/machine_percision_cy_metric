@@ -63,7 +63,9 @@ $RUN - "$OUT/atlas_combine.npz" "$D/atlas_combine_v3.npz" <<'PY'
 import sys
 import numpy as np
 a, b = np.load(sys.argv[1]), np.load(sys.argv[2])
-same = sorted(a.files) == sorted(b.files) and all(np.array_equal(a[k], b[k]) for k in a.files)
+def equal(x, y):
+    return np.array_equal(x, y, equal_nan=x.dtype.kind in 'fc' and y.dtype.kind in 'fc')
+same = sorted(a.files) == sorted(b.files) and all(equal(a[k], b[k]) for k in a.files)
 print('the constants equal those of the published file:', same)
 sys.exit(0 if same else 1)
 PY
