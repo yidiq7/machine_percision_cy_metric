@@ -32,11 +32,20 @@ HOW="The cover: scripts/cert_cover.py (examples/03_local_forms.sh). The local fo
 examples/03_local_forms.sh. The records of the run v3 and the two files of the potential: the
 Zenodo record (examples/06_check_published.sh). The box B1: scripts/cert_steps.py export."
 
+# True if $1 is a suite of the strict bound.
+is_cert() {
+    local c
+    for c in $CERT_SUITES; do
+        [ "$c" = "$1" ] && return 0
+    done
+    return 1
+}
+
 tmgpu=1
 $RUN -c "import tmgpu" > /dev/null 2>&1 || tmgpu=0
 failed=() skipped=() passed=()
 for t in $SUITES; do
-    if [[ " $CERT_SUITES " == *" $t "* ]] && [ $tmgpu = 0 ]; then
+    if is_cert "$t" && [ $tmgpu = 0 ]; then
         skipped+=("$t (no tmgpu)")
         continue
     fi
