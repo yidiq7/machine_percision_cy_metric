@@ -27,8 +27,8 @@ import optimistix as optx
 
 from . import analytic, metric, sections
 
-__all__ = ['residual_fn', 'fit', 'condition_number', 'jacobian_memory',
-           'plan_fit', 'suggest_chunk', 'solve_memory', 'device_memory_gb', 'RIDGE']
+__all__ = ['residual_fn', 'fit', 'condition_number',
+           'plan_fit', 'solve_memory', 'device_memory_gb', 'RIDGE']
 
 # A ridge mu on theta: the residual gets sqrt(mu) theta appended, so the loss
 # gains mu |theta|^2. With `sections.H_BASE`, theta is the correction from the base.
@@ -138,26 +138,6 @@ def fit(lay, batch, theta0=None, max_steps=200, rtol=1e-15, atol=1e-32,
     }
 
 
-def jacobian_memory(lay, batch, chunk=2000, theta=None, analytic_jac=True):
-    """Peak device memory of one Jacobian, in GB, without a run.
-
-    XLA reports this from the compiled program, so the call costs a compile and
-    no execution. `temp` follows the chunk, and `output` is J itself, which is
-    N * n_theta * 8 bytes.
-    """
-    theta = sections.fubini_study_theta(lay) if theta is None else theta
-    residual = residual_fn(lay, batch, chunk, analytic_jac)
-    info = jax.jit(jax.jacfwd(residual)).lower(theta).compile().memory_analysis()
-    return {
-        'temp_gb': info.temp_size_in_bytes / 1e9,
-        'output_gb': info.output_size_in_bytes / 1e9,
-        'total_gb': (info.temp_size_in_bytes + info.output_size_in_bytes) / 1e9,
-        'gb_per_point_in_chunk': info.temp_size_in_bytes / 1e9 / chunk,
-        'chunk': chunk,
-        'analytic_jac': analytic_jac,
-    }
-
-
 def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
              max_steps=200, tries=8, min_chunk=64, target_risk=5e-3,
              best_so_far=False):
@@ -236,40 +216,6 @@ def plan_fit(lay, batch, budget_gb=None, chunk_cap=4096, analytic_jac=True,
         'budget_gb': budget_gb, 'excess_risk': lay.n_theta / max(n_fit, 1),
         'target_risk': target_risk, 'n_points_available': n_points,
     }
-
-
-def suggest_chunk(lay, batch, budget_gb=None, probe=256, analytic_jac=True,
-                  tries=8, max_steps=200):
-    """Largest chunk that keeps the whole LM solve under `budget_gb`.
-
-    Two probes separate the fixed cost from the part that follows the chunk.
-    The prediction is then checked by a compile at the chosen chunk, and the
-    chunk halves until it fits. A compile costs seconds and an out-of-memory
-    run costs the whole job, so the check is worth it.
-    """
-    n_points = int(batch['points'].shape[0])
-    if budget_gb is None:
-        budget_gb = 0.45 * device_memory_gb() or 8.0
-
-    def peak(size):
-        return solve_memory(lay, batch, min(size, n_points), max_steps=max_steps,
-                            analytic_jac=analytic_jac)
-
-    small, large = min(probe, n_points), min(2 * probe, n_points)
-    peak_small, peak_large = peak(small), peak(large)
-    per_point = max((peak_large - peak_small) / max(large - small, 1), 1e-12)
-    fixed = max(peak_small - per_point * small, 0.0)
-
-    chunk = max(1, min(n_points, int((budget_gb - fixed) / per_point)))
-    for _ in range(tries):
-        measured = peak(chunk)
-        if measured <= budget_gb or chunk == 1:
-            return chunk, {'gb_per_point_in_chunk': per_point,
-                           'fixed_gb': fixed, 'measured_total_gb': measured,
-                           'budget_gb': budget_gb}
-        chunk = max(1, chunk // 2)
-    return chunk, {'gb_per_point_in_chunk': per_point, 'fixed_gb': fixed,
-                   'measured_total_gb': peak(chunk), 'budget_gb': budget_gb}
 
 
 def condition_number(lay, theta, batch, chunk=2000, drop_scale=True,

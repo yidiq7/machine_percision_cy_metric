@@ -12,7 +12,7 @@ import sympy as sp
 import jax.numpy as jnp
 import MLGeometry as mlg
 
-__all__ = ['QUARTIC', 'COORDS', 'make', 'split', 'residual_of_P']
+__all__ = ['QUARTIC', 'COORDS', 'make', 'residual_of_P']
 
 COORDS = sp.symbols('z0 z1 z2 z3')
 QUARTIC = sum(z ** 4 for z in COORDS)
@@ -24,15 +24,6 @@ def make(n_pairs, seed):
     surface = mlg.hypersurface.Hypersurface(np.array(COORDS), QUARTIC, n_pairs)
     data = mlg.dataset.generate_dataset(surface)
     return {k: jnp.asarray(v) for k, v in data.items()}
-
-
-def split(batch, n_train, seed):
-    """Split into a fit set and a hold-out set, with an independent permutation."""
-    order = np.random.default_rng(seed).permutation(batch['points'].shape[0])
-    take = jnp.asarray(order[:n_train])
-    rest = jnp.asarray(order[n_train:])
-    return ({k: v[take] for k, v in batch.items()},
-            {k: v[rest] for k, v in batch.items()})
 
 
 def residual_of_P(points):

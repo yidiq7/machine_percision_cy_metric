@@ -1,7 +1,7 @@
 """Several correction levels on one HN base, fitted together in one linear solve.
 
 Each level is a V+A basis of degree k1 with the weight p0^(-k1/k0), built and
-evaluated in dd as in `vpa_dd_fit.py`. v is linear in the coefficients of all the
+evaluated in dd as in `studies/vpa_dd_fit.py`. v is linear in the coefficients of all the
 levels to (dg/g)^2, so the rows of J of the levels side by side give the best
 joint fit, and each subset of the levels in --solve gets its own solve from the
 same rows. One program then evaluates f in dd for every solution.
@@ -209,7 +209,7 @@ def factor(rows, f0, mass, m0):
 
 
 def solve(q, r, norms, r0, cutoffs):
-    """`vpa_fit.solve` from the QR of the column-scaled J."""
+    """`quartic.levelfit.solve` from the QR of the column-scaled J."""
     u, s, vt = jnp.linalg.svd(r)
     # res @ q in place of q.T @ res: XLA can copy the transpose of q, which is as large as J.
     qr0 = r0 @ q
@@ -367,7 +367,7 @@ def main():
                     help='subsets of --k1 to fit, as comma lists such as 36,40; '
                          'the default is all levels together')
     ap.add_argument('--load', type=str, default=None,
-                    help='a directory of `vpa_dd_fit.py` or of this script; a level whose '
+                    help='a directory of `studies/vpa_dd_fit.py` or of this script; a level whose '
                          'basis is there is loaded and not built')
     ap.add_argument('--entries-from', type=str, default=None,
                     help='a saved basis whose multipliers the dd build takes, in place of '

@@ -41,5 +41,4 @@ if [ "${NO_GPU:-0}" = "1" ]; then
     echo "  uv run python -m tests.test_blocks"
 else
     echo "  uv run --extra gpu python -m tests.test_blocks"
-    echo "  ./scripts/run_cluster.sh          # does this for you"
 fi

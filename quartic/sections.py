@@ -24,7 +24,7 @@ import numpy as np
 
 from . import blocks, dd
 
-__all__ = ['Group', 'Layout', 'layout', 'log_potential', 'potential',
+__all__ = ['Group', 'Layout', 'layout', 'potential',
            'fubini_study_theta', 'block_matrices', 'prepare', 'prepare_fp',
            'prepare_parts',
            'potential_at', 'log_potential_at', 'PREPARE_DD', 'H_BASE',
@@ -349,11 +349,6 @@ def potential(lay, theta, z):
     return potential_at(lay, prepare(lay, theta), z)
 
 
-def log_potential(lay, theta, z):
-    """log p(z). This is the Kahler potential up to a constant factor."""
-    return jnp.log(potential(lay, theta, z))
-
-
 def fubini_study_theta(lay):
     """theta such that p = (sum_a |z_a|^2)^k, which is the k-th power of Fubini-Study.
 
@@ -383,7 +378,3 @@ def fubini_study_theta(lay):
         theta[sl] = coeffs
     return jnp.asarray(theta / lay.scale)
 
-
-def batched_log_potential(lay, theta, points):
-    """log p at every row of `points`."""
-    return jax.vmap(lambda z: log_potential(lay, theta, z))(points)

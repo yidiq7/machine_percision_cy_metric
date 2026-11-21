@@ -64,30 +64,6 @@ def _chunks(n, size):
     return [slice(i, min(i + size, n)) for i in range(0, n, size)]
 
 
-def volumes_chunked(lay, theta, batch, chunk=100_000):
-    """v at every point, a chunk at a time, so a large hold-out set fits.
-
-    This path takes no derivative, so a Python loop over jitted pieces is enough
-    and it avoids one scan. The result is one array of N doubles, which is 80 MB
-    at N = 1e7.
-    """
-    n = int(batch['points'].shape[0])
-    if n <= chunk:
-        return volumes(lay, theta, batch)
-
-    mats = sections.prepare(lay, theta)
-
-    @jax.jit
-    def piece(points, restriction, omega):
-        metrics = jax.vmap(lambda z, r: restricted_metric(lay, mats, z, r))(
-            points, restriction)
-        return jnp.real(jax.vmap(jnp.linalg.det)(metrics)) / omega
-
-    return jnp.concatenate([
-        piece(batch['points'][s], batch['restriction'][s],
-              batch['Omega_Omegabar'][s]) for s in _chunks(n, chunk)])
-
-
 def residual(lay, theta, batch, chunk=None):
     """f = v/<v> - 1, with <v> the mass-weighted mean over the batch."""
     v = volumes(lay, theta, batch, chunk)
@@ -111,8 +87,7 @@ def volumes_fit(lay, theta, batch, chunk=100_000, block=4096):
 
     This is `analytic.volume_at`, so `analytic.GRAM_DD`, `analytic.SECTION_DD`,
     `analytic.H_LOW`, `analytic.PHI_DD`, `analytic.END_DD` and
-    `sections.PREPARE_DD` apply. `volumes_chunked` uses `complex_hessian` in
-    plain FP64, whatever those flags are.
+    `sections.PREPARE_DD` apply.
     """
     n = int(batch['points'].shape[0])
     mats = analytic.point_matrices(lay, theta)

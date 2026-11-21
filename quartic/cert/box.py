@@ -1,7 +1,6 @@
 """The Taylor model of f on a batch of boxes on the GPU, for the strict bound of sup abs(f).
 
-The design is docs/superpowers/specs/2026-10-09-gpu-taylor-certificate-design.md. All
-boxes of a batch share one reference center c_r and its local forms
+All boxes of a batch share one reference center c_r and its local forms
 (scripts/tm_local_forms.py), stored in td, each form as sum over j of Delta^j R_j with
 Delta = abs(y_2)^2 - s2.
 
@@ -709,7 +708,7 @@ def gradient_bounds(sp4, f, g, det, d, k0, keep=None):
 
 def metric_bounds(sp4, sp2, f, g, log_r2, h, n, d, k0, grad, ys=None, charts=None):
     """Bounds on the box of radius d of the metric against FS, of Ricci and of the derivative
-    of the metric (docs/superpowers/specs/2026-10-24-geometry-bounds-design.md).
+    of the metric.
 
     f and g on d_f > d, log_r2 and the model h of the shift along n (in sp2) on d_Phi > d_f,
     n (3, 4, B) the unit normal of the frame, grad the dict of `gradient_bounds`, ys the

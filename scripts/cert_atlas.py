@@ -1,8 +1,7 @@
 """The bounds of the atlas of notes/draft-main.tex that need no potential, and their
 combination with the records of a run.
 
-docs/superpowers/specs/2026-10-24-geometry-bounds-design.md has the formulas. The chart
-b = (3, 2) has z = (t_0, t_1, w, 1) with w^4 = -(1 + t_0^4 + t_1^4). A chart a = (i, j) has
+The chart b = (3, 2) has z = (t_0, t_1, w, 1) with w^4 = -(1 + t_0^4 + t_1^4). A chart a = (i, j) has
 the coordinates (z_k / z_i, z_l / z_i), with {k < l} the other two indices, and the domain
 D(i, j) = {abs(z_i) >= 0.99 abs(z_x) for x != i, abs(z_j) >= 0.98 abs(z_x) for x not in
 {i, j}}, with no window of the argument (a superset of each chart of the draft). The phases of

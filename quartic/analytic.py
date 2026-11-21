@@ -36,9 +36,9 @@ __all__ = ['section_vectors', 'section_vectors_closed', 'section_vectors_dd',
            'volume_and_weights', 'volume_tangent', 'volume_jacobian',
            'residual_jacobian', 'weighted_residual_fast']
 
-# Stage 4 of the evaluation, the Gram stage, in double-double. The oracle in
-# scripts/oracle_stages.py measured it as the source of almost all of the FP64
-# error: 4.4e-13 at k = 32, against 1.1e-14 with this stage exact.
+# Stage 4 of the evaluation, the Gram stage, in double-double. An mpmath reference of
+# each stage showed that this stage gives almost all of the FP64 error: 4.4e-13 at
+# k = 32, against 1.1e-14 with this stage exact.
 #
 #   False    everything in FP64
 #   'inner'  the inner products in dd, and the matrix-vector products in FP64
@@ -224,16 +224,6 @@ def _integer_powers_dd(x, top):
     return _cstack(out, axis=0)
 
 
-def _monomials_dd(u, exps, m):
-    """Every monomial u^E for the rows E of `exps`, in double-double."""
-    table = _integer_powers_dd(u, m)                     # (m+1, 4)
-    cols = _cindex(table, exps, jnp.arange(4))           # (n_monomials, 4)
-    out = _cindex(cols, slice(None), 0)
-    for a in range(1, 4):
-        out = _cmul(out, _cindex(cols, slice(None), a))
-    return out                                            # (n_monomials,)
-
-
 def _project_dd(weighted_frame, val, extra_axes=0):
     """sum over the monomials of `weighted_frame` against a complex dd `val`.
 
@@ -408,10 +398,10 @@ def _gram_parts(lay, mats, sig, dsig):
     `H sigma` and the four `H dsigma_i` are the only matrix-vector products, so
     one point costs 5 of them for each block, in place of approximately 50.
 
-    With `GRAM_DD` the products and the sums run in double-double. That is stage
-    4 of `scripts/oracle_stages.py`, which carries almost all of the FP64 error.
-    The results round back to FP64 on the way out, which is what the oracle
-    measured: the centered form of phi does not need the extra digits.
+    With `GRAM_DD` the products and the sums run in double-double. This stage, stage
+    4 of the evaluation, gives almost all of the FP64 error. The results round back
+    to FP64 on the way out: an mpmath reference of each stage showed that the
+    centered form of phi does not need the extra digits.
     """
     if not GRAM_DD:
         return _gram_parts_fp(lay, mats, sig, dsig)

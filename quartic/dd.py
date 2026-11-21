@@ -32,7 +32,7 @@ import jax.numpy as jnp
 __all__ = ['split', 'two_sum', 'quick_two_sum', 'add', 'neg', 'mul',
            'mul_fast', 'cmul_fast',
            'reciprocal', 'cadd', 'cneg', 'cmul', 'creciprocal',
-           'csub', 'cabs2', 'cdiv', 'cdet2', 'cto_dd',
+           'csub', 'cabs2', 'cdiv', 'cto_dd',
            'cto_fp', 'sum_dd', 'sum_fp',
            'dot', 'dot_dd_fp', 'mul_dd_fp', 'to_dd', 'to_fp']
 
@@ -292,11 +292,6 @@ def cabs2(a):
 def cdiv(a, b):
     """a / b for complex double-double values."""
     return cmul(a, creciprocal(b))
-
-
-def cdet2(g):
-    """Determinant of a 2 by 2 complex double-double matrix, as `g[i][j]`."""
-    return csub(cmul(g[0][0], g[1][1]), cmul(g[0][1], g[1][0]))
 
 
 def cto_dd(z):
