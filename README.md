@@ -108,11 +108,10 @@ Each script of `examples/` gives its hardware, its time for the paper and its va
 |---|---|
 | `quartic/` | the potential, the dd arithmetic, the bases of the levels, the fits and the jets |
 | `quartic/cert/` | the parts of the strict bound that are special to the quartic (needs `tmgpu`) |
-| `scripts/` | the command-line programs of the fits, the checks, the export and the bound |
+| `scripts/` | the command-line programs of the fits, the checks, the export and the bound, and the exact count of the invariant functions (`symmetry_param_counts_s4.py`) |
 | `scripts/studies/` | the scripts of other numbers of the paper |
 | `examples/` | one script for each step, and `run_tests.sh` |
 | `tests/` | the test suites |
-| `notes/` | the exact count of the invariant functions (`symmetry_param_counts_s4.py`) |
 
 ## License and citation
 

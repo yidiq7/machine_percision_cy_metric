@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'notes'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 
 from quartic import blocks                       # noqa: E402
 import symmetry_param_counts_s4 as counts        # noqa: E402

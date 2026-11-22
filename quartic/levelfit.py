@@ -16,9 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def hn_counts(k):
-    """n_theta(j) for j = 1 to k, from the character theory of the notes."""
+    """n_theta(j) for j = 1 to k, from scripts/symmetry_param_counts_s4.py."""
     spec = importlib.util.spec_from_file_location(
-        'counts', ROOT / 'notes' / 'symmetry_param_counts_s4.py')
+        'counts', ROOT / 'scripts' / 'symmetry_param_counts_s4.py')
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return {j: mod.n_theta(j)[0] for j in range(1, k + 1)}

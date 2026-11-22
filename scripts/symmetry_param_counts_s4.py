@@ -1,6 +1,7 @@
-"""Exact count of Gamma-invariant parameters on the Fermat quartic (task 3).
+"""Exact count of Gamma-invariant parameters on the Fermat quartic.
 
-Adapted from symmetry_param_counts.py by the change S_5 -> S_4:
+Run: python scripts/symmetry_param_counts_s4.py (it prints n_theta and the blocks of each degree k).
+The structure:
   * the phases Z_4^3 force h_AB = 0 unless A = B mod 4, so h is block diagonal
     in r = A mod 4 in {0..3}^4 with |r| = k mod 4, which gives 64 blocks,
   * inside a block A = r + 4C and u_a := z_a^4, and P = 0 is exactly sum u = 0,
