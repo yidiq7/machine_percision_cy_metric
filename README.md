@@ -9,7 +9,7 @@ The code fits approximate Calabi–Yau metrics on the Fermat quartic M = {Σ_a z
 Each fit is a Kähler potential, which the code evaluates in double-double (dd) arithmetic. For
 the fit f6t, the code proves strict bounds of η − 1 and of ∇η on all of M (η as in the paper),
 with Taylor models on a graphics processing unit (GPU), and the bounds of the metric that the
-proof needs. The files of the proof are in the Zenodo record <ZENODO-URL>.
+proof needs. The files of the proof are in the Zenodo record https://zenodo.org/records/24420573.
 
 ## Results
 
@@ -57,7 +57,7 @@ with the CUDA toolkit: set `CUDA_PATH`, and the examples add `$CUDA_PATH/lib64` 
 
 ## Data
 
-The Zenodo record <ZENODO-URL> holds the files that the proof used (license CC-BY-4.0).
+The Zenodo record https://zenodo.org/records/24420573 holds the files that the proof used (license CC-BY-4.0).
 `examples/06_check_published.sh` downloads them and checks them.
 
 | file | content | SHA-256 |

@@ -9,12 +9,12 @@
 # Time: 2.5 min on 8 CPU cores with POINTS=300; the cover check takes longer with more points.
 # Variables (default):
 #   DATA_DIR (runs/zenodo)    the directory of the files of the record
-#   ZENODO_URL (<ZENODO-URL>) the URL of the record
+#   ZENODO_URL (https://zenodo.org/records/24420573) the URL of the record
 #   OUT (runs/check)          the output of cert_atlas.py combine
 #   POINTS (3000), PROCS (16)
 DATA_DIR=${DATA_DIR:-runs/zenodo}
 source "$(dirname "$0")/common.sh"
-ZENODO_URL=${ZENODO_URL:-<ZENODO-URL>}
+ZENODO_URL=${ZENODO_URL:-https://zenodo.org/records/24420573}
 OUT=${OUT:-runs/check}
 POINTS=${POINTS:-3000}
 PROCS=${PROCS:-16}
