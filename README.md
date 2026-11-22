@@ -7,29 +7,31 @@ This repository holds the code of the paper
 
 The code fits approximate Calabi–Yau metrics on the Fermat quartic M = {Σ_a z_a⁴ = 0} in CP³.
 Each fit is a Kähler potential, which the code evaluates in double-double (dd) arithmetic. For
-the fit f6t, the code proves strict bounds of η − 1 and of ∇η on all of M (η as in the paper),
+the metric of the paper, the code proves strict bounds of η − 1 and of ∇η on all of M (η as in the paper),
 with Taylor models on a graphics processing unit (GPU), and the bounds of the metric that the
 proof needs. The files of the proof are in the Zenodo record https://zenodo.org/records/24420573.
 
 ## Results
 
-The bounds for f6t on all of M are sup abs(η − 1) ≤ 4.9985e-20 and sup abs(∇η)_g ≤ 3.3654e-16
-(in the metric of volume 1). The bounds of its metric, from `atlas_combine_v3.npz`, are
+The bounds for the metric of the paper on all of M are sup abs(η − 1) ≤ 4.9985e-20 and
+sup abs(∇η)_g ≤ 3.3654e-16 (in the metric of volume 1). Its other bounds, from `atlas_combine_v3.npz`, are
 C ≤ 2.17652, ω ≥ 0.59669 ω₀, κ ≤ 4.4450e-13, λ ≥ 0.016109, Λ ≤ 0.64047, K̃ ≤ 59.9992,
 c̃₁ ≤ 4,396.5, c̃₂ ≤ 2.969e7, diam(M, ω) ≤ 3.1638, diam(M/G, ω) ≤ 1.4712 and λ₁,G ≥ 4.5605.
 The paper rounds each value in the safe direction, for example K̃ ≤ 60 and diam(M, ω) ≤ 3.165.
 
 The mean of abs(f) on samples of points:
 
-| fit | top degree | sample | mean abs(f) |
-|---|---|---|---|
-| f6t, one stage | 24 | 400,000 points, dd | 1.73e-22 (rms 2.38e-22, max 3.29e-21) |
-| s2e, two stages | 36 | 8e6 points, dd | 2.74e-28 |
-| s2e | 36 | 256 points, mpmath | (2.71 ± 0.16)e-28 |
-| s2k | 40 | 256 points, mpmath | (9.84 ± 0.62)e-30 |
-| s2o | 44 | 256 points, mpmath | (2.13 ± 0.12)e-31 |
+| fit | sample | mean abs(f) |
+|---|---|---|
+| the metric of the paper: HN base at k₀ = 16, levels 24 to 13 | 400,000 points, dd | 1.73e-22 (rms 2.38e-22, max 3.29e-21) |
+| two stages, D = 36 | 8e6 points, dd | 2.74e-28 |
+| two stages, D = 36 | 256 points, mpmath | (2.71 ± 0.16)e-28 |
+| two stages, D = 40 | 256 points, mpmath | (9.84 ± 0.62)e-30 |
+| two stages, D = 44 | 256 points, mpmath | (2.13 ± 0.12)e-31 |
 
-The paper does not give s2k and s2o. At the degree 44 the dd error of f has the size of f.
+A fit of two stages with the top degree D has the HN base at k₀ = 12, a first stage with the
+levels 24 to 17, and a second stage with the levels D to D − 7 (`examples/07_fit_two_stage.sh`).
+The paper does not give the fits with D = 40 and 44. At D = 44 the dd error of f has the size of f.
 
 ## tmgpu is not public yet
 
@@ -79,6 +81,9 @@ The Zenodo record https://zenodo.org/records/24420573 holds the files that the p
 | `atlas_trd_v1_2021233031.npz` | the bounds of the transition maps, charts 20 to 31 | `b9daae5c795bf51eca82805fd4ad0c6c6903f6fe4086fa41f6172d503102fee5` |
 | `atlas_combine_v3.npz` | the constants of the paper | `ffbd622835dd104cb2ab5c2d93fcc13cd4c828053b25015e0241bc898ae6f162` |
 
+The file names keep the labels of our runs: `f6t` is the metric of the paper, and `v1` and `v3`
+are the versions of the run files.
+
 The local forms of the 332 reference centers (211 GB) are not in the record.
 `examples/03_local_forms.sh` makes them again from `f6t_data.npz` and `f6t_forms.npz`.
 A new build of the reference centers 0, 243 and 297 gave the SHA-256 values of the manifest.
@@ -89,13 +94,13 @@ Each script of `examples/` gives its hardware, its time for the paper and its va
 
 | script | step |
 |---|---|
-| `01_fit_f6t.sh` | the fit f6t: the HN base at k₀ = 16 and the levels 24 to 13 |
+| `01_fit_metric.sh` | the metric of the paper: the HN base at k₀ = 16 and the levels 24 to 13 |
 | `02_export_potential.sh` | the two files of the potential, `f6t_data.npz` and `f6t_forms.npz` |
 | `03_local_forms.sh` | the cover of F and the local forms of its reference centers |
 | `04_bound.sh` | the strict bounds of f and of grad f, and their checks |
 | `05_metric_bounds.sh` | the bounds of the metric and the constants of the paper |
 | `06_check_published.sh` | the checks of the files of the Zenodo record, with no GPU |
-| `07_fit_two_stage.sh` | a fit of two stages with the top degree 36, 40 or 44 |
+| `07_fit_two_stage.sh` | a fit of two stages with the top degree D = 36, 40 or 44 |
 | `08_check_fit.sh` | the checks of a fit: hold-out, second chart, mpmath references |
 | `09_jets.sh` | the derivatives of f from Taylor jets |
 

@@ -15,11 +15,12 @@ With `export --sample`, the points are a whole sample of the sampler with their 
 The stage `sample` then gives f in mpmath at every point, from psi at the 17 points of
 a Levi stencil with one small step, and the mass-weighted mean abs(f) with no dd noise.
 
-Usage, on one GPU node, then on CPU cores:
+Usage, on one GPU node, then on CPU cores, for the fit of two stages with D = 36 of
+examples/07_fit_two_stage.sh:
     uv run --extra gpu python -u scripts/stage2_oracle.py export --k0 12 \\
-        --theta runs_explore/f2r/theta_k0_12.npy --stage1 runs_explore/s1b \\
+        --theta runs/two_stage_base/theta_k0_12.npy --stage1 runs/two_stage_first \\
         --stage1-k1 24 23 22 21 20 19 18 17 --k1 36 35 34 33 32 31 30 29 \\
-        --load runs_explore/f2r --run runs_explore/s2d --exact-mul \\
+        --load runs/two_stage_D36 --run runs/two_stage_D36 --exact-mul \\
         --data runs_stage2_oracle/data.npz
     uv run --extra gpu python -u scripts/stage2_oracle.py reference \\
         --data runs_stage2_oracle/data.npz --procs 16

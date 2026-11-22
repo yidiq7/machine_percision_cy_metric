@@ -11,11 +11,12 @@ A constant C, the mean of psi_1 on the fit set, comes out of the weights: it sca
 each level by a constant and leaves its span alone, and exp(-(k1/k0)(psi_1 - C))
 then comes from a short series.
 
-Usage, on the GPU node:
+Usage, on the GPU node (step 3 of examples/07_fit_two_stage.sh, D = 36):
     uv run --extra gpu python -u scripts/vpa_dd_stage2.py --k0 12 \\
-        --theta runs_explore/f2r/theta_k0_12.npy --stage1 runs_explore/s1 \\
-        --stage1-k1 24 20 16 --k1 36 35 34 33 32 31 30 29 --load runs_explore/f2r \\
-        --joint-tol 1e-15 --exact-mul --out runs_explore/s2
+        --theta runs/two_stage_base/theta_k0_12.npy --stage1 runs/two_stage_first \\
+        --stage1-k1 24 23 22 21 20 19 18 17 --k1 36 35 34 33 32 31 30 29 \\
+        --load runs/two_stage_base --joint-tol 1e-20 --refine 3 --prefixes 8 --exact-mul \\
+        --out runs/two_stage_D36
 """
 import argparse
 import dataclasses

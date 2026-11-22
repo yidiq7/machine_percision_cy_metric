@@ -6,7 +6,7 @@
 #   ref12    f at 12 points against mpmath, at min abs(z) over max abs(z) from 0.95 to 0.05
 #   sample   sigma from mpmath on 256 points, with no dd noise
 #   basis    the dd error of the level functions of degree D against mpmath
-#   seam1    the chart test of the fit of one stage of 01, with seam_levels.py
+#   seam1    the chart test of the metric of 01, with seam_levels.py
 #   STEPS (holdout chart ref12 sample basis) picks the checks.
 # Hardware: one GPU; CPU cores for the mpmath stages. tmgpu: not necessary.
 # Time for the paper at D = 36: 293 s of one core for each mpmath point of the sample, with 16
@@ -14,12 +14,13 @@
 # Variables (default): D, BASE, S1, OUT, LEVELS1 as in 07; STEPS; PROCS (16);
 #   NHOLD (8000000), NSEAM (131072), NSAMPLE (256)   the points of holdout, chart and sample;
 #   MP (RUN with gmpy2)   the command of the mpmath stages
-#   FIT1_BASE (runs/f6), FIT1 (runs/f6t), K0F (16), K1F (24 ... 13)   the fit of 01, for seam1
+#   FIT1_BASE (runs/metric_base), FIT1 (runs/metric), K0F (16), K1F (24 ... 13)
+#                                    the fit of 01, for seam1
 source "$(dirname "$0")/common.sh"
 D=${D:-36}
-BASE=${BASE:-runs/f2r}
-S1=${S1:-runs/s1b}
-OUT=${OUT:-runs/s2_$D}
+BASE=${BASE:-runs/two_stage_base}
+S1=${S1:-runs/two_stage_first}
+OUT=${OUT:-runs/two_stage_D$D}
 STEPS=${STEPS:-holdout chart ref12 sample basis}
 PROCS=${PROCS:-16}
 LEVELS1=${LEVELS1:-24 23 22 21 20 19 18 17}
@@ -62,8 +63,8 @@ for step in $STEPS; do
         JAX_PLATFORMS=cpu $RUN scripts/vpa_dd_oracle.py "$LOAD/vpa_dd_basis_k0_12_k1_$D.npz" \
             "$LOAD/vpa_dd_hlo_k0_12_k1_$D.npy" --points 3 ;;
     seam1)
-        FIT1_BASE=${FIT1_BASE:-runs/f6}
-        FIT1=${FIT1:-runs/f6t}
+        FIT1_BASE=${FIT1_BASE:-runs/metric_base}
+        FIT1=${FIT1:-runs/metric}
         K0F=${K0F:-16}
         K1F=${K1F:-24 23 22 21 20 19 18 17 16 15 14 13}
         T1="k0_${K0F}_$(echo $K1F | tr ' ' '_')"

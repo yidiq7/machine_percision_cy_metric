@@ -1,6 +1,6 @@
 #!/bin/bash
-# 07: a fit of two stages with the top degree D = 36, 40 or 44 (the fits s2e, s2k and s2o of the
-#   paper).
+# 07: a fit of two stages with the top degree D = 36, 40 or 44. The paper gives the fit with
+#   D = 36.
 #   Step 1 fits the HN base at k0 = 12 with the levels 36 to 29, and keeps the base and the V+A
 #   bases of these levels. Step 2 fits the first stage: the levels 24 to 17 on this base.
 #   Step 3 fits the second stage: the levels D to D - 7 with the weights of the first stage, with
@@ -14,7 +14,8 @@
 #   7.25 h at D = 44.
 # Variables (default):
 #   D (36), TOL (1e-20), REFINE (3 at D = 36, 1 above)
-#   BASE (runs/f2r), S1 (runs/s1b), OUT (runs/s2_D)   the output directories of the steps
+#   BASE (runs/two_stage_base), S1 (runs/two_stage_first), OUT (runs/two_stage_D<D>)
+#                                    the output directories of the steps
 #   NFIT (200000), NBUILD (60000), NBL (20000), NEVAL (400000)
 #   LEVELS0 (36 35 ... 29), LEVELS1 (24 23 ... 17)   the levels of the steps 1 and 2
 #   PREFIXES0 (1 2 4 8), PREFIXES1 (4 8)             the solutions of the steps 1 and 2
@@ -22,9 +23,9 @@ source "$(dirname "$0")/common.sh"
 D=${D:-36}
 TOL=${TOL:-1e-20}
 if [ "$D" -le 36 ]; then REFINE=${REFINE:-3}; else REFINE=${REFINE:-1}; fi
-BASE=${BASE:-runs/f2r}
-S1=${S1:-runs/s1b}
-OUT=${OUT:-runs/s2_$D}
+BASE=${BASE:-runs/two_stage_base}
+S1=${S1:-runs/two_stage_first}
+OUT=${OUT:-runs/two_stage_D$D}
 NFIT=${NFIT:-200000}
 NBUILD=${NBUILD:-60000}
 NBL=${NBL:-20000}

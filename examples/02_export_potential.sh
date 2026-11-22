@@ -8,13 +8,13 @@
 # Hardware: one GPU, then CPU cores. tmgpu: not necessary.
 # Time for the paper: 30 min on one H200, then 2 min on 32 CPU cores.
 # Variables (default):
-#   BASE (runs/f6), FIT (runs/f6t), K0 (16), K1 (24 23 ... 13)   as in 01
+#   BASE (runs/metric_base), FIT (runs/metric), K0 (16), K1 (24 23 ... 13)   as in 01
 #   COL (3)               the column of the coefficients: 3 is the prefix of all 12 levels
 #   OUT_DIR (runs/potential)   the directory of the two output files; they must not exist
 #   PROCS (32)            CPU processes of level_matrices.py
 source "$(dirname "$0")/common.sh"
-BASE=${BASE:-runs/f6}
-FIT=${FIT:-runs/f6t}
+BASE=${BASE:-runs/metric_base}
+FIT=${FIT:-runs/metric}
 K0=${K0:-16}
 K1=${K1:-24 23 22 21 20 19 18 17 16 15 14 13}
 COL=${COL:-3}

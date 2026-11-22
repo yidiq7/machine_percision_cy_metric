@@ -10,7 +10,7 @@ symmetric C_b = hhi + hlo of --data (the formula of scripts/cert_local_values.py
 3. p0 at the point [1 : e^(i pi/4) : 0 : 0] of X, in Arb at 300 bits, is a ball above 0.
    This point and the connectedness of X give the sign of p0 on X even if 1 fails.
 
-For the potential f6t, test 1 fails: only 2 of the 64 blocks are positive definite. Test 3
+For the potential of the paper, test 1 fails: only 2 of the 64 blocks are positive definite. Test 3
 gives the sign of p0 on X.
 
 Usage, on one CPU core, from the repo root:

@@ -9,9 +9,9 @@
 #   N (32768); the seed of part G is 20271001 + G.
 source "$(dirname "$0")/common.sh"
 D=${D:-36}
-BASE=${BASE:-runs/f2r}
-S1=${S1:-runs/s1b}
-OUT=${OUT:-runs/s2_$D}
+BASE=${BASE:-runs/two_stage_base}
+S1=${S1:-runs/two_stage_first}
+OUT=${OUT:-runs/two_stage_D$D}
 JETS=${JETS:-runs/jets_$D}
 NPARTS=${NPARTS:-4}
 N=${N:-32768}

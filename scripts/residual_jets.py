@@ -15,13 +15,13 @@ stage `combine` needs numpy only and prints the norms for G = c Re(g), c =
 1/(sqrt(2) pi k0), the metric of volume 1. The stage `check` compares the jets
 with the 13-row jets and with f of the residual program at a few points.
 
-Usage, on the GPU node:
+Usage, on the GPU node, for the fit of two stages with D = 36 of examples/07_fit_two_stage.sh:
     uv run --extra gpu python -u scripts/residual_jets.py compute --k0 12 \\
-        --theta runs_explore/f2r/theta_k0_12.npy --stage1 runs_explore/s1b \\
+        --theta runs/two_stage_base/theta_k0_12.npy --stage1 runs/two_stage_first \\
         --stage1-k1 24 23 22 21 20 19 18 17 --k1 36 35 34 33 32 31 30 29 \\
-        --load runs_explore/f2r --run runs_explore/s2e --exact-mul \\
-        --n 32768 --seed 20271001 --out runs_jets_s2e/part_20271001.npz
-    python scripts/residual_jets.py combine runs_jets_s2e/part_*.npz
+        --load runs/two_stage_D36 --run runs/two_stage_D36 --exact-mul \\
+        --n 32768 --seed 20271001 --out runs/jets_36/part_20271001.npz
+    python scripts/residual_jets.py combine runs/jets_36/part_*.npz
 """
 import argparse
 import dataclasses
